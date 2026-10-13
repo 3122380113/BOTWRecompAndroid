@@ -32,7 +32,7 @@ uint64_t prof_up_ns = ~0ull;  // textures.c upload checks (~0: profiling off)
 static _Atomic int stat_compiles;
 static uint64_t op_counts[CMD_COUNT];
 bool g_debug_frame;
-static char stats_text[640];
+static char stats_text[2048];
 void vk_collect_dead(void);
 
 // ================================================================== submissions
@@ -57,14 +57,28 @@ uint64_t vk_completed_seq(void) {
     return v;
 }
 
+// (LARECOMP_VK_PROF) waits on the GPU by cause: the caller names it in wait_why just before waiting
+static __thread const char *wait_why;
+static struct { const char *why; uint64_t ns, n; } wait_tab[12];
+static pthread_mutex_t wait_tab_lock = PTHREAD_MUTEX_INITIALIZER;
+static void wait_account(uint64_t ns) {
+    const char *why = wait_why ? wait_why : "other";
+    wait_why = NULL;
+    pthread_mutex_lock(&wait_tab_lock);
+    for (int i = 0; i < 12; i++)
+        if (!wait_tab[i].why || wait_tab[i].why == why) { wait_tab[i].why = why; wait_tab[i].ns += ns; wait_tab[i].n++; break; }
+    pthread_mutex_unlock(&wait_tab_lock);
+}
+
 void vk_wait_seq(uint64_t seq) {
-    if (!seq) return;
+    if (!seq) { wait_why = NULL; return; }
     VkSemaphoreWaitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &g_vk.timeline,
                               .pValues = &seq};
     uint64_t t0 = SDL_GetTicksNS();
     VkResult r = vkWaitSemaphores(g_vk.dev, &wi, 10ull * 1000000000ull);
     stat_wait_ns += SDL_GetTicksNS() - t0;
     cum_wait += SDL_GetTicksNS() - t0;
+    wait_account(SDL_GetTicksNS() - t0);
     if (r == VK_TIMEOUT) LOG("[vk] GPU did not finish submission %llu within 10 s (device lost?)\n", (unsigned long long)seq);
     else if (r != VK_SUCCESS) {
         extern void vk_devlost_dump(void);
@@ -79,6 +93,7 @@ uint64_t vk_pending_seq(void) { return submit_seq + 1; }
 static Sub *sub(void) {
     Sub *s = &subs[cur_sub];
     if (s->seq != submit_seq + 1) {  // slot reused: its previous submission must be done
+        wait_why = "ring slot";
         vk_wait_seq(s->seq);
         if (s->ts) {  // (profiling) GPU time of that submission
             uint64_t t[2];
@@ -243,6 +258,7 @@ void renderer_submit(void) { vk_submit_extra(VK_NULL_HANDLE, VK_NULL_HANDLE, VK_
 
 void renderer_flush(void) {
     renderer_submit();
+    if (!wait_why) wait_why = "flush";
     vk_wait_seq(submit_seq);
 }
 
@@ -250,6 +266,7 @@ void renderer_sync(void) {
     pthread_mutex_lock(&seq_lock);
     uint64_t s = submit_seq;
     pthread_mutex_unlock(&seq_lock);
+    wait_why = "QueueFinish / sync all";
     vk_wait_seq(s);
 }
 
@@ -265,6 +282,7 @@ void renderer_wait_seq(uint64_t seq) {
     pthread_mutex_lock(&seq_lock);
     uint64_t s = submit_seq;
     pthread_mutex_unlock(&seq_lock);
+    wait_why = seq > s ? "SyncWait (fence not submitted yet)" : "SyncWait";
     vk_wait_seq(seq > s ? s : seq);  // not submitted yet (other thread): everything submitted so far
 }
 
@@ -568,6 +586,14 @@ const char *renderer_stats(void) {
         memset(prof_end_line, 0, sizeof prof_end_line);
         n = strlen(stats_text);
         snprintf(stats_text + n, sizeof stats_text - n, " | views created %llu", (unsigned long long)prof_views_created);
+        pthread_mutex_lock(&wait_tab_lock);
+        for (int i = 0; i < 12 && wait_tab[i].why; i++) {
+            n = strlen(stats_text);
+            snprintf(stats_text + n, sizeof stats_text - n, "%s%s %llux %.0f ms", i ? "," : " | waits:", wait_tab[i].why,
+                     (unsigned long long)wait_tab[i].n, wait_tab[i].ns / 1e6);
+        }
+        memset(wait_tab, 0, sizeof wait_tab);
+        pthread_mutex_unlock(&wait_tab_lock);
         prof_views_created = 0;
         prof_tex_checks = prof_tex_samples = prof_tex_full = prof_tex_full_bytes = prof_tex_dyn = 0;
         prof_exec = prof_draw = prof_sets = prof_vtx = prof_submit = prof_pre = prof_key = prof_dyn = prof_tex = prof_up = prof_gpu = 0;
@@ -1533,6 +1559,94 @@ static VkDescriptorBufferInfo gmem_info(void) {
     return (VkDescriptorBufferInfo){s.buf, s.off, sizeof zero};
 }
 
+// Compute dispatches that use global memory: the imported heap is host memory across PCIe on a discrete GPU, and a
+// shader storing to it in a loop crawls (the little chain chomps in Madam MeowMeow's house: ~8 ms a frame on a GTX 1660
+// Super and on an RTX 3080 Ti alike, which the game then waits for on its fence - 49-53 fps there on the 1660). Before
+// such a dispatch its bound storage buffers (sorted, merged) are copied into a device-local buffer, the address table
+// (binding GMAP_BUFFER_INDEX) tells the shader (translate.c, GLSL compute) where each range sits, loads and stores
+// inside them use that copy, and a shader that stores gets the ranges copied back to the heap right after it (the
+// game alternates its buffer sets per frame: the CPU isn't writing them meanwhile). Accesses outside the table use
+// the heap as before. LARECOMP_VK_GMEM_FAST=0: no copy (empty table: everything goes to the heap, the old behaviour).
+#define GFAST_SIZE (32ull << 20)
+static VkBuffer gfast_buf;
+static VmaAllocation gfast_mem;
+static uint32_t gmap_tab[(GMAP_MAX + 1) * 4];  // this dispatch's table (stage_set copies it into binding 20)
+static VkBufferCopy gfast_cp[GMAP_MAX];       // its copies heap -> gfast_buf (reversed after a storing dispatch)
+static int gfast_n;
+
+static VkDescriptorBufferInfo gfast_info(void) {
+    if (!gfast_buf) {
+        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = GFAST_SIZE,
+                                 .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        VK_CHECK(vmaCreateBuffer(g_vk.vma, &bi, &ai, &gfast_buf, &gfast_mem, NULL));
+    }
+    return (VkDescriptorBufferInfo){gfast_buf, 0, GFAST_SIZE};
+}
+
+static void gfast_prepare(VkCommandBuffer cb) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("LARECOMP_VK_GMEM_FAST"); on = !e || atoi(e) != 0; }
+    memset(gmap_tab, 0, sizeof gmap_tab);
+    gfast_n = 0;
+    gmem_info();  // (the heap import, made on first use)
+    gfast_info();
+    if (!on || !gmem_buf) return;
+    struct { uint64_t lo, hi; } r[16];
+    int n = 0;
+    for (int i = 0; i < 16; i++) {  // heap offsets of the bound storage buffers, 256-aligned
+        uint64_t a = st.sbuf[5][i].addr, sz = st.sbuf[5][i].size;
+        if (!a || !sz || a < HEAP_BASE || a - HEAP_BASE + sz > gmem_size) continue;
+        uint64_t lo = (a - HEAP_BASE) & ~255ull, hi = (a - HEAP_BASE + sz + 255) & ~255ull;
+        if (hi > gmem_size) hi = gmem_size;
+        int k = n++;
+        while (k > 0 && r[k - 1].lo > lo) { r[k] = r[k - 1]; k--; }  // (insertion sort by start)
+        r[k].lo = lo; r[k].hi = hi;
+    }
+    int m = 0;
+    for (int i = 0; i < n; i++) {  // merge overlapping / nearby ranges (a small gap costs less than another table entry)
+        if (m && r[i].lo <= r[m - 1].hi + 4096) { if (r[i].hi > r[m - 1].hi) r[m - 1].hi = r[i].hi; }
+        else r[m++] = r[i];
+    }
+    VkBufferCopy cp[16];
+    uint64_t off = 0;
+    for (int i = 0; i < m; i++) {
+        uint64_t len = r[i].hi - r[i].lo;
+        if (m > GMAP_MAX || off + len > GFAST_SIZE) return;  // (too much: the heap as before)
+        cp[i] = (VkBufferCopy){r[i].lo, off, len};
+        gmap_tab[i * 4 + 0] = (uint32_t)r[i].lo;
+        gmap_tab[i * 4 + 1] = (uint32_t)len;
+        gmap_tab[i * 4 + 2] = (uint32_t)(off >> 2);
+        off += (len + 255) & ~255ull;
+    }
+    if (!m) return;
+    if (getenv("LARECOMP_LOG_GFAST")) {  // (debug) =<shader code address hex>: that shader's first tables
+        static int nlog;
+        if (st.program->stages[5].code_addr == strtoull(getenv("LARECOMP_LOG_GFAST"), NULL, 16) && nlog++ < 40) {
+            LOG("[gfast] cs %llx: %d ranges, %llu KB:", (unsigned long long)st.program->stages[5].code_addr, m, (unsigned long long)(off >> 10));
+            for (int i = 0; i < m; i++) LOG(" %llx+%llx", (unsigned long long)(r[i].lo + HEAP_BASE), (unsigned long long)(r[i].hi - r[i].lo));
+            LOG("\n");
+        }
+    }
+    vkCmdCopyBuffer(cb, gmem_buf, gfast_buf, (uint32_t)m, cp);
+    vk_full_barrier(cb);
+    gmap_tab[GMAP_MAX * 4] = (uint32_t)m;
+    memcpy(gfast_cp, cp, (size_t)m * sizeof cp[0]);
+    gfast_n = m;
+}
+
+// After a storing dispatch: its ranges back to the heap (before anything else reads them: draws, the CPU after the fence).
+static void gfast_finish(VkCommandBuffer cb) {
+    if (!gfast_n) return;
+    VkBufferCopy back[GMAP_MAX];
+    for (int i = 0; i < gfast_n; i++) back[i] = (VkBufferCopy){gfast_cp[i].dstOffset, gfast_cp[i].srcOffset, gfast_cp[i].size};
+    vk_full_barrier(cb);
+    vkCmdCopyBuffer(cb, gfast_buf, gmem_buf, (uint32_t)gfast_n, back);
+    vk_full_barrier(cb);
+    gfast_n = 0;
+}
+
 // Vertex / index data read in place from the imported guest heap (renderer.m bind_guest does the same with
 // g_guest_buffer): no per-draw copy, no index scan for the copy size. The game fences its CPU writes as on the
 // Switch. Falls back to copies outside the heap or without the import; LARECOMP_VK_COPY_VERTICES=1 forces copies.
@@ -1645,7 +1759,7 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
             bi[n] = cbuf_info(stage, si, (int)b->binding, gx, gy, gz);
             w[n].pBufferInfo = &bi[n];
         } else if (b->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
-            bi[n] = gmem_info();
+            bi[n] = b->binding == GFAST_BUFFER_INDEX ? gfast_info() : gmem_info();
             w[n].pBufferInfo = &bi[n];
         } else {
             continue;  // rscale / tint: written below, once the textures (and their scales) are known
@@ -1654,10 +1768,13 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
     }
     for (int i = 0; i < p->nbinds; i++) {
         VkBindingInfo *b = &p->binds[i];
-        if (b->set != set || b->type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || (b->binding != 18 && b->binding != 19)) continue;
+        if (b->set != set || b->type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
+            (b->binding != 18 && b->binding != 19 && b->binding != GMAP_BUFFER_INDEX)) continue;
         w[n] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = b->binding,
                                       .descriptorCount = 1, .descriptorType = b->type};
-        if (b->binding == 18) {
+        if (b->binding == GMAP_BUFFER_INDEX) {  // (compute) this dispatch's fast-copy table: gfast_prepare
+            bi[n] = ubo_span(vk_transient_copy(gmap_tab, sizeof gmap_tab, 256), sizeof gmap_tab);
+        } else if (b->binding == 18) {
             for (int t = 0; t < si->ntex && t < 64; t++) { rs[1 + t][0] = tex_sc[sg][t][0]; rs[1 + t][1] = tex_sc[sg][t][1]; }
             bi[n] = ubo_span(copy_dedupe(sg ? DEDUPE_RSCALE_F : DEDUPE_RSCALE_V, rs, sizeof rs, 256), sizeof rs);
         } else {
@@ -1733,16 +1850,37 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     if (!st.program || !gx || !gy || !gz) return;
     CsProg *cp = compute_program(st.program);
     if (!cp || atomic_load(&cp->p.state) != 1) { stat_skipped++; return; }
+    {   // LARECOMP_SKIP_CS=<code address hex> (debug): skip that compute shader's dispatches, to see what it does
+        static uint64_t skip = ~0ull;
+        if (skip == ~0ull) { const char *e = getenv("LARECOMP_SKIP_CS"); skip = e ? strtoull(e, NULL, 16) : 0; }
+        if (skip && st.program->stages[5].code_addr == skip) { stat_skipped++; return; }
+    }
+    if (cp->si->uses_gmem && getenv("LARECOMP_LOG_CS_SBUF")) {  // (debug) the storage buffers bound to gmem dispatches
+        static uint64_t seen_cs[16];
+        static int seen_n[16];
+        int k = 0;
+        while (k < 15 && seen_cs[k] && seen_cs[k] != st.program->stages[5].code_addr) k++;
+        seen_cs[k] = st.program->stages[5].code_addr;
+        if (seen_n[k]++ < 24) {
+            LOG("[cs] %llx %ux%ux%u:", (unsigned long long)st.program->stages[5].code_addr, gx, gy, gz);
+            for (int i = 0; i < 16; i++)
+                if (st.sbuf[5][i].addr) LOG(" sb%d %llx+%llx", i, (unsigned long long)st.sbuf[5][i].addr, (unsigned long long)st.sbuf[5][i].size);
+            LOG("\n");
+        }
+    }
     vk_end_pass();
     VkCommandBuffer cb = vk_cmd();
     vk_full_barrier(cb);
-    gp_mark(cb, "dispatch %ux%ux%u (local %ux%ux%u)", gx, gy, gz, cp->local[0], cp->local[1], cp->local[2]);
+    gp_mark(cb, "dispatch %ux%ux%u (local %ux%ux%u) cs %llx gmem %d", gx, gy, gz, cp->local[0], cp->local[1], cp->local[2],
+            (unsigned long long)st.program->stages[5].code_addr, cp->si->uses_gmem);
     dl_note("dispatch %ux%ux%u cs %llx gmem %d", gx, gy, gz, (unsigned long long)st.program->stages[5].code_addr, cp->si->uses_gmem);
     nfeedback = 0;
+    if (cp->si->uses_gmem_map) gfast_prepare(cb);
     VkDescriptorSet ds = stage_set(&cp->p, cp->p.set_layout[0], 0, 5, cp->si, NULL, NULL, gx, gy, gz, NULL);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cp->pipe);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cp->p.layout, 0, 1, &ds, 0, NULL);
     vkCmdDispatch(cb, gx, gy, gz);
+    if (cp->si->uses_gmem_map && cp->si->uses_gmem_store) gfast_finish(cb);
     stat_dispatches++;
 }
 
@@ -2333,6 +2471,7 @@ static void copy_texture_to_buffer(const TexRefRec *src, uint64_t dst) {
                            .imageOffset = {rg[0], rg[1], array ? 0 : rg[2]},
                            .imageExtent = {(uint32_t)rg[3], (uint32_t)rg[4], array ? 1 : nz}};
     vkCmdCopyImageToBuffer(cb, srcimg, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &c);
+    wait_why = "texture -> buffer readback";
     renderer_flush();  // the CPU may read the result right after the fence
     memcpy((void *)(uintptr_t)dst, out.ptr, total);
     if (small_mem) vmaDestroyImage(g_vk.vma, srcimg, small_mem);
@@ -2904,6 +3043,7 @@ static void exec_list(uint64_t handle, int depth) {
         case CMD_COPY_BUFFER_TO_TEXTURE: copy_buffer_to_texture(r->x[0], x); break;
         case CMD_COPY_TEXTURE_TO_BUFFER: copy_texture_to_buffer(x, r->x[3]); break;
         case CMD_COPY_BUFFER_TO_BUFFER:
+            wait_why = "buffer -> buffer copy";
             renderer_flush();
             memmove((void *)(uintptr_t)r->x[1], (void *)(uintptr_t)r->x[0], r->x[2]);
             break;
