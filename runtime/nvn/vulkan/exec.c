@@ -151,6 +151,7 @@ void vk_full_barrier(VkCommandBuffer cb) {
 }
 
 static void ring_retire(void);
+void vc_flush(void);
 
 // ---- LARECOMP_GPUPROF_AT=<frame>: GPU time per pass / dispatch / copy of that frame, logged as "[gpuprof]".
 // A timestamp (ALL_COMMANDS: after everything before it) at each mark; a row = the work since the previous mark.
@@ -218,6 +219,7 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
     if (!s->main_begun && !s->upload_begun && !wait && !signal) return;
     VkCommandBufferSubmitInfo cbs[2];
     int n = 0;
+    vc_flush();
     if (s->upload_begun) {
         vk_full_barrier(s->upload);  // uploads complete before anything in the main buffer reads them
         VK_CHECK(vkEndCommandBuffer(s->upload));
@@ -593,6 +595,14 @@ const char *renderer_stats(void) {
         memset(prof_end_line, 0, sizeof prof_end_line);
         n = strlen(stats_text);
         snprintf(stats_text + n, sizeof stats_text - n, " | views created %llu", (unsigned long long)prof_views_created);
+        {
+            extern uint64_t prof_vc_hits, prof_vc_bypass, prof_vc_copied, prof_vc_queries, prof_vc_scan_pages, prof_vc_scan_ns;
+            n = strlen(stats_text);
+            snprintf(stats_text + n, sizeof stats_text - n,  " | vcache %llu hit %llu in place %.1f MB copied, %llu queries %.2f ms, %llu pages written",
+                     (unsigned long long)prof_vc_hits, (unsigned long long)prof_vc_bypass, prof_vc_copied / 1048576.0,
+                     (unsigned long long)prof_vc_queries, prof_vc_scan_ns / 1e6, (unsigned long long)prof_vc_scan_pages);
+            prof_vc_hits = prof_vc_bypass = prof_vc_copied = prof_vc_queries = prof_vc_scan_pages = prof_vc_scan_ns = 0;
+        }
         pthread_mutex_lock(&wait_tab_lock);
         for (int i = 0; i < 12 && wait_tab[i].why; i++) {
             n = strlen(stats_text);
@@ -1654,15 +1664,194 @@ static void gfast_finish(VkCommandBuffer cb) {
     gfast_n = 0;
 }
 
-// Vertex / index data read in place from the imported guest heap (renderer.m bind_guest does the same with
-// g_guest_buffer): no per-draw copy, no index scan for the copy size. The game fences its CPU writes as on the
-// Switch. Falls back to copies outside the heap or without the import; LARECOMP_VK_COPY_VERTICES=1 forces copies.
+// ---- vertex / index cache
+// Reading vertex / index data in place from the imported heap crosses PCIe for every vertex fetched on a discrete GPU
+// (outdoors at 3x internal resolution on an RTX 3080 Ti: ~0.7-1.9 ms of GPU a frame; more on PCIe 3.0), and copying it
+// per draw instead moves about as much onto the CPU. So each range bound for drawing gets a device-local copy, refreshed
+// only where the CPU wrote since (the OS's page write tracking, plat_written_pages, asked at submission: vc_flush): one
+// sequential GPU copy of the written pages in the submission's upload buffer (which completes before its draws) instead
+// of fetches across the bus. Overlapping ranges are separate entries; the per-page generation keeps them all current.
+// Pages the GPU writes itself (a compute dispatch's copy-back, gfast_finish) are never cached: draws over them read the
+// heap in place as before, and so does everything when the OS gives no write tracking. LARECOMP_VK_VCACHE=0: off.
+#define VC_PAGE 4096ull
+#define VC_TAB 8192                   // entries (open addressing)
+#define VC_MAX_RANGE (64ull << 20)    // larger bound ranges: read in place
+#define VC_BUDGET (768ull << 20)      // device-local bytes kept; the least recently used go first
+typedef struct { uint64_t lo, hi, used_seq; uint32_t gen, epoch; VkBuffer buf; VmaAllocation mem; bool gpu; } VcEnt;
+static VcEnt vc_tab[VC_TAB];
+static uint32_t vc_pend[VC_TAB];  // entries the pending submission draws from (vc_flush brings them up to date)
+static int vc_npend;
+static uint32_t *vc_page_gen;  // per heap page: the generation of its last CPU write seen (vc_gen when observed)
+static uint8_t *vc_page_gpu;   // per heap page: written by the GPU
+static uint32_t vc_gen = 1, vc_epoch = 1;  // (epoch: bumped when pages turn GPU-written: entries check again)
+static uint64_t vc_bytes;
+#define VC_DEAD 1024
+static struct { VkBuffer b; VmaAllocation m; uint64_t seq; } vc_dead[VC_DEAD];
+static int vc_ndead;
+static int vc_on = -1;
+// (profiler: draws served / read in place, bytes refreshed, write tracking queries, written pages seen, query time)
+uint64_t prof_vc_hits, prof_vc_bypass, prof_vc_copied, prof_vc_queries, prof_vc_scan_pages, prof_vc_scan_ns;
+
+static void vc_free_dead(bool all) {
+    uint64_t done = vk_completed_seq();
+    int k = 0;
+    for (int i = 0; i < vc_ndead; i++) {
+        if (!all && vc_dead[i].seq > done) { vc_dead[k++] = vc_dead[i]; continue; }
+        vmaDestroyBuffer(g_vk.vma, vc_dead[i].b, vc_dead[i].m);
+    }
+    vc_ndead = k;
+}
+
+static bool vc_drop(VcEnt *e) {  // (freed once the submissions that may read it are done)
+    if (vc_ndead == VC_DEAD) { vk_wait_seq(vk_pending_seq() - 1); vc_free_dead(false); }
+    if (vc_ndead == VC_DEAD) return false;  // (all read by the pending submission: keep it)
+    vc_dead[vc_ndead].b = e->buf; vc_dead[vc_ndead].m = e->mem; vc_dead[vc_ndead++].seq = e->used_seq;
+    vc_bytes -= e->hi - e->lo;
+    memset(e, 0, sizeof *e);
+    return true;
+}
+
+// Heap pages [lo, hi) (offsets) written by the GPU: never cached from now on.
+static void vc_mark_gpu(uint64_t lo, uint64_t hi) {
+    if (!vc_page_gpu) return;
+    for (uint64_t p = lo / VC_PAGE; p < (hi + VC_PAGE - 1) / VC_PAGE && p < HEAP_MAX / VC_PAGE; p++) vc_page_gpu[p] = 1;
+    vc_epoch++;
+}
+
+// A storing shader (stage 0 / 1 / 5) may write any of its bound storage buffers.
+static void vc_mark_sbufs(int stage) {
+    for (int i = 0; i < 16; i++) {
+        uint64_t a = st.sbuf[stage][i].addr, sz = st.sbuf[stage][i].size;
+        if (a >= HEAP_BASE && sz && a - HEAP_BASE < HEAP_MAX) vc_mark_gpu(a - HEAP_BASE, a - HEAP_BASE + sz);
+    }
+}
+
+static bool vcache_lookup(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSize *off) {
+    if (vc_on < 0) {
+        const char *e = getenv("LARECOMP_VK_VCACHE");
+        vc_on = !e || atoi(e) != 0;
+        uint64_t pg = VC_PAGE, one;
+        int n = vc_on ? plat_written_pages(HEAP_BASE, VC_PAGE, &one, 1, &pg) : 0;  // (is there write tracking?)
+        if (vc_on && (n < 0 || pg != VC_PAGE)) {
+            LOG("[vk] vertex cache off: no page write tracking (%d, page %llu)\n", n, (unsigned long long)pg);
+            vc_on = 0;
+        }
+        if (vc_on) {
+            vc_page_gen = calloc(HEAP_MAX / VC_PAGE, sizeof *vc_page_gen);
+            vc_page_gpu = calloc(HEAP_MAX / VC_PAGE, 1);
+            vc_page_gen[0] = ++vc_gen;  // (the probe took page 0's tracking)
+        }
+    }
+    if (!vc_on || !gmem_buf || size > VC_MAX_RANGE) return false;
+    uint64_t lo = (addr - HEAP_BASE) & ~(VC_PAGE - 1), hi = (addr - HEAP_BASE + size + VC_PAGE - 1) & ~(VC_PAGE - 1);
+    if (hi > gmem_size) return false;
+    uint64_t pend = vk_pending_seq();
+    uint64_t h = (lo * 0x9E3779B97F4A7C15ull) ^ (hi * 0xC2B2AE3D27D4EB4Full);
+    uint32_t slot = (uint32_t)(h ^ (h >> 32)) & (VC_TAB - 1), free_slot = ~0u, old_slot = ~0u;
+    VcEnt *e = NULL;
+    for (int probe = 0; probe < 16; probe++, slot = (slot + 1) & (VC_TAB - 1)) {
+        VcEnt *c = &vc_tab[slot];
+        if (c->buf && c->lo == lo && c->hi == hi) { e = c; break; }
+        if (!c->buf && free_slot == ~0u) free_slot = slot;
+        if (c->buf && c->used_seq < pend && (old_slot == ~0u || c->used_seq < vc_tab[old_slot].used_seq)) old_slot = slot;
+    }
+    if (!e) {  // a new range: its own device-local buffer (gen 0: copied whole at the submission)
+        if (vc_npend == VC_TAB) return false;
+        if (vc_ndead) vc_free_dead(false);
+        if (free_slot == ~0u) {
+            if (old_slot == ~0u || !vc_drop(&vc_tab[old_slot])) return false;
+            free_slot = old_slot;
+        }
+        while (vc_bytes + (hi - lo) > VC_BUDGET) {  // over budget: the least recently used entry goes
+            int lru = -1;
+            for (int i = 0; i < VC_TAB; i++)
+                if (vc_tab[i].buf && vc_tab[i].used_seq < pend && (lru < 0 || vc_tab[i].used_seq < vc_tab[lru].used_seq)) lru = i;
+            if (lru < 0 || !vc_drop(&vc_tab[lru])) return false;
+        }
+        e = &vc_tab[free_slot];
+        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = hi - lo,
+                                 .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        if (vmaCreateBuffer(g_vk.vma, &bi, &ai, &e->buf, &e->mem, NULL) != VK_SUCCESS) { memset(e, 0, sizeof *e); return false; }
+        e->lo = lo; e->hi = hi;
+        vc_bytes += hi - lo;
+    }
+    if (e->epoch != vc_epoch) {  // (pages turned GPU-written since: is this range one of them?)
+        e->gpu = false;
+        for (uint64_t p = lo / VC_PAGE; p < hi / VC_PAGE && !e->gpu; p++) e->gpu = vc_page_gpu[p];
+        e->epoch = vc_epoch;
+    }
+    if (e->gpu) { prof_vc_bypass++; return false; }
+    if (e->used_seq != pend) {  // first use in this submission: brought up to date by vc_flush before it runs
+        e->used_seq = pend;
+        vc_pend[vc_npend++] = (uint32_t)(e - vc_tab);
+    }
+    prof_vc_hits++;
+    *buf = e->buf;
+    *off = addr - HEAP_BASE - lo;
+    return true;
+}
+
+static int vc_pend_cmp(const void *a, const void *b) {
+    uint64_t x = vc_tab[*(const uint32_t *)a].lo, y = vc_tab[*(const uint32_t *)b].lo;
+    return x < y ? -1 : x > y;
+}
+
+// At submission (vk_submit_extra, before the upload buffer closes): the pages the CPU wrote in the ranges this
+// submission draws from - one write tracking query per run of nearby ranges (a query costs about as much as scanning
+// ~64 pages: ranges closer than that share one) - and their copies into the cache, ahead of the draws.
+void vc_flush(void) {
+    if (!vc_npend) return;
+    qsort(vc_pend, (size_t)vc_npend, sizeof vc_pend[0], vc_pend_cmp);
+    uint32_t g = ++vc_gen;
+    static uint64_t pages[4096];
+    uint64_t t0 = SDL_GetTicksNS();
+    for (int i = 0; i < vc_npend;) {
+        uint64_t lo = vc_tab[vc_pend[i]].lo, hi = vc_tab[vc_pend[i]].hi;
+        int j = i + 1;
+        for (; j < vc_npend && vc_tab[vc_pend[j]].lo <= hi + 64 * VC_PAGE; j++)
+            if (vc_tab[vc_pend[j]].hi > hi) hi = vc_tab[vc_pend[j]].hi;
+        uint64_t pg = VC_PAGE;
+        int n = plat_written_pages(HEAP_BASE + lo, hi - lo, pages, 4096, &pg);
+        prof_vc_queries++;
+        if (n < 0 || n >= 4096) for (uint64_t p = lo / VC_PAGE; p < hi / VC_PAGE; p++) vc_page_gen[p] = g;  // (all)
+        else for (int k = 0; k < n; k++) vc_page_gen[(pages[k] - HEAP_BASE) / VC_PAGE] = g;
+        if (n > 0) prof_vc_scan_pages += (uint64_t)n;
+        i = j;
+    }
+    prof_vc_scan_ns += SDL_GetTicksNS() - t0;
+    VkCommandBuffer cb = vk_upload_cmd();
+    for (int i = 0; i < vc_npend; i++) {
+        VcEnt *e = &vc_tab[vc_pend[i]];
+        VkBufferCopy cp[64];
+        int nc = 0;
+        for (uint64_t p = e->lo / VC_PAGE; p < e->hi / VC_PAGE; p++) {
+            if (e->gen && vc_page_gen[p] <= e->gen) continue;
+            uint64_t o = p * VC_PAGE;
+            if (nc && cp[nc - 1].srcOffset + cp[nc - 1].size == o) { cp[nc - 1].size += VC_PAGE; continue; }
+            if (nc == 64) { nc = 1; cp[0] = (VkBufferCopy){e->lo, 0, e->hi - e->lo}; break; }  // (scattered: the whole range)
+            cp[nc++] = (VkBufferCopy){o, o - e->lo, VC_PAGE};
+        }
+        if (nc) {
+            vkCmdCopyBuffer(cb, gmem_buf, e->buf, (uint32_t)nc, cp);
+            for (int k = 0; k < nc; k++) prof_vc_copied += cp[k].size;
+        }
+        e->gen = g;
+    }
+    vc_npend = 0;
+}
+
+// Vertex / index data from the imported guest heap (renderer.m bind_guest reads g_guest_buffer the same way): the
+// device-local cache above, else read in place - no per-draw copy, no index scan for the copy size. The game fences its
+// CPU writes as on the Switch. Falls back to copies outside the heap or without the import; LARECOMP_VK_COPY_VERTICES=1
+// forces copies.
 static bool guest_direct(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSize *off) {
     static int copy = -1;
     if (copy < 0) copy = getenv("LARECOMP_VK_COPY_VERTICES") != NULL;
     if (copy || addr < HEAP_BASE) return false;
     if (addr + size > HEAP_BASE + gmem_size && kernel_heap_size() != gmem_tried) { gmem_tried = kernel_heap_size(); gmem_info(); }
     if (!gmem_buf || addr + size > HEAP_BASE + gmem_size) return false;
+    if (vcache_lookup(addr, size, buf, off)) return true;
     *buf = gmem_buf;
     *off = addr - HEAP_BASE;
     return true;
@@ -1685,6 +1874,14 @@ void vk_exec_reset(void) {
         gmem_mem = VK_NULL_HANDLE;
     }
     gmem_size = gmem_tried = 0;
+    for (int i = 0; i < VC_TAB; i++)  // (the vertex cache: copies of the old pages)
+        if (vc_tab[i].buf) vmaDestroyBuffer(g_vk.vma, vc_tab[i].buf, vc_tab[i].mem);
+    memset(vc_tab, 0, sizeof vc_tab);
+    vc_npend = 0;
+    vc_free_dead(true);
+    vc_bytes = 0;
+    if (vc_page_gpu) memset(vc_page_gpu, 0, HEAP_MAX / VC_PAGE);
+    vc_epoch++;
     st_defaults();
 }
 
@@ -1888,6 +2085,7 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cp->p.layout, 0, 1, &ds, 0, NULL);
     vkCmdDispatch(cb, gx, gy, gz);
     if (cp->si->uses_gmem_map && cp->si->uses_gmem_store) gfast_finish(cb);
+    if (cp->si->uses_gmem_store) vc_mark_sbufs(5);
     stat_dispatches++;
 }
 
@@ -2205,6 +2403,8 @@ static void draw_(CmdRec *r, bool indexed) {
     if (prof) prof_sets += SDL_GetTicksNS() - prof_t1_;
     VkDescriptorSet sets[2] = {vset, fset};
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pr->layout, 0, 2, sets, 0, NULL);
+    if (pr->vi->uses_gmem_store) vc_mark_sbufs(0);
+    if (pr->fi->uses_gmem_store) vc_mark_sbufs(1);
 
     uint64_t prof_t2_ = prof ? SDL_GetTicksNS() : 0;
     // ---- indices (copied; the largest index bounds the vertex data copied below)
