@@ -15,6 +15,25 @@
 // ================================================================== formats
 typedef struct { VkFormat vf; uint8_t expand_rgb, alpha_one; } VkFmt;
 
+// DEPTH24_STENCIL8 as itself where the GPU has it for everything the game does with depth (NVIDIA, Intel): half the
+// bytes of D32_SFLOAT_S8_UINT (4 instead of 8 per pixel) for every depth test, clear and copy - the game copies its
+// full-size depth twice a frame. AMD has no D24S8 attachments: D32S8 there (and on Metal). LARECOMP_VK_D24=0: D32S8.
+static VkFormat depth24_stencil8(void) {
+    static VkFormat f;
+    if (!f) {
+        const char *e = getenv("LARECOMP_VK_D24");
+        VkFormatProperties p;
+        vkGetPhysicalDeviceFormatProperties(g_vk.phys, VK_FORMAT_D24_UNORM_S8_UINT, &p);
+        VkFormatFeatureFlags want = VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+                                    VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT |
+                                    VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
+        bool ok = (p.optimalTilingFeatures & want) == want && !(e && !atoi(e));
+        f = ok ? VK_FORMAT_D24_UNORM_S8_UINT : VK_FORMAT_D32_SFLOAT_S8_UINT;
+        LOG("[vk] depth24 stencil8: %s\n", ok ? "D24_UNORM_S8_UINT" : "D32_SFLOAT_S8_UINT");
+    }
+    return f;
+}
+
 static VkFmt fmt_of(uint32_t f) {
     switch (f) {
     case 0x01: return (VkFmt){VK_FORMAT_R8_UNORM};
@@ -58,7 +77,7 @@ static VkFmt fmt_of(uint32_t f) {
     case 0x32: return (VkFmt){VK_FORMAT_D16_UNORM};
     case 0x33: return (VkFmt){VK_FORMAT_D32_SFLOAT};  // DEPTH24 (as on Metal: no 24-bit depth there)
     case 0x34: return (VkFmt){VK_FORMAT_D32_SFLOAT};
-    case 0x35: return (VkFmt){VK_FORMAT_D32_SFLOAT_S8_UINT};
+    case 0x35: return (VkFmt){depth24_stencil8()};
     case 0x36: return (VkFmt){VK_FORMAT_D32_SFLOAT_S8_UINT};
     case 0x37: return (VkFmt){VK_FORMAT_R8G8B8A8_SRGB, 0, 1};
     case 0x38: return (VkFmt){VK_FORMAT_R8G8B8A8_SRGB};

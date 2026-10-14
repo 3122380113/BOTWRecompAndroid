@@ -138,7 +138,12 @@ VkCommandBuffer vk_cmd(void) {
 
 VkCommandBuffer vk_upload_cmd(void) {
     Sub *s = sub();
-    begin_cb(&s->upload, &s->upload_begun);
+    if (!s->upload_begun) {
+        begin_cb(&s->upload, &s->upload_begun);
+        // after everything submitted before it: a submission's commands may start while the previous one's still run,
+        // and these copies overwrite what those may read (textures being replaced, vertex cache pages)
+        vk_full_barrier(s->upload);
+    }
     return s->upload;
 }
 
