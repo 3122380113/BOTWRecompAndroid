@@ -364,7 +364,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
         double secs = (double)(plat_now_ns() - t0) / 1e9;
         if (gen_frac == 0) f = 0.05 * (secs / (secs + 20));  // (the generator's first pass: no count yet)
         if (f > shown) shown = f;
-        if (o->progress) o->progress(shown, gen_frac < 1 && !gens_done ? "Preparing the game code..." : "Building the game code...");
+        if (o->progress) o->progress(shown, gen_frac < 1 && !gens_done ? "Reading the game code..." : "Recompiling...");
         sleep_ms(50);
     }
     for (int k = 0; k < nrun; k++) wait_for(run[k].p);  // (a failure: let the others end)
