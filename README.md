@@ -22,10 +22,10 @@ native Windows, macOS and Linux application.
 ![Mabe Village in a 21:9 window: the unlocked aspect ratio shows more of the island](docs/ultrawide.jpg)
 
 > [!NOTE]
-> **No game files are included.** LAS Recomp needs your own legally obtained copy of the game files of
+> **No game files are included.** LAS Recomp needs your own legally obtained copy of the extracted game files of
 > *Link's Awakening* **v1.0.0**. Instructions on how to obtain these files will **NOT** be provided.
 > On first launch the start screen sets up what it needs from them. No game files, assets or fonts are included.
-> The screenshot shows the start screen after extraction; no Nintendo artwork is included until provided by the user.
+> The screenshot shows the start screen after setup; no Nintendo artwork is included until provided by the user.
 
 ![The start screen: choose vanilla or a randomizer seed, set up your game files, settings](docs/start_screen.jpg)
 
