@@ -24,7 +24,7 @@ native Windows, macOS and Linux application.
 > [!NOTE]
 > **No game files are included.** LAS Recomp needs your own legally obtained copy of the extracted game files of
 > *Link's Awakening* **v1.0.0**. Instructions on how to obtain these files will **NOT** be provided.
-> On first launch the start screen sets up what it needs from them. No game files, assets or fonts are included.
+> On first launch the app sets up what it needs, including the actual recompilation locally. No game files, assets or fonts are included.
 > The screenshot shows the start screen after setup; no Nintendo artwork is included until provided by the user.
 
 ![The start screen: choose vanilla or a randomizer seed, set up your game files, settings](docs/start_screen.jpg)
