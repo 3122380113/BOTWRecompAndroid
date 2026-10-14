@@ -251,6 +251,17 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
     rt_remove_game_file(game_dir, GAMELIB_NAME);
     rt_remove_game_file(game_dir, GAMELIB_NAME ".id");
     mkdir(work, 0755);
+    if (t.zig) {  // its caches in the work folder too (deleted below), not ~/.cache: hundreds of MB, used once
+        char zc[1200];
+        snprintf(zc, sizeof zc, "%s" SEP "zig-cache", work);
+#ifdef _WIN32
+        _putenv_s("ZIG_GLOBAL_CACHE_DIR", zc);
+        _putenv_s("ZIG_LOCAL_CACHE_DIR", zc);
+#else
+        setenv("ZIG_GLOBAL_CACHE_DIR", zc, 1);
+        setenv("ZIG_LOCAL_CACHE_DIR", zc, 1);
+#endif
+    }
     LOG("[gamebuild] generator %s%s%s, compiler %s%s, %d jobs\n", t.gen, t.gen_script[0] ? " " : "", t.gen_script,
         t.cc, t.zig ? " cc" : "", o->jobs);
 

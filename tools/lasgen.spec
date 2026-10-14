@@ -5,7 +5,7 @@
 import os
 import sys
 
-from PyInstaller.utils.hooks import collect_dynamic_libs
+from PyInstaller.utils.hooks import collect_dynamic_libs, collect_submodules
 
 TOOLS = os.path.normpath(SPECPATH)
 
@@ -14,6 +14,7 @@ a = Analysis(
     pathex=[TOOLS],
     binaries=collect_dynamic_libs('capstone') + collect_dynamic_libs('unicorn'),
     datas=[(os.path.join(TOOLS, 'rando', 'patch_variants.json'), 'rando')],
+    hiddenimports=collect_submodules('unicorn'),  # (it imports its arch modules by name at run time)
     excludes=['tkinter', 'pydoc', 'doctest', 'unittest', 'pdb', 'IPython', 'numpy', 'setuptools', '_distutils_hack',
               'pkg_resources', 'ssl', '_ssl', '_hashlib', '_multibytecodec', '_codecs_cn', '_codecs_hk',
               '_codecs_iso2022', '_codecs_jp', '_codecs_kr', '_codecs_tw', '_decimal'],
