@@ -62,6 +62,15 @@ static int finished(PlatProc p) {
     return r;
 }
 
+static void stop(PlatProc p) {  // ends one that is still running, then forgotten
+    pthread_mutex_lock(&g_plock);
+    bool ours = false;
+    for (int i = 0; i < g_nprocs; i++)
+        if (g_procs[i] == p) { g_procs[i] = g_procs[--g_nprocs]; ours = true; break; }
+    pthread_mutex_unlock(&g_plock);
+    if (ours) plat_proc_kill(p);
+}
+
 static void sleep_ms(int ms) { plat_sleep_until_ns(plat_now_ns() + (uint64_t)ms * 1000000ull); }
 
 static int wait_for(PlatProc p) {
@@ -216,10 +225,27 @@ static void add_unit(Units *us, const char *src, const char *work, const char *s
     u->bytes = stat(src, &st) == 0 ? (unsigned long long)st.st_size : 0;
 }
 
+// The flags the game code was built with (GAMELIB_CFLAGS, part of its id). zig cc reads -march=<cpu> with its own CPU
+// names (x86_64_v3) and takes "-<feature>" off the end, so x86-64-v3 would be CPU "x86": the same CPU as -mcpu there.
+static void add_cflags(Args *a, const Tools *t) {
+    char buf[1024];
+    snprintf(buf, sizeof buf, "%s", GAMELIB_CFLAGS);
+    for (char *f = strtok(buf, " "); f; f = strtok(NULL, " ")) {
+        if (t->zig && !strncmp(f, "-march=", 7)) {
+            char cpu[128];
+            snprintf(cpu, sizeof cpu, "-mcpu=%s", f + 7);
+            for (char *c = cpu + 6; *c; c++) if (*c == '-') *c = '_';
+            add(a, cpu);
+        } else {
+            add(a, f);
+        }
+    }
+}
+
 static PlatProc start_compile(const Tools *t, const Unit *u) {
     Args a = {0};
     compiler(&a, t);
-    add_split(&a, GAMELIB_CFLAGS);
+    add_cflags(&a, t);
     char inc[1200];
     snprintf(inc, sizeof inc, "-I%s", t->inc);
     add(&a, inc);
@@ -378,9 +404,9 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
         if (o->progress) o->progress(shown, gen_frac < 1 && !gens_done ? "Reading the game code..." : "Recompiling...");
         sleep_ms(50);
     }
-    for (int k = 0; k < nrun; k++) wait_for(run[k].p);  // (a failure: let the others end)
+    for (int k = 0; k < nrun; k++) stop(run[k].p);  // (a failure: the rest is of no use - the failure shows at once)
     for (int i = 0; i < 2; i++)
-        if (gens[i].p && gens[i].exit < 0) wait_for(gens[i].p);
+        if (gens[i].p && gens[i].exit < 0) stop(gens[i].p);
 
     // 2. link
     if (ok) {

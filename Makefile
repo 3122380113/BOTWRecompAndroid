@@ -155,10 +155,12 @@ $(B)/rt/%.o: runtime/%.m $(RT_HDRS)
 	$(CC) $(RTFLAGS) -fobjc-arc -c $< -o $@
 
 # linked to a temp file, then renamed over: a copy of the game still running keeps its (old) file - relinking in
-# place gets running copies killed by macOS (code signature of the changed pages)
+# place gets running copies killed by macOS (code signature of the changed pages). The temp file keeps the real name
+# (in a folder of its own): on Windows the import library records the name the game code library loads it by.
 $(EXE): $(RT_OBJ) $(BACKEND_OBJ) $(UI_OBJ) $(IMGUI_OBJ)
-	$(CXX) -o $@.tmp $^ $(LDFLAGS)
-	mv -f $@.tmp $@
+	@mkdir -p $(dir $@)link
+	$(CXX) -o $(dir $@)link/$(notdir $@) $^ $(LDFLAGS)
+	mv -f $(dir $@)link/$(notdir $@) $@
 
 # its id file (<library>.id) says what it was built from without loading it (runtime/gamelib.c)
 $(GAMELIB): $(GEN_OBJ) | $(EXE)
@@ -282,6 +284,7 @@ gen-helper: build/rando-venv/.ok build/rando-venv/.gen-ok
 	$(if $(filter windows,$(PLATFORM)),USERPROFILE="$$(cygpath -w ~ 2>/dev/null || echo $$HOME)") \
 	$(RANDO_VPY) -m PyInstaller --noconfirm --clean --log-level WARN --distpath build/helper --workpath build/pyinstaller \
 	    tools/lasgen.spec
+	$(if $(filter windows,$(PLATFORM)),$(RANDO_VPY) tools/pe_no_cfg.py build/helper/lasgen/lasgen.exe)
 	@du -sh build/helper/lasgen
 
 build/rando-venv/.gen-ok: build/rando-venv/.ok

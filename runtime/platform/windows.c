@@ -354,11 +354,13 @@ void plat_proc_kill(PlatProc p) {  // (what it started ends with this process: t
 
 int plat_proc_wait(PlatProc p, bool block) {
     HANDLE h = (HANDLE)p;
-    if (WaitForSingleObject(h, block ? INFINITE : 0) != WAIT_OBJECT_0) return -1;
+    DWORD w = WaitForSingleObject(h, block ? INFINITE : 0);
+    if (w == WAIT_TIMEOUT) return -1;
+    if (w != WAIT_OBJECT_0) return 255;  // (not a process we can wait for: ended as far as the caller is concerned)
     DWORD code = 255;
     GetExitCodeProcess(h, &code);
     CloseHandle(h);
-    return (int)code;
+    return code > 255 ? 255 : (int)code;  // (a crash's NTSTATUS, e.g. 0xC0000409, is not "still running" (-1))
 }
 
 bool plat_remove_tree(const char *dir) {
