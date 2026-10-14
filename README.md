@@ -1,9 +1,5 @@
 # LAS Recomp
 
-> [!CAUTION]
-> **Releases have been pulled to address an urgent issue.** Beta 3 will be released addressing it as soon as possible.
-> See [issue #6](https://github.com/peiikai/LASRecomp/issues/6) for more details.
-
 > [!IMPORTANT]
 > **This project was made almost exclusively with AI.** Nearly all of the code, tooling, reverse engineering and
 > documentation in this repository was written by and will be maintained by an AI (Anthropic's Claude, through Claude Code),
