@@ -482,7 +482,7 @@ static void upload_pending(TexBackend *b) {
                 vkCmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
 }
 
-uint64_t prof_tex_checks, prof_tex_samples, prof_tex_full, prof_tex_full_bytes, prof_tex_dyn;
+uint64_t prof_tex_checks, prof_tex_samples, prof_tex_full, prof_tex_full_bytes, prof_tex_dyn, prof_tex_watch_skips;
 static void upload_texture(NvnTexture *t, TexBackend *b) {
     if (!t->addr || t->target == 10) return;
     uint64_t frame = vk_frame_counter();
@@ -500,9 +500,27 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     static int always_full = -1;
     if (always_full < 0) always_full = getenv("LARECOMP_TEX_FULLHASH") ? 1 : 0;
     bool full = b->dynamic || !b->uploaded || always_full;
-    if (!full && frame - b->full_frame >= 120 && full_hash_budget >= total) { full = true; full_hash_budget -= total; }
+    bool periodic = frame - b->full_frame >= 120 && full_hash_budget >= total;  // (safety net: a full hash now and then)
+    if (!full && periodic) { full = true; full_hash_budget -= total; }
     if (!b->tp) b->tp = texpatch_identify(t) + 1;  // (button prompts / Hero Mode icon: re-uploaded when their look changes)
     bool restyle = b->tp > 0 && b->uploaded && b->tp_gen != texpatch_generation();
+    // The OS's page write tracking (exec.c vk_pages_changed, shared with the vertex cache): texture memory the CPU
+    // hasn't written since the last check is not hashed at all (dynamic textures were fully hashed every frame,
+    // ~2.4 MB a frame in the overworld). The periodic full hash stays as a safety net. LARECOMP_VK_TEX_WATCH=0: off.
+    static int watch = -1;
+    if (watch < 0) { const char *e = getenv("LARECOMP_VK_TEX_WATCH"); watch = !e || atoi(e) != 0; }
+    if (watch && !always_full) {
+        extern int vk_pages_changed(uint64_t addr, uint64_t size, uint32_t since, uint32_t *now);
+        uint32_t now = 0;
+        int ch = vk_pages_changed(t->addr, total, b->wgen, &now);
+        if (ch >= 0) {
+            b->wgen = now;
+            if (!ch && b->uploaded && !restyle) {
+                if (!periodic) { prof_tex_watch_skips++; return; }
+                if (b->dynamic) full_hash_budget -= total;  // (the others took theirs above)
+            }
+        }
+    }
     if (!full && !restyle) {
         prof_tex_samples++;
         uint64_t sh = fnv_sample(mem, total);

@@ -47,6 +47,7 @@ typedef struct {
 } Sub;
 static Sub subs[SUBS];
 static int cur_sub;
+static void ss_forget(void);
 static uint64_t submit_seq;  // last submitted
 static pthread_mutex_t seq_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool in_pass;
@@ -126,6 +127,7 @@ VkCommandBuffer vk_cmd(void) {
     Sub *s = sub();
     if (!s->main_begun) {
         begin_cb(&s->main, &s->main_begun);
+        ss_forget();  // (a new command buffer starts with no state)
         gp_mark(s->main, "(submission start; includes GPU idle before it)");
         if (prof && prof_qp) {
             vkCmdResetQueryPool(s->main, prof_qp, (uint32_t)cur_sub * 2, 2);
@@ -611,6 +613,10 @@ const char *renderer_stats(void) {
                      (unsigned long long)prof_vc_hits, (unsigned long long)prof_vc_bypass, prof_vc_copied / 1048576.0,
                      (unsigned long long)prof_vc_queries, prof_vc_scan_ns / 1e6, (unsigned long long)prof_vc_scan_pages);
             prof_vc_hits = prof_vc_bypass = prof_vc_copied = prof_vc_queries = prof_vc_scan_pages = prof_vc_scan_ns = 0;
+            extern uint64_t prof_tex_watch_skips;
+            n = strlen(stats_text);
+            snprintf(stats_text + n, sizeof stats_text - n, " | tex unwritten %llu", (unsigned long long)prof_tex_watch_skips);
+            prof_tex_watch_skips = 0;
         }
         pthread_mutex_lock(&wait_tab_lock);
         for (int i = 0; i < 12 && wait_tab[i].why; i++) {
@@ -670,6 +676,45 @@ static uint32_t tex_wh[2][64][2];
 static VkFormat pass_color[8], pass_depth, pass_stencil;
 static uint32_t pass_ncolor, pass_samples = 1, pass_w, pass_h;
 static int debug_pass_no;
+
+// Redundant-state filter: what draw() last set in the current command buffer, so unchanged pipeline binds, dynamic
+// state and vertex / index buffer binds are not recorded again (a draw used to issue ~20 vkCmd* calls; most repeat the
+// previous draw's). Forgotten (ss_forget) whenever something else may have recorded state: a new command buffer, a new
+// render pass (present, ImGui, post-processing and copies all run between game passes) and the clear pipeline.
+// Descriptor sets are not filtered: every draw writes new ones (sharing identical sets within a submission was tried:
+// a third matched, but comparing them cost more than allocating and writing them on NVIDIA).
+// LARECOMP_VK_STATE_FILTER=0: every draw sets everything, as before.
+enum { SS_PIPE = 1 << 0, SS_DT = 1 << 1, SS_DW = 1 << 2, SS_DOP = 1 << 3, SS_STEN = 1 << 4, SS_SFACE0 = 1 << 5, SS_SFACE1 = 1 << 6,
+       SS_BC = 1 << 7, SS_CULL = 1 << 8, SS_FF = 1 << 9, SS_TOPO = 1 << 10, SS_PRE = 1 << 11, SS_DBE = 1 << 12, SS_DB = 1 << 13,
+       SS_VP = 1 << 14, SS_SC = 1 << 15, SS_IB = 1 << 16 };
+static struct {
+    uint32_t known;  // SS_* bits: the value below is what the command buffer has
+    uint32_t vb_known;  // per vertex binding
+    VkPipeline pipe;
+    VkBool32 dt, dw, sten, pre, dbe;
+    VkCompareOp dop;
+    uint32_t sface[2][7];  // fail, pass, depth fail, compare, compare mask, write mask, reference
+    float bc[4], db[3];
+    VkCullModeFlags cull;
+    VkFrontFace ff;
+    VkPrimitiveTopology topo;
+    VkViewport vp;
+    VkRect2D sc;
+    VkBuffer ib; VkDeviceSize io; VkIndexType it;
+    VkBuffer vb[17]; VkDeviceSize vo[17];
+} ss;
+static int ss_on = -1;
+static void ss_forget(void) { ss.known = 0; ss.vb_known = 0; }
+static bool ss_enabled(void) {
+    if (ss_on < 0) { const char *e = getenv("LARECOMP_VK_STATE_FILTER"); ss_on = !e || atoi(e) != 0; }
+    return ss_on;
+}
+// true: the state must be recorded (and is remembered as known)
+static inline bool ss_need(uint32_t bit, bool same) {
+    if (ss_on && (ss.known & bit) && same) return false;
+    ss.known |= bit;
+    return true;
+}
 
 static void vk_end_pass_at(int line);
 void vk_end_pass(void) { vk_end_pass_at(0); }
@@ -767,6 +812,7 @@ static void begin_pass(void) {
                           .colorAttachmentCount = pass_ncolor, .pColorAttachments = ca,
                           .pDepthAttachment = has_d ? &da : NULL, .pStencilAttachment = has_s ? &sa : NULL};
     vkCmdBeginRendering(cb, &ri);
+    ss_forget();  // (whatever ran between the passes may have set its own state)
     in_pass = true;
     vp_sx = pass_sx; vp_sy = pass_sy; vp_ox = 0; vp_oy = 0;
     stat_passes++;
@@ -809,6 +855,8 @@ static VkRect2D scissor_rect(void) {
 
 static void apply_scissor(void) {
     VkRect2D r = scissor_rect();
+    if (!ss_need(SS_SC, !memcmp(&r, &ss.sc, sizeof r))) return;
+    ss.sc = r;
     vkCmdSetScissor(vk_cmd(), 0, 1, &r);
 }
 
@@ -817,6 +865,8 @@ static void set_viewport(float x, float y, float w, float h, float zn, float zf)
     if (w <= 0) w = 1;
     if (h == 0) h = 1;
     VkViewport vp = {x, y + h, w, -h, fminf(fmaxf(zn, 0), 1), fminf(fmaxf(zf, 0), 1)};
+    if (!ss_need(SS_VP, !memcmp(&vp, &ss.vp, sizeof vp))) return;
+    ss.vp = vp;
     vkCmdSetViewport(vk_cmd(), 0, 1, &vp);
 }
 
@@ -940,6 +990,7 @@ static void clear(int index, int kind, const void *color, uint32_t mask, bool de
     VkPipeline p = clear_pipeline(index, kind, mask, depth, stencil);
     if (!p) return;
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
+    ss_forget();  // (its own pipeline and state: the next draw sets everything again)
     dyn_defaults(cb);
     if (depth) { vkCmdSetDepthTestEnable(cb, VK_TRUE); vkCmdSetDepthWriteEnable(cb, VK_TRUE); }
     if (stencil) {
@@ -1905,9 +1956,47 @@ static bool vc_drop(VcEnt *e) {  // (freed once the submissions that may read it
     return true;
 }
 
+// The page tables (vc_page_gen / vc_page_gpu) exist whenever the OS gives write tracking: the vertex cache and the
+// texture upload checks (vk_pages_changed) share them. Each write tracking query resets the OS bits, so every query
+// stamps the pages it saw written with a new generation, and each user compares against the generation it last saw.
+static int pt_state = -1;  // 1: tracking, 0: none
+static bool pt_init(void) {
+    if (pt_state >= 0) return pt_state;
+    uint64_t pg = VC_PAGE, one;
+    int n = plat_written_pages(HEAP_BASE, VC_PAGE, &one, 1, &pg);  // (is there write tracking?)
+    pt_state = n >= 0 && pg == VC_PAGE;
+    if (!pt_state) { LOG("[vk] no page write tracking (%d, page %llu)\n", n, (unsigned long long)pg); return false; }
+    vc_page_gen = calloc(HEAP_MAX / VC_PAGE, sizeof *vc_page_gen);
+    vc_page_gpu = calloc(HEAP_MAX / VC_PAGE, 1);
+    vc_page_gen[0] = ++vc_gen;  // (the probe took page 0's tracking)
+    return true;
+}
+
+// Texture upload checks (textures.c): may guest memory [addr, addr + size) have changed since generation `since`?
+// 0: no CPU write since, 1: written, -1: unknown (no tracking, outside the heap, or pages the GPU writes).
+// *now: the generation to pass next time.
+int vk_pages_changed(uint64_t addr, uint64_t size, uint32_t since, uint32_t *now) {
+    if (!size || addr < HEAP_BASE || addr - HEAP_BASE + size > HEAP_MAX || !pt_init()) return -1;
+    uint64_t lo = (addr - HEAP_BASE) & ~(VC_PAGE - 1), hi = (addr - HEAP_BASE + size + VC_PAGE - 1) & ~(VC_PAGE - 1);
+    static uint64_t pages[4096];
+    uint64_t pg = VC_PAGE;
+    int n = plat_written_pages(HEAP_BASE + lo, hi - lo, pages, 4096, &pg);
+    if (n < 0) return -1;
+    uint32_t g = ++vc_gen;
+    if (n >= 4096) for (uint64_t p = lo / VC_PAGE; p < hi / VC_PAGE; p++) vc_page_gen[p] = g;
+    else for (int k = 0; k < n; k++) vc_page_gen[(pages[k] - HEAP_BASE) / VC_PAGE] = g;
+    *now = g;
+    int changed = 0;
+    for (uint64_t p = lo / VC_PAGE; p < hi / VC_PAGE; p++) {
+        if (vc_page_gpu[p]) return -1;
+        if (vc_page_gen[p] > since) changed = 1;
+    }
+    return changed;
+}
+
 // Heap pages [lo, hi) (offsets) written by the GPU: never cached from now on.
 static void vc_mark_gpu(uint64_t lo, uint64_t hi) {
-    if (!vc_page_gpu) return;
+    if (!pt_init()) return;
     for (uint64_t p = lo / VC_PAGE; p < (hi + VC_PAGE - 1) / VC_PAGE && p < HEAP_MAX / VC_PAGE; p++) vc_page_gpu[p] = 1;
     vc_epoch++;
 }
@@ -1924,16 +2013,9 @@ static bool vcache_lookup(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceS
     if (vc_on < 0) {
         const char *e = getenv("LARECOMP_VK_VCACHE");
         vc_on = !e || atoi(e) != 0;
-        uint64_t pg = VC_PAGE, one;
-        int n = vc_on ? plat_written_pages(HEAP_BASE, VC_PAGE, &one, 1, &pg) : 0;  // (is there write tracking?)
-        if (vc_on && (n < 0 || pg != VC_PAGE)) {
-            LOG("[vk] vertex cache off: no page write tracking (%d, page %llu)\n", n, (unsigned long long)pg);
+        if (vc_on && !pt_init()) {
+            LOG("[vk] vertex cache off: no page write tracking\n");
             vc_on = 0;
-        }
-        if (vc_on) {
-            vc_page_gen = calloc(HEAP_MAX / VC_PAGE, sizeof *vc_page_gen);
-            vc_page_gpu = calloc(HEAP_MAX / VC_PAGE, 1);
-            vc_page_gen[0] = ++vc_gen;  // (the probe took page 0's tracking)
         }
     }
     if (!vc_on || !gmem_buf || size > VC_MAX_RANGE) return false;
@@ -2445,7 +2527,8 @@ static void draw_(CmdRec *r, bool indexed) {
         run_job(build_pipeline, pp);
     }
     if (atomic_load(&pp->state) != 1) { stat_skipped++; return; }
-    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pp->pipe);
+    ss_enabled();
+    if (ss_need(SS_PIPE, ss.pipe == pp->pipe)) { ss.pipe = pp->pipe; vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pp->pipe); }
     uint64_t prof_td_ = prof ? SDL_GetTicksNS() : 0;
     if (prof) prof_key += prof_td_ - prof_tk_;
 
@@ -2453,8 +2536,9 @@ static void draw_(CmdRec *r, bool indexed) {
     static int nodt = -1;
     if (nodt < 0) nodt = getenv("LARECOMP_NO_DEPTH_TEST") != NULL;
     bool dt = st.ds[0] && !nodt && pass_depth;
-    vkCmdSetDepthTestEnable(cb, dt);
-    vkCmdSetDepthWriteEnable(cb, dt && st.ds[1]);
+    if (ss_need(SS_DT, ss.dt == (VkBool32)dt)) { ss.dt = dt; vkCmdSetDepthTestEnable(cb, dt); }
+    VkBool32 dw = dt && st.ds[1];
+    if (ss_need(SS_DW, ss.dw == dw)) { ss.dw = dw; vkCmdSetDepthWriteEnable(cb, dw); }
     VkCompareOp dop = dt ? compare_fn(st.ds[2]) : VK_COMPARE_OP_ALWAYS;
     // EQUAL against a depth pre-pass written by a different vertex shader (foliage, trees) needs both shaders to land
     // on identical depths. They do since the translator stopped using unpackHalf2x16 (NVIDIA ran the half math after
@@ -2465,33 +2549,41 @@ static void draw_(CmdRec *r, bool indexed) {
     if (tol < 0) tol = getenv("LARECOMP_VK_EQUAL_TOL") != NULL;
     bool equal_tol = dop == VK_COMPARE_OP_EQUAL && tol;
     if (equal_tol) dop = VK_COMPARE_OP_LESS_OR_EQUAL;
-    vkCmdSetDepthCompareOp(cb, dop);
+    if (ss_need(SS_DOP, ss.dop == dop)) { ss.dop = dop; vkCmdSetDepthCompareOp(cb, dop); }
     bool sten = st.ds[3] && pass_stencil;
-    vkCmdSetStencilTestEnable(cb, sten);
+    if (ss_need(SS_STEN, ss.sten == (VkBool32)sten)) { ss.sten = sten; vkCmdSetStencilTestEnable(cb, sten); }
     if (sten) {
         uint32_t ops = st.ds[5] | st.ds[6] << 8 | st.ds[7] << 16;
         for (int f = 0; f < 2; f++) {
             uint32_t o = f ? ops >> 12 : ops;
             VkStencilFaceFlags face = f ? VK_STENCIL_FACE_BACK_BIT : VK_STENCIL_FACE_FRONT_BIT;
-            vkCmdSetStencilOp(cb, face, stencil_op(o & 0xF), stencil_op((o >> 8) & 0xF), stencil_op((o >> 4) & 0xF),
-                              compare_fn(f ? st.ds[4] >> 4 : st.ds[4] & 0xF));
-            vkCmdSetStencilCompareMask(cb, face, st.stencil_vmask[f] & 0xFF);
-            vkCmdSetStencilWriteMask(cb, face, st.stencil_mask[f] & 0xFF);
-            vkCmdSetStencilReference(cb, face, st.stencil_ref[f]);
+            uint32_t v[7] = {stencil_op(o & 0xF), stencil_op((o >> 8) & 0xF), stencil_op((o >> 4) & 0xF),
+                             compare_fn(f ? st.ds[4] >> 4 : st.ds[4] & 0xF), st.stencil_vmask[f] & 0xFF, st.stencil_mask[f] & 0xFF,
+                             st.stencil_ref[f]};
+            if (!ss_need(f ? SS_SFACE1 : SS_SFACE0, !memcmp(v, ss.sface[f], sizeof v))) continue;
+            memcpy(ss.sface[f], v, sizeof v);
+            vkCmdSetStencilOp(cb, face, (VkStencilOp)v[0], (VkStencilOp)v[1], (VkStencilOp)v[2], (VkCompareOp)v[3]);
+            vkCmdSetStencilCompareMask(cb, face, v[4]);
+            vkCmdSetStencilWriteMask(cb, face, v[5]);
+            vkCmdSetStencilReference(cb, face, v[6]);
         }
     }
-    vkCmdSetBlendConstants(cb, st.blend_color);
+    if (ss_need(SS_BC, !memcmp(ss.bc, st.blend_color, sizeof ss.bc))) { memcpy(ss.bc, st.blend_color, sizeof ss.bc); vkCmdSetBlendConstants(cb, st.blend_color); }
 
     // ---- rasterizer
     uint8_t cull = st.poly[0];
-    vkCmdSetCullMode(cb, cull == 1 ? VK_CULL_MODE_FRONT_BIT : cull == 2 ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE);
+    VkCullModeFlags cm = cull == 1 ? VK_CULL_MODE_FRONT_BIT : cull == 2 ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
+    if (ss_need(SS_CULL, ss.cull == cm)) { ss.cull = cm; vkCmdSetCullMode(cb, cm); }
     bool ccw = st.poly[1] == 1;
     static int flipw = -1;  // LARECOMP_VK_FLIP_WINDING: invert the front-face mapping (A/B against Metal)
     if (flipw < 0) flipw = getenv("LARECOMP_VK_FLIP_WINDING") != NULL;
     bool front_ccw = (ccw != vkey.flip_y) != (flipw != 0);
-    vkCmdSetFrontFace(cb, front_ccw ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE);
-    vkCmdSetPrimitiveTopology(cb, native ? topo : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
-    vkCmdSetPrimitiveRestartEnable(cb, st.prim_restart && native && (mode == 3 || mode == 5));
+    VkFrontFace ff = front_ccw ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE;
+    if (ss_need(SS_FF, ss.ff == ff)) { ss.ff = ff; vkCmdSetFrontFace(cb, ff); }
+    VkPrimitiveTopology tp = native ? topo : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    if (ss_need(SS_TOPO, ss.topo == tp)) { ss.topo = tp; vkCmdSetPrimitiveTopology(cb, tp); }
+    VkBool32 pre = st.prim_restart && native && (mode == 3 || mode == 5);
+    if (ss_need(SS_PRE, ss.pre == pre)) { ss.pre = pre; vkCmdSetPrimitiveRestartEnable(cb, pre); }
     {
         float f[3] = {0, 0, 0};
         static int off = -1;
@@ -2499,8 +2591,8 @@ static void draw_(CmdRec *r, bool indexed) {
         bool on = (st.poly[3] & 4) && !off;
         if (on) memcpy(f, st.poly_offset, sizeof f);
         if (equal_tol) { f[1] -= 8; on = true; }  // (see the EQUAL comment above: a few depth ulps nearer)
-        vkCmdSetDepthBiasEnable(cb, on);
-        vkCmdSetDepthBias(cb, f[1], f[2], f[0]);
+        if (ss_need(SS_DBE, ss.dbe == (VkBool32)on)) { ss.dbe = on; vkCmdSetDepthBiasEnable(cb, on); }
+        if (ss_need(SS_DB, !memcmp(ss.db, f, sizeof f))) { memcpy(ss.db, f, sizeof f); vkCmdSetDepthBias(cb, f[1], f[2], f[0]); }
     }
 
     // ---- textures first (their scales feed the widescreen decision and the rscale table), then the viewport
@@ -2606,7 +2698,7 @@ static void draw_(CmdRec *r, bool indexed) {
     VkDescriptorSet fset = stage_set(pr, pr->set_layout[1], 1, 1, pr->fi, rs0, tint, 0, 0, 0, fii);
     if (prof) prof_sets += SDL_GetTicksNS() - prof_t1_;
     VkDescriptorSet sets[2] = {vset, fset};
-    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pr->layout, 0, 2, sets, 0, NULL);
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pr->layout, 0, 2, sets, 0, NULL);  // (always new sets)
     if (pr->vi->uses_gmem_store) vc_mark_sbufs(0);
     if (pr->fi->uses_gmem_store) vc_mark_sbufs(1);
 
@@ -2665,7 +2757,10 @@ static void draw_(CmdRec *r, bool indexed) {
             if (base_vertex > 0) max_index += (uint32_t)base_vertex;
         }
     }
-    if (use_index) vkCmdBindIndexBuffer(cb, ib.buf, ib.off, itype_vk);
+    if (use_index && ss_need(SS_IB, ss.ib == ib.buf && ss.io == ib.off && ss.it == itype_vk)) {
+        ss.ib = ib.buf; ss.io = ib.off; ss.it = itype_vk;
+        vkCmdBindIndexBuffer(cb, ib.buf, ib.off, itype_vk);
+    }
 
     // ---- vertex streams: the range this draw can read, copied once per submission
     for (int s = 0; s < 17; s++) {
@@ -2679,6 +2774,8 @@ static void draw_(CmdRec *r, bool indexed) {
             VkBuffer dbuf;
             VkDeviceSize doff;
             if (v.addr && v.size && guest_direct(v.addr, v.size, &dbuf, &doff)) {
+                if (ss_on && (ss.vb_known >> s & 1) && ss.vb[s] == dbuf && ss.vo[s] == doff) continue;
+                ss.vb[s] = dbuf; ss.vo[s] = doff; ss.vb_known |= 1u << s;
                 vkCmdBindVertexBuffers(cb, (uint32_t)s, 1, &dbuf, &doff);
                 continue;
             }
@@ -2698,6 +2795,8 @@ static void draw_(CmdRec *r, bool indexed) {
             else sp = guest_copy(v.addr, need ? need : 16);
         }
         VkDeviceSize off = sp.off;
+        if (ss_on && (ss.vb_known >> s & 1) && ss.vb[s] == sp.buf && ss.vo[s] == off) continue;
+        ss.vb[s] = sp.buf; ss.vo[s] = off; ss.vb_known |= 1u << s;
         vkCmdBindVertexBuffers(cb, (uint32_t)s, 1, &sp.buf, &off);
     }
 
