@@ -108,6 +108,7 @@ typedef struct {
     char inc[1100], entry[1100], hle[1100];  // headers the game code includes, tools/gamelib_entry.c, HLE names
 #ifdef _WIN32
     char implib[1100];  // the .exe's import library (the runtime functions the game code calls)
+    char zig_rt[1100];  // the release's zig: its runtime built ahead of time (zig/rt, tools/zig_slim.sh), "" = none
 #endif
 } Tools;
 
@@ -140,6 +141,13 @@ static bool find_tools(Tools *t) {
     if (s) *s = 0;
 #ifdef _WIN32
     if (!rt_resource("lasrecomp.dll.a", "build/lasrecomp.dll.a", t->implib, sizeof t->implib)) return false;
+    t->zig_rt[0] = 0;
+    if (t->zig && rt_resource("zig" SEP "rt" SEP "link.rsp", NULL, t->zig_rt, sizeof t->zig_rt)) {
+        char *s = strrchr(t->zig_rt, '/'), *b = strrchr(t->zig_rt, '\\');
+        if (b > s) s = b;
+        if (s) *s = 0;
+        else t->zig_rt[0] = 0;
+    }
 #endif
     return true;
 }
@@ -424,16 +432,33 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
             fclose(f);
         }
         Args a = {0};
-        compiler(&a, &t);
-        add_split(&a, GAMELIB_SHARED);
-        add(&a, "-o");
-        add(&a, tmp);
         char at[1200];
         snprintf(at, sizeof at, "@%s", rsp);
-        add(&a, at);
 #ifdef _WIN32
-        add(&a, t.implib);
+        if (t.zig_rt[0]) {  // the linker itself, with the runtime built ahead of time (its flags and libraries: link.rsp)
+            char opt[1200];
+            add(&a, t.cc);
+            add(&a, "lld-link");
+            snprintf(opt, sizeof opt, "@%s" SEP "link.rsp", t.zig_rt);
+            add(&a, opt);
+            snprintf(opt, sizeof opt, "-LIBPATH:%s", t.zig_rt);
+            add(&a, opt);
+            snprintf(opt, sizeof opt, "-OUT:%s", tmp);
+            add(&a, opt);
+            add(&a, at);
+            add(&a, t.implib);
+        } else
 #endif
+        {
+            compiler(&a, &t);
+            add_split(&a, GAMELIB_SHARED);
+            add(&a, "-o");
+            add(&a, tmp);
+            add(&a, at);
+#ifdef _WIN32
+            add(&a, t.implib);
+#endif
+        }
         PlatProc p = f ? spawn(a.v, log) : 0;
         args_free(&a);
         int r = p ? wait_for(p) : 255;
