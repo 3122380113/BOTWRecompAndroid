@@ -6,8 +6,8 @@ the game itself untested on real hardware - community reports decide (see the en
 package the release AppImages.
 
 ## Running the AppImage
-    chmod +x LAS_Recomp-beta_2-x86_64.AppImage
-    ./LAS_Recomp-beta_2-x86_64.AppImage
+    chmod +x LAS_Recomp-beta_3-x86_64.AppImage
+    ./LAS_Recomp-beta_3-x86_64.AppImage
 
 Needs: a distribution with glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36, Arch, ...), a Vulkan 1.3 driver
 (Mesa RADV / ANV / NVK / Turnip / Asahi Honeykrisp, or NVIDIA's), and on x86-64 a CPU with AVX2 (2013 or newer).
@@ -39,7 +39,7 @@ Then from the repo root:
     python3 -m venv tools/venv && tools/venv/bin/pip install lz4 capstone unicorn
     make -j         # the start screen only (no game code yet): set up the game files there, or put extracted/ here
     make gen        # once: recompile the game from your own game files
-    make -j         # -> build/lasrecomp
+    make -j         # -> build/lasrecomp and the game code library build/lasgame.so
 
 Run `./build/lasrecomp` from the repo root: with `extracted/` in the starting folder it uses that folder for
 everything (dev mode) instead of `~/.local/share/lasrecomp`.
@@ -105,7 +105,7 @@ The aarch64 AppImage is experimental: built on x86-64, only its start screen has
    A crash writes `*** signal ...` and a backtrace there; attach the whole file.
 5. **A crash backtrace with gdb** when the log's isn't enough:
 
-       ./LAS_Recomp-beta_2-aarch64.AppImage --appimage-extract    # -> squashfs-root/
+       ./LAS_Recomp-beta_3-aarch64.AppImage --appimage-extract    # -> squashfs-root/
        cd ~/.local/share/lasrecomp
        gdb -batch -ex 'handle SIGSEGV nostop noprint pass' -ex run -ex 'thread apply all bt 20' \
            --args ~/squashfs-root/usr/bin/lasrecomp > gdb.txt 2>&1

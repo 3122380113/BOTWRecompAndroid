@@ -329,12 +329,27 @@ PlatProc plat_spawn(const char *const argv[], const char *log_path, bool append_
     MultiByteToWideChar(CP_UTF8, 0, argv[0], -1, wprog, MAX_PATH);
     for (wchar_t *p = wprog; *p; p++) if (*p == L'/') *p = L'\\';
     const wchar_t *app = GetFullPathNameW(wprog, MAX_PATH, wfull, NULL) ? wfull : NULL;
-    BOOL ok = CreateProcessW(app, wcmd, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
+    BOOL ok = CreateProcessW(app, wcmd, NULL, NULL, TRUE, CREATE_NO_WINDOW | CREATE_SUSPENDED, NULL, NULL, &si, &pi);
     if (!ok) fprintf(stderr, "[plat] could not start %s (error %lu)\n", argv[0], GetLastError());
     CloseHandle(log);
     if (!ok) return 0;
+    // every child in one job that ends with this process (a compiler's own children too: no leftovers on quit)
+    static HANDLE job;
+    if (!job && (job = CreateJobObjectW(NULL, NULL))) {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION li = {0};
+        li.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        SetInformationJobObject(job, JobObjectExtendedLimitInformation, &li, sizeof li);
+    }
+    if (job) AssignProcessToJobObject(job, pi.hProcess);
+    ResumeThread(pi.hThread);
     CloseHandle(pi.hThread);
     return (PlatProc)pi.hProcess;
+}
+
+void plat_proc_kill(PlatProc p) {  // (what it started ends with this process: the job above)
+    TerminateProcess((HANDLE)p, 255);
+    WaitForSingleObject((HANDLE)p, INFINITE);
+    CloseHandle((HANDLE)p);
 }
 
 int plat_proc_wait(PlatProc p, bool block) {

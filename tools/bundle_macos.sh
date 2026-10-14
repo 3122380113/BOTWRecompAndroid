@@ -1,9 +1,11 @@
 #!/bin/bash
 # make app: build/LAS Recomp.app from <exe> (default build/mac15/lasrecomp). Contents/MacOS: the executable;
 # Contents/Frameworks: every non-system dylib it loads (SDL3, FFmpeg; from build/deps, else Homebrew), load
-# paths rewritten to @rpath; Contents/Resources: the icon and the seed generator helper (build/helper/rando-gen, when
-# built: runtime/ui/rando_tab.mm generator_cmd). Ad-hoc signed. No game files or fonts: the app keeps those in
-# ~/Library/Application Support/<bundle id> (runtime/paths.h).
+# paths rewritten to @rpath; Contents/Resources: the icon, the seed generator helper (build/helper/rando-gen, when
+# built: runtime/ui/rando_tab.mm generator_cmd) and what the start screen builds the game code with on the player's
+# machine (runtime/gamebuild.c): the generator helper (build/helper/lasgen), the compiler (build/zig, tools/fetch_zig.sh)
+# and the headers the code is compiled against (gamelib-src/). Ad-hoc signed. No game files, game code or fonts: the
+# app keeps those in ~/Library/Application Support/<bundle id> (runtime/paths.h).
 # MACOS_MIN=<x.y>: LSMinimumSystemVersion, and every Mach-O inside must be built for it or older (else it fails and
 # lists them); without it the newest minimum found inside is used.
 set -euo pipefail
@@ -19,7 +21,14 @@ case "$VERSION" in
     v*) VERSION="${VERSION#v}" ;;
 esac
 HELPER=build/helper/rando-gen
+GEN_HELPER=build/helper/lasgen
+ZIG=build/zig
 [ -x "$EXE" ] || { echo "no $EXE"; exit 1; }
+[ -x "$GEN_HELPER/lasgen" ] || { echo "no $GEN_HELPER (make gen-helper)"; exit 1; }
+[ -x "$ZIG/zig" ] || { echo "no $ZIG (tools/fetch_zig.sh)"; exit 1; }
+# the app must hold no game code: that's built on the player's machine (grep without -q: with pipefail, nm cut off
+# early would hide a match)
+if nm "$EXE" | grep ' _f_70' >/dev/null; then echo "$EXE has game code linked in"; exit 1; fi
 
 rm -rf "$APP"
 C="$APP/Contents"
@@ -27,6 +36,11 @@ mkdir -p "$C/MacOS" "$C/Frameworks" "$C/Resources"
 cp "$EXE" "$C/MacOS/lasrecomp"
 strip -S "$C/MacOS/lasrecomp"  # (debug-map entries only: the symbols crash reports name functions by stay)
 if [ -x "$HELPER/rando-gen" ]; then cp -R "$HELPER" "$C/Resources/rando-gen"; else echo "note: no $HELPER (make rando-helper)"; fi
+cp -R "$GEN_HELPER" "$C/Resources/lasgen"
+cp -R "$ZIG" "$C/Resources/zig"
+mkdir "$C/Resources/gamelib-src"
+cp runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h tools/gamelib_entry.c runtime/hle/hle_symbols.txt \
+   "$C/Resources/gamelib-src/"
 cp docs/icon/icon.icns "$C/Resources/icon.icns"
 cp docs/icon/icon_1024.png "$C/Resources/icon.png"  # (window / Dock icon at run time)
 cp third_party/fonts/Baloo2/Baloo2-SemiBold.ttf "$C/Resources/Baloo2-SemiBold.ttf"  # (start screen; OFL, README "License")
@@ -119,4 +133,5 @@ printf 'APPL????' > "$C/PkgInfo"
 while read -r f; do [ "$f" = "$C/MacOS/lasrecomp" ] || codesign -f -s - "$f" 2>/dev/null; done < <(machos)
 codesign -f -s - "$APP"
 codesign --verify --strict "$APP"
+if find "$APP" -name 'lasgame*' | grep . >/dev/null; then echo "game code inside $APP"; exit 1; fi
 echo "$APP: $(du -sh "$APP" | cut -f1), $(ls "$C/Frameworks" | wc -l | tr -d ' ') dylibs, macOS $MIN+"

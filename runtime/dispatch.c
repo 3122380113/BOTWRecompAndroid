@@ -5,11 +5,8 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "gamelib.h"
 #include "hle.h"
-
-extern const uint64_t main_fn_addrs[], sdk_fn_addrs[];
-extern const GuestFn main_fn_ptrs[], sdk_fn_ptrs[];
-extern const uint64_t main_fn_count, sdk_fn_count;
 
 typedef struct { const uint64_t *addrs; const GuestFn *fns; uint64_t count, lo, hi; } FnTable;
 static FnTable tables[2];
@@ -108,9 +105,11 @@ void *hle_alloc(uint64_t size) {
     return (void *)a;
 }
 
-void dispatch_init(void) {
-    tables[0] = (FnTable){main_fn_addrs, main_fn_ptrs, main_fn_count, main_fn_addrs[0], main_fn_addrs[main_fn_count - 1]};
-    tables[1] = (FnTable){sdk_fn_addrs, sdk_fn_ptrs, sdk_fn_count, sdk_fn_addrs[0], sdk_fn_addrs[sdk_fn_count - 1]};
+void dispatch_init(void) {  // (after gamelib_load)
+    const GameLibTables *g = gamelib_tables();
+    uint64_t nm = *g->main_count, ns = *g->sdk_count;
+    tables[0] = (FnTable){g->main_addrs, g->main_fns, nm, g->main_addrs[0], g->main_addrs[nm - 1]};
+    tables[1] = (FnTable){g->sdk_addrs, g->sdk_fns, ns, g->sdk_addrs[0], g->sdk_addrs[ns - 1]};
 }
 
 GuestFn dispatch_lookup(uint64_t addr) {

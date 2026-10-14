@@ -119,8 +119,10 @@ This is a beta release. That means bugs are likely, crashes could occur, randomi
 ## Building from source
 
 Every platform needs your own v1.0.0 game files: build first, then use the start screen's game-file setup.
-`make gen` then recompiles the game code from your own game files into `generated/`; without it the build runs the
-start screen only.
+`make gen` then recompiles the game code from your own game files into `generated/`, and `make` builds it into its own
+library next to the app (`build/lasgame.*`); without it the start screen builds that library itself, as it does for
+players. Release builds hold none of the game's code: the start screen builds it on each player's machine from their
+own game files, with the bundled generator (`make gen-helper`) and compiler (`tools/fetch_zig.sh`).
 
 ### macOS
 
@@ -132,7 +134,8 @@ Python 3.12.
    `python3.12 -m venv venv && venv/bin/pip install -r requirements.txt`.
 3. Run: `./build/lasrecomp extracted` (start screen) or `./build/lasrecomp extracted --play` (straight into the game).
 4. Package: `make deps` (once: SDL3, FFmpeg, keystone and Python from pinned sources, built for macOS 15),
-   `make rando-helper` (the seed generator as a standalone helper, so players need no Python), then `make app` ->
+   `make rando-helper` (the seed generator as a standalone helper, so players need no Python), `make gen-helper` and
+   `tools/fetch_zig.sh` (what the start screen builds the game code with), then `make app` ->
    `build/LAS Recomp.app` (macOS 15+, Apple Silicon) and `make dmg` -> `build/dist/LAS Recomp-<version>-macOS.dmg`.
 
 ### Windows
@@ -208,8 +211,8 @@ none of their files are used):
 ## Legal
 
 LAS Recomp is a fan project. It is not affiliated with, endorsed by or sponsored by Nintendo. *The Legend of Zelda*
-and *Link's Awakening* are trademarks of Nintendo. No game files, assets or fonts are included - not in this
-repository and not in release builds. You must provide your own legally obtained copy of the game files to play.
+and *Link's Awakening* are trademarks of Nintendo. No game files, game code, assets or fonts are included - not in
+this repository and not in release builds. You must provide your own legally obtained copy of the game files to play.
 
 ## License
 

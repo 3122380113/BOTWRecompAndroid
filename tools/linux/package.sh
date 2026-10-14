@@ -2,8 +2,9 @@
 # tools/linux/package.sh <x86_64|aarch64> (inside the amd64 build container, tools/linux/appimage.sh): the game built
 # against build/linux/<arch>/deps and the seed generator helper (tools/linux/rando_helper.sh) put together
 # as an AppDir and packed by appimagetool: build/dist/LAS_Recomp-<version>-<arch>.AppImage.
-# Shipped next to the executable (usr/bin, where runtime/paths.c rt_resource looks): rando-gen/, the window
-# icon, the start screen font. usr/lib: the libraries from deps/ only - glibc, libstdc++, the Vulkan loader and the
+# Shipped next to the executable (usr/bin, where runtime/paths.c rt_resource looks): rando-gen/, what the start screen
+# builds the game code with on the player's machine (runtime/gamebuild.c: lasgen/, zig/ from tools/fetch_zig.sh,
+# gamelib-src/), the window icon, the start screen font. No game code: that's built from the player's own files. usr/lib: the libraries from deps/ only - glibc, libstdc++, the Vulkan loader and the
 # GPU drivers are the system's (a bundled loader would not find the user's drivers). No game files or fonts.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -27,8 +28,10 @@ else
     MAKEARGS=(ARCH="$ARCH")
 fi
 
-# the game: generated/ (or generated-<arch>/ for a cross build, `make gen ARCH=<arch>` on the host)
+# the app alone (the game code is built on the player's machine)
 make -j"$JOBS" B="$B" DEPS="$P" SHADERC=-lshaderc_shared "${MAKEARGS[@]}" "$B/lasrecomp"
+if nm "$B/lasrecomp" | grep ' f_70' >/dev/null; then echo "$B/lasrecomp has game code linked in"; exit 1; fi
+ZIG_TARGET=$ARCH-linux tools/fetch_zig.sh
 
 # ---- AppDir
 rm -rf "$APPDIR" && mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib"
@@ -40,6 +43,11 @@ cp third_party/fonts/Baloo2/OFL.txt "$APPDIR/usr/bin/Baloo2-OFL.txt"
 cp README.md LICENSE "$APPDIR/usr/bin/"  # (licenses and source links of the bundled components: README "License")
 [ -d "$L/helper/rando-gen" ] || { echo "no seed generator helper: tools/linux/rando_helper.sh $ARCH first"; exit 1; }
 cp -R "$L/helper/rando-gen" "$APPDIR/usr/bin/"
+[ -d "$L/helper/lasgen" ] || { echo "no game code generator helper: tools/linux/rando_helper.sh $ARCH first"; exit 1; }
+cp -R "$L/helper/lasgen" build/zig "$APPDIR/usr/bin/"
+mkdir "$APPDIR/usr/bin/gamelib-src"
+cp runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h tools/gamelib_entry.c runtime/hle/hle_symbols.txt \
+   "$APPDIR/usr/bin/gamelib-src/"
 cp tools/linux/AppRun "$APPDIR/" && chmod +x "$APPDIR/AppRun"
 cp tools/linux/lasrecomp.desktop "$APPDIR/"
 cp docs/icon/icon_1024.png "$APPDIR/lasrecomp.png" && ln -sf lasrecomp.png "$APPDIR/.DirIcon"
