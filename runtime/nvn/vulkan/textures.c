@@ -414,6 +414,8 @@ static TexBackend *tex_backend(NvnTexture *t) {
 void backend_texture_destroyed(NvnTexture *t) {
     TexBackend *b = t->backend;
     if (b) {
+        extern void vk_alias_texture_destroyed(NvnTexture *t);  // (exec.c copy aliases: a source's contents handed over)
+        vk_alias_texture_destroyed(t);
         live_remove(b);
         destroy_image(b);
         free(b->pending_rgba);
@@ -425,6 +427,8 @@ void backend_texture_destroyed(NvnTexture *t) {
 // Reboot (device.c backend_reset; GPU idle): every game texture and its views go.
 void vk_textures_reset(void) {
     int n = g_nlive;
+    extern void vk_alias_reset(void);
+    vk_alias_reset();
     while (g_nlive > 0) backend_texture_destroyed(g_live[g_nlive - 1]);
     vk_collect_dead();
     LOG("[vk] reboot: %d textures released\n", n);
