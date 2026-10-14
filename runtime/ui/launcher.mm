@@ -1280,9 +1280,8 @@ extern "C" void launcher_run(const char *root) {
                 if (!src.empty()) src_d += "\n\nChosen: " + src;
                 // the step that's running / its result, under the rows and in the Set up row's explanation
                 const std::string &job_line = job;
-                std::string ex_d = "Copies the game files LAS Recomp needs and recompiles the game from them, once, on "
-                                   "this computer: a few minutes, up to 15 on slower hardware. Your own files aren't "
-                                   "changed.";
+                std::string ex_d = "Copies the game files LAS Recomp needs and recompiles the game from them. This only "
+                                   "needs to be done once and may take a while. Your own files aren't changed.";
                 if (!job.empty()) ex_d += "\n\n" + job + (job_hint.empty() ? "" : ".\n" + job_hint);
 
                 // the controller's cursor starts on the first row (not the X), a few frames while the window lays out
@@ -1369,13 +1368,15 @@ extern "C" void launcher_run(const char *root) {
                     // (while the game code is built: what's happening, on whose files - runtime/gamebuild.c)
                     bool recompiling = g_build_frac >= 0;
                     const char *title = recompiling ? "Recompiling the game" : "Setting up the game files";
-                    static const char *const notes[] = {"Once, on this computer, from your own game files.",
-                                                        "A few minutes; up to 15 on slower hardware."};
-                    int nnotes = recompiling ? 2 : 0;
+                    static const char *const notes[] = {"This only needs to be done once and may take a while."};
+                    int nnotes = recompiling ? 1 : 0;
                     float tfs = g_font_menu->FontSize * 0.75f, sfs = g_font_small->FontSize * 0.85f;
                     ImVec2 ts = g_font_menu->CalcTextSizeA(tfs, FLT_MAX, 0, title);
                     float line_h = g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, "A").y;
                     float pw = fminf(ds.x * 0.6f, 900 * sc), bar_y = 36 * sc + ts.y + 30 * sc;
+                    for (int i = 0; i < nnotes; i++)  // (wide enough for its text, within the window)
+                        pw = fmaxf(pw, g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, notes[i]).x + 96 * sc);
+                    pw = fminf(fmaxf(pw, ts.x + 96 * sc), ds.x - 32 * sc);
                     float ph = bar_y + 24 * sc + 26 * sc + line_h + (nnotes ? 14 * sc + nnotes * line_h : 0) + 40 * sc;
                     ImVec2 a(o.x + (ds.x - pw) * 0.5f, o.y + (ds.y - ph) * 0.5f), b(a.x + pw, a.y + ph);
                     fg->AddRectFilled(a, b, IM_COL32(15, 23, 20, 250), 14 * sc);
