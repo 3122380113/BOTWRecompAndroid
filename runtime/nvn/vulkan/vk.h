@@ -9,7 +9,11 @@
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
+#ifdef __ANDROID__
+#include <volk.h>  // (the Vulkan functions come from the driver android_driver.c loads)
+#else
 #include <vulkan/vulkan.h>
+#endif
 #if __has_include(<vma/vk_mem_alloc.h>)
 #include <vma/vk_mem_alloc.h>
 #else
@@ -20,6 +24,9 @@
 #include "../maxwell/shader.h"
 
 void vk_device_fault_report(void);
+#ifdef __ANDROID__
+void vk_android_load(void);  // android_driver.c: the Vulkan driver (adrenotools / system) into volk
+#endif
 #define VK_CHECK(x) do { VkResult r_ = (x); if (r_ != VK_SUCCESS) { if (r_ == VK_ERROR_DEVICE_LOST) vk_device_fault_report(); \
     FATAL("%s failed: %d (%s:%d)\n", #x, r_, __FILE__, __LINE__); } } while (0)
 

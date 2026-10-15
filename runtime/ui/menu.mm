@@ -265,7 +265,11 @@ void menu_apply_window_requests(void *win) {
     static bool first = true;
     if (first || g_want_fullscreen_apply.exchange(false)) {
         first = false;
+#ifdef __ANDROID__
+        SDL_SetWindowFullscreen(w, true);  // (always: there is no window to go back to)
+#else
         SDL_SetWindowFullscreen(w, g_settings.fullscreen);
+#endif
     }
 }
 

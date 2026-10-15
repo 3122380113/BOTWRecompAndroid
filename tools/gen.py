@@ -18,7 +18,8 @@ import unicorn as uc
 from unicorn import arm64_const as A
 
 from analyze import eh_frame_functions
-from lifter import Insn, Lifter, Unsupported, bits, emit_asm_batch, hx, sext
+import lifter
+from lifter import CANON, Insn, Lifter, Unsupported, bits, emit_asm_batch, gaddr, hx, sext
 from nso import Nso, R_AARCH64_RELATIVE
 
 SCRATCH_MEM = 0x7300000000
@@ -64,7 +65,7 @@ class Module:
                 ins = self.lifter.lift(self.word(a), a)
             except Unsupported as e:
                 self.stats['unsupported'] += 1
-                ins = Insn('trap', f'rt_udf(c, {hx(a)}); /* {e} */')
+                ins = Insn('trap', f'rt_udf(c, {gaddr(a)}); /* {e} */')
             self.cache[a] = ins
         return ins
 
@@ -342,10 +343,10 @@ class Module:
             t = ins.target
             if self.in_text(t):
                 refs.add(t)
-                return [f'c->x[30] = {hx(a + 4)}; {fname(t)}(c);']
-            return [f'c->x[30] = {hx(a + 4)}; c->pc = {hx(t)}; rt_dispatch(c);']
+                return [f'c->x[30] = {gaddr(a + 4)}; {fname(t)}(c);']
+            return [f'c->x[30] = {gaddr(a + 4)}; c->pc = {gaddr(t)}; rt_dispatch(c);']
         if k == 'blr':
-            return [f'c->pc = {ins.target}; c->x[30] = {hx(a + 4)}; rt_dispatch(c);']
+            return [f'c->pc = {ins.target}; c->x[30] = {gaddr(a + 4)}; rt_dispatch(c);']
         if k == 'br':
             return [f'c->pc = {ins.target}; __attribute__((musttail)) return rt_dispatch(c);']
         if k == 'ret':
@@ -358,7 +359,7 @@ class Module:
             out.append(f'    {sanitize(hle[entry])}(c);')
             out.append('}')
             return out
-        out.append(f'    FN_ENTER({hx(entry)});')
+        out.append(f'    FN_ENTER({gaddr(entry)});')
         batch = []
         refs = set()
 
@@ -371,7 +372,7 @@ class Module:
             if entry <= t < end:
                 return f'goto L_{t:x};'
             if not self.in_text(t):
-                return f'c->pc = {hx(t)}; __attribute__((musttail)) return rt_dispatch(c);'
+                return f'c->pc = {gaddr(t)}; __attribute__((musttail)) return rt_dispatch(c);'
             refs.add(t)
             return f'__attribute__((musttail)) return {fname(t)}(c);'
 
@@ -396,7 +397,7 @@ class Module:
                 out.append(f'L_{a:x}:;')
             if a - self.base in RANDO_CODE:  # randomizer patch site: the active seed picks the instruction
                 flush()
-                out.append(f'    {{ extern uint32_t rando_word(uint64_t); uint32_t rw = rando_word({hx(a)});')
+                out.append(f'    {{ extern uint32_t rando_word(uint64_t); uint32_t rw = rando_word({gaddr(a)});')
                 first = True
                 for w in RANDO_CODE[a - self.base]:
                     v = self.lifter.lift(w, a)
@@ -407,7 +408,7 @@ class Module:
                 continue
             if a in PATCHES:  # hand-written replacement for one instruction (tools/patches.py)
                 flush()
-                out.append('    ' + PATCHES[a](self, a))
+                out.append('    ' + rebase_patch(PATCHES[a](self, a)))
                 last = 'op'
                 continue
             k = ins.kind
@@ -434,19 +435,19 @@ class Module:
                 t = ins.target
                 if self.in_text(t):
                     refs.add(t)
-                    out.append(f'    c->x[30] = {hx(a + 4)}; {fname(t)}(c);')
+                    out.append(f'    c->x[30] = {gaddr(a + 4)}; {fname(t)}(c);')
                 else:
-                    out.append(f'    c->x[30] = {hx(a + 4)}; c->pc = {hx(t)}; rt_dispatch(c);')
+                    out.append(f'    c->x[30] = {gaddr(a + 4)}; c->pc = {gaddr(t)}; rt_dispatch(c);')
             elif k == 'blr':
-                out.append(f'    c->pc = {ins.target}; c->x[30] = {hx(a + 4)}; rt_dispatch(c);')
+                out.append(f'    c->pc = {ins.target}; c->x[30] = {gaddr(a + 4)}; rt_dispatch(c);')
             elif k == 'br':
                 jt = tables.get(a)
                 if jt == 'all':
                     out.append(f'    c->pc = {ins.target}; goto L_dispatch;')
                     continue
                 if jt:
-                    cases = ' '.join(f'case {hx(t)}: goto L_{t:x};' for t in jt)
-                    out.append(f'    switch ({ins.target}) {{ {cases} default: break; }}')
+                    cases = ' '.join(f'case {case_key(t)}: goto L_{t:x};' for t in jt)
+                    out.append(f'    switch ({switch_on(ins.target)}) {{ {cases} default: break; }}')
                     out.append(f'    c->pc = {ins.target}; goto L_dispatch;')
                     continue
                 out.append(f'    c->pc = {ins.target}; __attribute__((musttail)) return rt_dispatch(c);')
@@ -455,18 +456,37 @@ class Module:
             last = k
         flush()
         if last not in ('b', 'br', 'ret', 'trap'):
-            out.append('    ' + jump(end) if end < self.hi else f'    rt_udf(c, {hx(end)});')
+            out.append('    ' + jump(end) if end < self.hi else f'    rt_udf(c, {gaddr(end)});')
         if all_labels:
             out.append('L_dispatch:')
-            cases = ' '.join(f'case {hx(t)}: goto L_{t:x};' for t in range(entry, end, 4))
-            out.append(f'    switch (c->pc) {{ {cases} default: break; }}')
+            cases = ' '.join(f'case {case_key(t)}: goto L_{t:x};' for t in range(entry, end, 4))
+            out.append(f'    switch ({switch_on("c->pc")}) {{ {cases} default: break; }}')
             out.append('    __attribute__((musttail)) return rt_dispatch(c);')
         out.append('}')
+        if lifter.DYN_BASE and any(GB_USE.search(l) for l in out):
+            out.insert(1, '    const uint64_t GB = lasgame_gb;')
         self._refs = refs
         return out
 
 
 from patches import PATCHES
+
+# --dyn-base (lifter.gaddr): jump table and dispatch switches compare window offsets, so their case labels stay
+# constants; the hand-written patches' code addresses move with the window like the lifted ones.
+GB_USE = re.compile(r'\bGB\b')
+PATCH_ADDR = re.compile(r'\b0x(7[0-3][0-9a-f]{8})ull\b')
+
+
+def case_key(t):
+    return hx(t - CANON) if lifter.DYN_BASE else hx(t)
+
+
+def switch_on(expr):
+    return f'{expr} - GB' if lifter.DYN_BASE else expr
+
+
+def rebase_patch(code):
+    return PATCH_ADDR.sub(lambda m: gaddr(int(m.group(1), 16)), code) if lifter.DYN_BASE else code
 
 import json as _json
 import os as _os
@@ -502,7 +522,10 @@ def main():
     ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--simd', choices=('asm', 'c'),
                     default='asm' if platform.machine().lower() in ('arm64', 'aarch64') else 'c')
+    ap.add_argument('--dyn-base', action='store_true',
+                    help='Android: guest addresses relative to the window the runtime picks (lifter.gaddr)')
     args = ap.parse_args()
+    lifter.DYN_BASE = args.dyn_base
 
     t0 = time.time()
     m = Module(args.name, args.nso, args.base, args.simd)
@@ -599,6 +622,8 @@ def main():
                 break
         path = os.path.join(args.outdir, f'{args.name}_{nchunks:03d}.c')
         text = ['#include "cpu.h"\n' + ('#include "simd.h"\n' if m.lifter.sc else '')]
+        if args.dyn_base:
+            text += ['extern __attribute__((visibility("hidden"))) uint64_t lasgame_gb;\n']
         text += [f'void {fname(r)}(Cpu *c);\n' for r in sorted(refs)]
         text += [f'void {sanitize(hle[a])}(Cpu *c);\n' for a in sorted(set(hle) & set(fns))]
         text += ['\n'.join(body), '\n']
@@ -622,6 +647,11 @@ def main():
         f.write(',\n'.join(fname(a) for a in order))
         f.write('};\n')
         f.write(f'const uint64_t {args.name}_fn_count = {len(order)};\n')
+        if args.dyn_base:  # (in each module's table, weak: main and sdk share one)
+            f.write("// the guest window's start (--dyn-base): the runtime sets it before any game code runs\n")
+            f.write(f'__attribute__((weak, visibility("hidden"))) uint64_t lasgame_gb = {hx(CANON)};\n')
+            f.write('__attribute__((weak, visibility("default"))) void lasgame_set_guest_base(uint64_t gb) '
+                    '{ lasgame_gb = gb; }\n')
         write_if_changed(os.path.join(args.outdir, f'{args.name}_table.c'), f.getvalue())
     print(f'{args.name}: wrote {nchunks} chunks, {time.time() - t0:.0f}s total', file=sys.stderr)
 

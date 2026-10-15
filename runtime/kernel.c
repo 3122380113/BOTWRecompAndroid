@@ -111,7 +111,11 @@ typedef struct { uint64_t addr, size; uint32_t type, perm; } Region;
 static Region regions[1024];
 static int nregions;
 static uint64_t heap_size;
+#ifdef __ANDROID__
+static uint64_t tls_next;  // (TLS_BASE moves with the window: kernel_init sets it)
+#else
 static uint64_t tls_next = TLS_BASE;
+#endif
 uint64_t kernel_heap_size(void) { return heap_size; }  // bytes from HEAP_BASE set by SetHeapSize
 // Writable guest data regions (heap, mapped/physical memory, module .data): for debug/runtime memory scans.
 int kernel_data_regions(uint64_t *addr, uint64_t *size, int max) {
@@ -839,6 +843,9 @@ void kernel_reset(void) {
 }
 
 void kernel_init(void) {
+#ifdef __ANDROID__
+    tls_next = TLS_BASE;
+#endif
     // Reserve the heap, alias, stack, and TLS regions.
     region_add(TLS_BASE, TLS_SIZE, 0xC, 3);
     for (int i = 0; i < g_nmodules; i++) {

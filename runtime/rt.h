@@ -13,6 +13,26 @@
 // ---- address space layout (guest addresses == host addresses)
 // macOS reserves 0x2_0000_0000-0x70_0000_0000, and guest addresses must fit in 39 bits, so the
 // guest lives in a 12.5 GB window at 0x70_0000_0000 claimed at startup (see main.c).
+#ifdef __ANDROID__
+// Android: the window starts wherever the app process has room, chosen at startup (runtime/platform/android.c,
+// android/common/guest_window.h); inside it, the same layout. The game code is generated with gen.py --dyn-base.
+extern uint64_t g_guest_lo;
+#define GUEST_CANON  0x7000000000ull   // where the desktop's window starts (the game code's own addresses)
+#define GUEST_LO     g_guest_lo
+#define GUEST_HI     (GUEST_LO + 0x320000000ull)
+#define MAIN_BASE    (GUEST_LO + 0x0000000000ull)
+#define SDK_BASE     (GUEST_LO + 0x0004000000ull)
+#define HLE_BASE     (GUEST_LO + 0x0080000000ull)
+#define HLE_SIZE     0x0000100000ull
+#define TLS_BASE     (GUEST_LO + 0x0090000000ull)
+#define TLS_SIZE     0x0000100000ull
+#define HLE_HEAP     (GUEST_LO + 0x0092000000ull)
+#define HLE_HEAP_SIZE 0x000E000000ull
+#define ALIAS_BASE   (GUEST_LO + 0x0100000000ull)
+#define ALIAS_SIZE   0x0100000000ull
+#define HEAP_BASE    (GUEST_LO + 0x0240000000ull)
+#define HEAP_MAX     0x00D0000000ull
+#else
 #define GUEST_LO     0x7000000000ull
 #define GUEST_HI     0x7320000000ull
 #define MAIN_BASE    0x7000000000ull
@@ -27,6 +47,7 @@
 #define ALIAS_SIZE   0x0100000000ull
 #define HEAP_BASE    0x7240000000ull
 #define HEAP_MAX     0x00D0000000ull   // 3.25 GB
+#endif
 
 // ---- loader.c
 typedef struct Module {
