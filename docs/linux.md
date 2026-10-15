@@ -6,8 +6,8 @@ the game itself untested on real hardware - community reports decide (see the en
 package the release AppImages.
 
 ## Running the AppImage
-    chmod +x LAS_Recomp-beta_3-x86_64.AppImage
-    ./LAS_Recomp-beta_3-x86_64.AppImage
+    chmod +x LAS.Recomp-beta_4-linux-x86_64.AppImage
+    ./LAS.Recomp-beta_4-linux-x86_64.AppImage
 
 Needs: a distribution with glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36, Arch, ...), a Vulkan 1.3 driver
 (Mesa RADV / ANV / NVK / Turnip / Asahi Honeykrisp, or NVIDIA's), and on x86-64 a CPU with AVX2 (2013 or newer).
@@ -26,7 +26,7 @@ Switch pads) the user needs access to `/dev/hidraw*`, which most distributions g
 Steam with Steam Input on, the game sees Steam's virtual Xbox controller (Xbox prompts).
 
 If the AppImage won't start with a FUSE error, install your distribution's `fuse3` package (the AppImage runtime
-needs `fusermount3`), or run it as `./LAS_Recomp-....AppImage --appimage-extract-and-run`.
+needs `fusermount3`), or run it as `./LAS.Recomp-...-linux-x86_64.AppImage --appimage-extract-and-run`.
 
 ## Building from source
 Ubuntu / Debian packages (other distributions: the same libraries under their names; SDL3 3.2 or newer):
@@ -58,7 +58,7 @@ The randomizer from a source checkout uses LAS-Randomizer's own venv (Python 3.1
 ## AppImages
 Needs podman, and for aarch64 QEMU user emulation with binfmt (`sudo apt install podman qemu-user qemu-user-binfmt`).
 
-    make appimage                # this machine's arch -> build/dist/LAS_Recomp-<version>-<arch>.AppImage
+    make appimage                # this machine's arch -> build/dist/LAS Recomp-<version>-linux-<arch>.AppImage
     make appimage ARCH=aarch64   # cross-compiled from x86-64
     make appimages               # both
 
@@ -105,7 +105,7 @@ The aarch64 AppImage is experimental: built on x86-64, only its start screen has
    A crash writes `*** signal ...` and a backtrace there; attach the whole file.
 5. **A crash backtrace with gdb** when the log's isn't enough:
 
-       ./LAS_Recomp-beta_3-aarch64.AppImage --appimage-extract    # -> squashfs-root/
+       ./LAS.Recomp-beta_4-linux-aarch64.AppImage --appimage-extract    # -> squashfs-root/
        cd ~/.local/share/lasrecomp
        gdb -batch -ex 'handle SIGSEGV nostop noprint pass' -ex run -ex 'thread apply all bt 20' \
            --args ~/squashfs-root/usr/bin/lasrecomp > gdb.txt 2>&1
