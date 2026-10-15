@@ -31,6 +31,9 @@ typedef struct {
     bool reverb;         // room reverb effect
     bool movie_audio;
     bool show_fps;
+#ifdef __ANDROID__
+    bool touch_controls;  // on-screen controls while no controller is connected (ui/touch_controls.mm)
+#endif
     bool dpad_move;      // the d-pad (and arrow keys) move Link like the stick
     bool move_360;       // analog movement in any direction (the game snaps the stick to 8): runtime/hle/qol.c
     bool blur_removal;   // no tilt-shift blur at the top / bottom of the screen

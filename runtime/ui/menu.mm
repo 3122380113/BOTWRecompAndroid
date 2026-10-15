@@ -63,6 +63,10 @@ static void push(const QEvent &e) {
 }
 
 bool menu_is_open(void) { return g_open.load(); }
+#ifdef __ANDROID__
+extern "C" bool touch_controls_visible(void);  // ui/touch_controls.mm
+extern "C" void touch_controls_draw(ImVec2 display, ImFont *font);
+#endif
 static void set_open(bool open);
 extern "C" void menu_test_open(void) {
     set_open(true);
@@ -456,6 +460,10 @@ static void tab_display(void) {
         g_want_fullscreen_apply.store(true);
     }
     opt_toggle("Show FPS", &g_settings.show_fps, false, "Shows the frame rate in the top right corner.");
+#ifdef __ANDROID__
+    opt_toggle("Touch controls", &g_settings.touch_controls, false,
+               "On-screen buttons and stick while no controller is connected. The back button opens this menu.");
+#endif
 
     opt_section("Rendering");
     // display order -> RES_* (the ini / enum order predates the menu order)
@@ -828,7 +836,12 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     bool trk = !open && tracker_overlay_wanted();
     bool chaos = !open && chaos_overlay_wanted();
     bool kbd = g_kbd.load() == 1;
-    if (!open && !kbd && !g_settings.show_fps && !inv && !trk && !chaos) {
+#ifdef __ANDROID__
+    bool touch = touch_controls_visible();
+#else
+    bool touch = false;
+#endif
+    if (!open && !kbd && !g_settings.show_fps && !inv && !trk && !chaos && !touch) {
         if (g_inited) { pthread_mutex_lock(&q_lock); q_events.clear(); pthread_mutex_unlock(&q_lock); }
         return;
     }
@@ -889,6 +902,11 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     }
 #endif
 
+#ifdef __ANDROID__
+    {   // (on top of the game, under the menu: hidden while it is open)
+        touch_controls_draw(io.DisplaySize, g_font_big ? g_font_big : ImGui::GetFont());
+    }
+#endif
     if (trk) tracker_overlay_draw(io.DisplaySize, g_font_big ? g_font_big : ImGui::GetFont());
     if (chaos) chaos_overlay_draw(io.DisplaySize, g_font_big ? g_font_big : ImGui::GetFont());
     if (inv) {
