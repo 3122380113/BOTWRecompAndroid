@@ -1965,6 +1965,71 @@ static bool gmem_import(uint64_t size) {
 
 static uint64_t gmem_tried;  // heap size the import was last attempted for (gmem_info imports / re-imports)
 
+#ifdef __ANDROID__
+// Turnip (VK_EXT_map_memory_placed): the guest heap *is* GPU memory. When the game sets its heap size (kernel.c
+// SetHeapSize, before it writes there), host-visible device memory is mapped over the heap's range at HEAP_BASE itself
+// (replacing the window's anonymous pages) and becomes the global memory buffer: shaders read and write the guest's
+// own bytes, as with the desktop's import - no CPU copies (gcopy_prepare), and what a compute pass writes the next
+// draw reads (the game's lighting: lights listed by compute, read by the fragment shaders). Freed on reset (vkFreeMemory
+// unmaps it; runtime/main.c then remaps the whole window). LARECOMP_VK_NO_PLACED=1: off (CPU copies).
+bool vk_heap_place(uint64_t size) {
+    if (!size) return false;
+    vk_wait_ready();
+    if (gmem_buf) return true;
+    if (!g_vk.map_placed || getenv("LARECOMP_VK_NO_PLACED")) return false;
+    uint64_t align = g_vk.placed_align > 65536 ? g_vk.placed_align : 65536;
+    size = (size + align - 1) & ~(align - 1);
+    if ((HEAP_BASE & (align - 1)) || size > HEAP_MAX) {
+        LOG("[vk] heap placement: %llx / %llu MB doesn't fit (alignment %llu)\n", (unsigned long long)HEAP_BASE,
+            (unsigned long long)(size >> 20), (unsigned long long)align);
+        return false;
+    }
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size,
+                             .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT};
+    VkBuffer buf;
+    if (vkCreateBuffer(g_vk.dev, &bi, NULL, &buf) != VK_SUCCESS) return false;
+    VkMemoryRequirements mr;
+    vkGetBufferMemoryRequirements(g_vk.dev, buf, &mr);
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
+    int type = -1;  // host-visible and coherent (the CPU writes, the GPU reads and writes); cached when there is one
+    const VkMemoryPropertyFlags need = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    for (uint32_t i = 0; i < mp.memoryTypeCount; i++) {
+        VkMemoryPropertyFlags f = mp.memoryTypes[i].propertyFlags;
+        if (!(mr.memoryTypeBits & (1u << i)) || (f & need) != need) continue;
+        if (type < 0 || (f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT)) type = (int)i;
+        if (f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) break;
+    }
+    VkDeviceMemory mem = VK_NULL_HANDLE;
+    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size,
+                               .memoryTypeIndex = (uint32_t)type};
+    VkResult r = type < 0 ? VK_ERROR_FEATURE_NOT_PRESENT : vkAllocateMemory(g_vk.dev, &ai, NULL, &mem);
+    if (r == VK_SUCCESS) r = vkBindBufferMemory(g_vk.dev, buf, mem, 0);
+    void *p = NULL;
+    if (r == VK_SUCCESS) {
+        VkMemoryMapPlacedInfoEXT pl = {.sType = VK_STRUCTURE_TYPE_MEMORY_MAP_PLACED_INFO_EXT, .pPlacedAddress = (void *)(uintptr_t)HEAP_BASE};
+        VkMemoryMapInfoKHR mi = {.sType = VK_STRUCTURE_TYPE_MEMORY_MAP_INFO_KHR, .pNext = &pl, .flags = VK_MEMORY_MAP_PLACED_BIT_EXT,
+                                 .memory = mem, .offset = 0, .size = VK_WHOLE_SIZE};
+        r = vkMapMemory2KHR(g_vk.dev, &mi, &p);
+    }
+    if (r != VK_SUCCESS || p != (void *)(uintptr_t)HEAP_BASE) {
+        LOG("[vk] heap placement failed (%d, mapped at %p, type %d): shader global memory through CPU copies\n", r, p, type);
+        if (mem) vkFreeMemory(g_vk.dev, mem, NULL);  // (freeing a placed map unmaps it: the window gets its pages back)
+        if (p == (void *)(uintptr_t)HEAP_BASE) plat_reset_guest(HEAP_BASE, HEAP_BASE + size);
+        vkDestroyBuffer(g_vk.dev, buf, NULL);
+        return false;
+    }
+    gmem_buf = buf;
+    gmem_mem = mem;
+    gmem_size = size;
+    gcopy_mode = false;
+    LOG("[vk] guest heap %llu MB is GPU memory (placed at %llx, memory type %d)\n", (unsigned long long)(size >> 20),
+        (unsigned long long)HEAP_BASE, type);
+    return true;
+}
+#endif
+
 static VkDescriptorBufferInfo gmem_info(void) {
     static int off = -1;
     if (off < 0) off = getenv("LARECOMP_VK_NO_GMEM") != NULL || !g_vk.host_import;
@@ -1974,6 +2039,12 @@ static VkDescriptorBufferInfo gmem_info(void) {
         LOG("[vk] guest heap import failed (%llu MB): shader global memory reads return zero\n", (unsigned long long)(want >> 20));
         off = 1;
     }
+#ifdef __ANDROID__
+    if (gmem_buf) {  // (a storage buffer's range is limited: 2 GB on Adreno; the heap may be larger)
+        uint64_t range = gmem_size < g_vk.props.limits.maxStorageBufferRange ? gmem_size : g_vk.props.limits.maxStorageBufferRange & ~3ull;
+        return (VkDescriptorBufferInfo){gmem_buf, 0, range};
+    }
+#endif
     if (gmem_buf) return (VkDescriptorBufferInfo){gmem_buf, 0, gmem_size};
     static uint32_t zero[1024];
     VkSpan s = vk_transient_copy(zero, sizeof zero, 256);
@@ -2385,6 +2456,9 @@ void vk_exec_reset(void) {
         gmem_mem = VK_NULL_HANDLE;
     }
     gmem_size = gmem_tried = 0;
+#ifdef __ANDROID__
+    gcopy_mode = !g_vk.host_import && !getenv("LARECOMP_VK_NO_GCOPY");  // (until the next heap is placed: vk_heap_place)
+#endif
     for (int i = 0; i < VC_TAB; i++)  // (the vertex cache: copies of the old pages)
         if (vc_tab[i].buf) vmaDestroyBuffer(g_vk.vma, vc_tab[i].buf, vc_tab[i].mem);
     memset(vc_tab, 0, sizeof vc_tab);

@@ -157,6 +157,14 @@ static void create_device(void) {
     bool fault = has_ext(ep, ne, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);  // device-lost diagnostics (vk_device_fault_report)
     if (fault) ext[n_ext++] = VK_EXT_DEVICE_FAULT_EXTENSION_NAME;
     g_fault_ext = fault;
+#ifdef __ANDROID__
+    // the guest heap as GPU memory mapped at its own address (exec.c vk_heap_place; Turnip has it)
+    g_vk.map_placed = has_ext(ep, ne, VK_EXT_MAP_MEMORY_PLACED_EXTENSION_NAME) && has_ext(ep, ne, VK_KHR_MAP_MEMORY_2_EXTENSION_NAME);
+    if (g_vk.map_placed) {
+        ext[n_ext++] = VK_KHR_MAP_MEMORY_2_EXTENSION_NAME;
+        ext[n_ext++] = VK_EXT_MAP_MEMORY_PLACED_EXTENSION_NAME;
+    }
+#endif
     free(ep);
 
     // features the backend relies on (all present on current desktop drivers)
@@ -211,6 +219,26 @@ static void create_device(void) {
     b->robustBufferAccess = h->robustBufferAccess;  // guest shaders index cbufs freely: keep OOB reads harmless
     b->shaderClipDistance = h->shaderClipDistance;
     if (!h->shaderInt64) LOG("[vk] warning: no shaderInt64 (64-bit address math in shaders)\n");
+#ifdef __ANDROID__
+    VkPhysicalDeviceMapMemoryPlacedFeaturesEXT placed = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAP_MEMORY_PLACED_FEATURES_EXT};
+    if (g_vk.map_placed) {
+        VkPhysicalDeviceMapMemoryPlacedFeaturesEXT pf = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAP_MEMORY_PLACED_FEATURES_EXT};
+        VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &pf};
+        vkGetPhysicalDeviceFeatures2(g_vk.phys, &q);
+        VkPhysicalDeviceMapMemoryPlacedPropertiesEXT pp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAP_MEMORY_PLACED_PROPERTIES_EXT};
+        VkPhysicalDeviceProperties2 qp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &pp};
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &qp);
+        g_vk.placed_align = pp.minPlacedMemoryMapAlignment;
+        if (pf.memoryMapPlaced) {
+            placed.memoryMapPlaced = VK_TRUE;
+            placed.pNext = f.pNext;
+            f.pNext = &placed;
+        } else {
+            g_vk.map_placed = false;
+            n_ext -= 2;  // (the two map extensions were the last added)
+        }
+    }
+#endif
     float prio = 1.0f;
     VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_vk.qfam,
                                   .queueCount = 1, .pQueuePriorities = &prio};
@@ -755,6 +783,12 @@ void backend_clear_window(void) {
     static const float black[4] = {0, 0, 0, 1};
     if (g_vk.dev && vk_frame_begin(black)) vk_frame_end(NULL);
 }
+
+#ifdef __ANDROID__
+void vk_wait_ready(void) {
+    while (!atomic_load(&ui_ready)) SDL_Delay(1);
+}
+#endif
 
 int ui_run(void) {
     ui_window_init();

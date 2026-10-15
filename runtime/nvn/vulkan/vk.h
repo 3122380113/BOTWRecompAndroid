@@ -26,6 +26,7 @@
 void vk_device_fault_report(void);
 #ifdef __ANDROID__
 void vk_android_load(void);  // android_driver.c: the Vulkan driver (adrenotools / system) into volk
+void vk_wait_ready(void);    // device.c: until the device exists (the window's thread makes it)
 #endif
 #define VK_CHECK(x) do { VkResult r_ = (x); if (r_ != VK_SUCCESS) { if (r_ == VK_ERROR_DEVICE_LOST) vk_device_fault_report(); \
     FATAL("%s failed: %d (%s:%d)\n", #x, r_, __FILE__, __LINE__); } } while (0)
@@ -42,6 +43,10 @@ typedef struct {
     VkSemaphore timeline;      // value = last completed submission number
     VkCommandPool pool;        // render thread only
     bool custom_border, divisor, host_import;
+#ifdef __ANDROID__
+    bool map_placed;              // VK_EXT_map_memory_placed: the guest heap mapped as GPU memory (exec.c vk_heap_place)
+    uint64_t placed_align;
+#endif
     // window
     VkSurfaceKHR surface;
     VkSwapchainKHR swapchain;

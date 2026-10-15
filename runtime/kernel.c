@@ -576,6 +576,13 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         heap_size = size;
         region_remove(HEAP_BASE);
         if (size) region_add(HEAP_BASE, size, 5, 3);
+#ifdef __ANDROID__
+        {   // the heap as GPU memory where the driver allows it (nvn/vulkan/exec.c vk_heap_place), before the game writes it
+            extern bool vk_heap_place(uint64_t size);
+            LOG("[kernel] SetHeapSize %llu MB\n", (unsigned long long)(size >> 20));
+            vk_heap_place(size);
+        }
+#endif
         x[0] = R_OK;
         x[1] = HEAP_BASE;
         break;
