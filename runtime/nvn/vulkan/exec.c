@@ -1233,6 +1233,30 @@ static void save_glsl(const char *src, uint64_t addr, const char *suffix) {
     if (f) { fputs(src, f); fclose(f); }
 }
 
+#ifdef __ANDROID__
+// LARECOMP_SHADER_SUBST=<folder>: a translated shader replaced by <folder>/<code address>_<vs|fs>.glsl when there is
+// one (the names build/glsl uses), for measuring a hand-edited variant in the game (GPU times, LARECOMP_SHADER_STATS)
+static void subst_glsl(ShaderInfo *si, uint64_t addr, const char *suffix) {
+    const char *dir = getenv("LARECOMP_SHADER_SUBST");
+    if (!dir || !si || !si->msl) return;
+    char path[512];
+    snprintf(path, sizeof path, "%s/%llx_%s.glsl", dir, (unsigned long long)addr, suffix);
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *s = n > 0 ? malloc((size_t)n + 1) : NULL;
+    if (s && fread(s, 1, (size_t)n, f) == (size_t)n) {
+        s[n] = 0;
+        free(si->msl);
+        si->msl = s;
+        LOG("[shader] %s substituted\n", path);
+    } else free(s);
+    fclose(f);
+}
+#endif
+
 static void compile_program(void *arg) {
     Prog *p = arg;
     size_t nv = 0, nf = 0;
@@ -1297,6 +1321,8 @@ static void translate_program(void *arg) {
             }
         }
     }
+    subst_glsl(p->vi, p->code[0], "vs");
+    subst_glsl(p->fi, p->code[1], "fs");
 #endif
     p->vs_uses_vid = strstr(p->vi->msl, "gl_VertexIndex") != NULL;
     save_glsl(p->vi->msl, p->code[0], "vs");
@@ -1595,11 +1621,42 @@ static void build_pipeline(void *arg) {
                                        .pStages = stages, .pVertexInputState = &vi, .pInputAssemblyState = &ia, .pViewportState = &vs,
                                        .pRasterizationState = &rs, .pMultisampleState = &ms, .pDepthStencilState = &ds,
                                        .pColorBlendState = &cb, .pDynamicState = &dy, .layout = k->prog->layout};
+#ifdef __ANDROID__
+    if (g_vk.exec_stats) pi.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
+#endif
     VkResult r = vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, &pp->pipe);
     if (r != VK_SUCCESS) {
         static int n;
         if (n++ < 10) LOG("[vk] pipeline creation failed: %d\n", r);
     }
+#ifdef __ANDROID__
+    if (r == VK_SUCCESS && g_vk.exec_stats) {  // (LARECOMP_SHADER_STATS) one line per compiled stage
+        uint64_t fsh = hmix(1469598103934665603ull, (const void *)(uintptr_t)(k->prog->code[1] + 0x30), 0x200);
+        VkPipelineInfoKHR pinfo = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR, .pipeline = pp->pipe};
+        VkPipelineExecutablePropertiesKHR props[4];
+        uint32_t ne = 4;
+        for (uint32_t e = 0; e < 4; e++) props[e] = (VkPipelineExecutablePropertiesKHR){.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_PROPERTIES_KHR};
+        if (vkGetPipelineExecutablePropertiesKHR(g_vk.dev, &pinfo, &ne, props) >= 0) {
+            for (uint32_t e = 0; e < ne; e++) {
+                VkPipelineExecutableInfoKHR ei = {.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INFO_KHR, .pipeline = pp->pipe, .executableIndex = e};
+                VkPipelineExecutableStatisticKHR sts[32];
+                uint32_t ns = 32;
+                for (uint32_t q = 0; q < 32; q++) sts[q] = (VkPipelineExecutableStatisticKHR){.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_STATISTIC_KHR};
+                if (vkGetPipelineExecutableStatisticsKHR(g_vk.dev, &ei, &ns, sts) < 0) continue;
+                char line[1024];
+                int o = snprintf(line, sizeof line, "[stats] fs %016llx vs %llx fs %llx %s:", (unsigned long long)fsh,
+                                 (unsigned long long)k->prog->code[0], (unsigned long long)k->prog->code[1], props[e].name);
+                for (uint32_t q = 0; q < ns && o < (int)sizeof line - 64; q++) {
+                    if (sts[q].format == VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_UINT64_KHR)
+                        o += snprintf(line + o, sizeof line - o, " %s=%llu", sts[q].name, (unsigned long long)sts[q].value.u64);
+                    else if (sts[q].format == VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_INT64_KHR)
+                        o += snprintf(line + o, sizeof line - o, " %s=%lld", sts[q].name, (long long)sts[q].value.i64);
+                }
+                LOG("%s\n", line);
+            }
+        }
+    }
+#endif
     atomic_fetch_add(&stat_compiles, 1);
     atomic_store(&pp->state, r == VK_SUCCESS ? 1 : 2);
 }

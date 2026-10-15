@@ -158,6 +158,10 @@ static void create_device(void) {
     if (fault) ext[n_ext++] = VK_EXT_DEVICE_FAULT_EXTENSION_NAME;
     g_fault_ext = fault;
 #ifdef __ANDROID__
+    // LARECOMP_SHADER_STATS=1: each graphics pipeline's compiled shaders described in the log (registers, waves,
+    // spills, instructions: exec.c build_pipeline), for finding what makes a translated shader slow on this GPU
+    g_vk.exec_stats = getenv("LARECOMP_SHADER_STATS") && has_ext(ep, ne, VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
+    if (g_vk.exec_stats) ext[n_ext++] = VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME;
     // the guest heap as GPU memory mapped at its own address (exec.c vk_heap_place; Turnip has it)
     g_vk.map_placed = has_ext(ep, ne, VK_EXT_MAP_MEMORY_PLACED_EXTENSION_NAME) && has_ext(ep, ne, VK_KHR_MAP_MEMORY_2_EXTENSION_NAME);
     if (g_vk.map_placed) {
@@ -241,6 +245,9 @@ static void create_device(void) {
             n_ext -= 2;  // (the two map extensions were the last added)
         }
     }
+    VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR pex = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR, .pipelineExecutableInfo = VK_TRUE};
+    if (g_vk.exec_stats) { pex.pNext = f.pNext; f.pNext = &pex; }
 #endif
     float prio = 1.0f;
     VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_vk.qfam,

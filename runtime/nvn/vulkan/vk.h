@@ -46,6 +46,7 @@ typedef struct {
 #ifdef __ANDROID__
     bool map_placed;              // VK_EXT_map_memory_placed: the guest heap mapped as GPU memory (exec.c vk_heap_place)
     uint64_t placed_align;
+    bool exec_stats;              // (Android, LARECOMP_SHADER_STATS=1) the compiler's statistics of each pipeline, logged
 #endif
     // window
     VkSurfaceKHR surface;
