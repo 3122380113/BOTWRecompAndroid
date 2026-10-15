@@ -152,7 +152,15 @@ GuestFn dispatch_lookup(uint64_t addr) {
 }
 
 // Small direct-mapped cache in front of the binary search
+#ifdef __ANDROID__
+// (larger, and indexed with higher pc bits folded in: functions 16 KB apart evicted each other - about a fifth of
+// rt_dispatch's samples were the binary search)
+#define DCACHE 16384
+#define DC_IDX(pc) ((unsigned)(((pc) >> 2) ^ ((pc) >> 16)) & (DCACHE - 1))
+#else
 #define DCACHE 4096
+#define DC_IDX(pc) ((unsigned)((pc) >> 2) & (DCACHE - 1))
+#endif
 typedef struct { uint64_t addr; GuestFn fn; } DcEnt;
 static __thread DcEnt dcache[DCACHE];
 #ifdef __ANDROID__
@@ -186,7 +194,7 @@ static GuestFn dispatch_slow(Cpu *c) {
         const char *s = loader_symbol_at(c->x[30], &off);
         FATAL("no function at %llx (lr=%llx %s+%llx)\n", pc, c->x[30], s ? s : "?", off);
     }
-    unsigned h = (unsigned)(pc >> 2) & (DCACHE - 1);
+    unsigned h = DC_IDX(pc);
 #ifdef __ANDROID__
     DcEnt *dc = dc_of(c);
     dc[h].addr = pc;
@@ -198,17 +206,32 @@ static GuestFn dispatch_slow(Cpu *c) {
     return f;
 }
 
+#ifdef __ANDROID__
+__attribute__((noinline)) static void dispatch_miss(Cpu *c) {
+    GuestFn f = dispatch_slow(c);
+    __attribute__((musttail)) return f(c);
+}
+#endif
+
 // Always tail-calls, so chains of indirect jumps don't grow the host stack.
+#ifdef __ANDROID__
+// (the hit path without a stack frame or stack protector: the miss and the TLS cache are dispatch_miss's)
+__attribute__((no_stack_protector))
+#endif
 void rt_dispatch(Cpu *c) {
-    unsigned h = (unsigned)(c->pc >> 2) & (DCACHE - 1);
+    unsigned h = DC_IDX(c->pc);
 #ifdef __ANDROID__
     KThread *t = c->thread;
-    const DcEnt *dc = t && t->dcache ? (const DcEnt *)t->dcache : dcache;
-    GuestFn f = dc[h].addr == c->pc ? dc[h].fn : dispatch_slow(c);
+    const DcEnt *dc;
+    if (__builtin_expect(t && (dc = t->dcache) && dc[h].addr == c->pc, 1)) {
+        GuestFn f = dc[h].fn;
+        __attribute__((musttail)) return f(c);
+    }
+    __attribute__((musttail)) return dispatch_miss(c);
 #else
     GuestFn f = dcache[h].addr == c->pc ? dcache[h].fn : dispatch_slow(c);
-#endif
     __attribute__((musttail)) return f(c);
+#endif
 }
 
 void guest_call(Cpu *c, uint64_t addr) {
