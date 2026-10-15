@@ -85,6 +85,8 @@ typedef struct {
     bool static_stacks;      // (maxwell_static_stacks) flow_to holds every SYNC / BRK / CONT target
     int32_t *flow_to;        // per instruction index: its resolved target pc (-1: never reached)
     bool structured;         // (maxwell_structured) the body is if / else / for, not the state machine
+    int nbrx;                // jump tables read from cbuf 1 (brx_table): each BRX's possible targets
+    struct { uint32_t at; int n; uint32_t t[256]; } brx[4];
 } Ctx;
 
 static uint64_t bits(uint64_t w, int lo, int n) { return (w >> lo) & ((n == 64) ? ~0ull : ((1ull << n) - 1)); }
@@ -1797,8 +1799,55 @@ static const char *glsl_sampler_type(const ShaderTexture *t) {
 // guarded forms may also fall through with the stack as it was. flow_to[i]: the target of the SYNC / BRK / CONT at i.
 // False (keep the stacks) when an instruction is reached with two different stacks, a stack under- or overflows, or
 // the program has a jump table or call / return.
+// (maxwell_brx_window) A BRX whose register was just loaded from cbuf 1 - the compiler's constants, stored after the
+// shader code (blob + max_size) - jumps through a table in it: every target is pc + 8 + imm + one of its words. All
+// its words that land on an instruction after the BRX become labels (a superset of the table's), and the list goes to
+// resolve_stacks / structure(). Without it every instruction is a label (the light list's compute shader: 354 blocks).
+static bool brx_table(Ctx *c, const uint64_t *code, size_t i, size_t end, const uint32_t *cb1, uint8_t *label) {
+    if (!cb1 || c->nbrx == 4) return false;
+    uint64_t w = code[i];
+    int ra = (int)bits(w, 8, 8);
+    if (ra == RZ) return false;
+    bool from_cb1 = false;
+    for (size_t k = i; k-- > 0;) {  // the nearest earlier write of ra, in straight code
+        if (k % 4 == 0) continue;
+        uint64_t wk = code[k];
+        uint32_t top = (uint32_t)(wk >> 52);
+        if ((top >= 0xe20 && top <= 0xe3f) || (wk & 0xfff8000000000000ull) == 0xf0f8000000000000ull) break;
+        if ((int)bits(wk, 0, 8) != ra) continue;
+        from_cb1 = (wk & 0xfff8000000000000ull) == 0xef90000000000000ull && bits(wk, 36, 5) == 1;
+        break;
+    }
+    if (!from_cb1) return false;
+    int64_t imm = sbits(w, 20, 24);
+    int n = 0;
+    uint32_t *t = c->brx[c->nbrx].t;
+    for (int j = 0; j < 1024; j++) {
+        uint32_t tt = (uint32_t)((int64_t)i * 8 + 8 + (int64_t)cb1[j] + imm);
+        if (((tt >> 3) & 3u) == 0u) tt += 8u;
+        if (tt & 7u || tt <= i * 8 || tt / 8 >= end) continue;
+        bool dup = false;
+        for (int q = 0; q < n && !dup; q++) dup = t[q] == tt;
+        if (dup) continue;
+        if (n == 256) return false;
+        int q = n++;
+        while (q > 0 && t[q - 1] > tt) { t[q] = t[q - 1]; q--; }  // (ascending)
+        t[q] = tt;
+    }
+    if (!n) return false;
+    c->brx[c->nbrx].at = (uint32_t)i, c->brx[c->nbrx].n = n;
+    c->nbrx++;
+    for (int q = 0; q < n; q++) label[t[q] / 8] = 1;
+    return true;
+}
+
+static int brx_of(const Ctx *c, size_t i) {
+    for (int b = 0; b < c->nbrx; b++) if (c->brx[b].at == i) return b;
+    return -1;
+}
+
 typedef struct { uint8_t n[3], seen; uint32_t v[3][16]; } FlowSt;
-static bool resolve_stacks(const uint64_t *code, size_t end, int32_t *flow_to) {
+static bool resolve_stacks(const Ctx *c, const uint64_t *code, size_t end, int32_t *flow_to) {
     FlowSt *st = calloc(end, sizeof *st);
     uint32_t *work = malloc(end * 2 * sizeof *work + 16);
     size_t nwork = 0;
@@ -1841,6 +1890,10 @@ static bool resolve_stacks(const uint64_t *code, size_t end, int32_t *flow_to) {
             FLOW_GO(to / 8, S);
         } else if (top == 0xe30) {  // EXIT
             if (cond) FLOW_GO(FLOW_NEXT(i), S);
+        } else if (top == 0xe25 && brx_of(c, i) >= 0) {  // BRX through a table: each target, with this stack
+            int b = brx_of(c, i);
+            for (int q = 0; q < c->brx[b].n; q++) FLOW_GO(c->brx[b].t[q] / 8, S);
+            if (cond) FLOW_GO(FLOW_NEXT(i), S);
         } else if (top >= 0xe20 && top <= 0xe3f && top != 0xe33) {  // BRX, CAL, RET, PRET, ... (KIL: 0xe33)
             ok = false;
         } else {
@@ -1860,8 +1913,9 @@ static bool resolve_stacks(const uint64_t *code, size_t end, int32_t *flow_to) {
 // branch over code is an if (with an else when the skipped part ends by jumping over what follows), a backward
 // branch closes a loop, and jumps to a loop's header or exit are continue / break. Anything else (a jump out of
 // nested ifs, out of two loops, into the middle of a region) fails, and the shader keeps the state machine.
-typedef struct { uint32_t s, e; int term, tgt; bool code; char cond[8]; } SBlk;  // term: 0 none, 1 jump, 2 exit
+typedef struct { uint32_t s, e; int term, tgt, brx; bool code; char cond[8]; } SBlk;  // term: 0 none, 1 jump, 2 exit, 3 BRX
 typedef struct {
+    const Ctx *c;
     const char *src;
     const uint32_t *us, *ue;
     const uint64_t *w;
@@ -1903,7 +1957,11 @@ static void st_code(SCtx *x, int k) {
         if (i % 4 && !x->skip[i]) sp(&x->out, "%.*s", (int)(x->ue[i] - x->us[i]), x->src + x->us[i]);
 }
 
-static void st_range(SCtx *x, int a, int end, int opened, int depth) {
+static void st_switch(SCtx *x, int k, int end, int depth);
+
+static void st_range_alt(SCtx *x, int a, int end, int opened, int depth, int alt);
+static void st_range(SCtx *x, int a, int end, int opened, int depth) { st_range_alt(x, a, end, opened, depth, -1); }
+static void st_range_alt(SCtx *x, int a, int end, int opened, int depth, int alt) {
     if (depth > 64) { x->fail = true; return; }
     for (int k = a; k < end && !x->fail;) {
         if (x->latch[k] >= 0 && k != opened) {  // a loop: [k, its last back edge]
@@ -1921,6 +1979,10 @@ static void st_range(SCtx *x, int a, int end, int opened, int depth) {
         SBlk *b = &x->b[k];
         st_code(x, k);
         if (!b->term || x->consumed[k]) { k++; continue; }
+        if (b->term == 3) {
+            st_switch(x, k, end, depth);
+            return;
+        }
         bool always = !strcmp(b->cond, "true");
         const char *j = st_jump(x, b->term == 2 ? -1 : b->tgt);
         if (x->fail) return;
@@ -1931,7 +1993,7 @@ static void st_range(SCtx *x, int a, int end, int opened, int depth) {
             continue;
         }
         int t = b->tgt;
-        if (t == end) {  // the rest of the region, when not taken
+        if (t == end || (alt >= 0 && t == alt)) {  // the rest of the region, when not taken
             if (always) {
                 if (k + 1 < end) x->fail = true;
                 return;
@@ -1969,9 +2031,39 @@ static void st_range(SCtx *x, int a, int end, int opened, int depth) {
     }
 }
 
+// A BRX through a table (block k): `bt` is its computed target, and each target starts a case running to the next
+// one (the last: to the region's end); a case must end in a jump or an EXIT, not run into the next. A target that is
+// none of them exits, as the state machine's default does.
+static void st_switch(SCtx *x, int k, int end, int depth) {
+    const Ctx *c = x->c;
+    int bx = x->b[k].brx;
+    uint64_t w = x->w[x->c->brx[bx].at];
+    int ra = (int)bits(w, 8, 8), n = c->brx[bx].n;
+    int tb[256];
+    for (int q = 0; q < n; q++) {
+        int ti = (int)(c->brx[bx].t[q] / 8), b = 0;
+        while (b < x->nb && x->b[b].s != (uint32_t)ti) b++;
+        tb[q] = b;
+        if (b >= end || b <= k) { x->fail = true; return; }
+    }
+    if (tb[0] != k + 1) { x->fail = true; return; }  // (code between the BRX and its first case)
+    char r[8];
+    if (ra == RZ) strcpy(r, "0u"); else snprintf(r, sizeof r, "r%d", ra);
+    sp(&x->out, "  { uint bt = %uu + %s + 0x%08xu; if (((bt >> 3) & 3u) == 0u) bt += 8u;\n", x->c->brx[bx].at * 8 + 8, r,
+       (uint32_t)sbits(w, 20, 24));
+    for (int q = 0; q < n && !x->fail; q++) {
+        int e = q + 1 < n ? tb[q + 1] : end;
+        SBlk *last = &x->b[e - 1];
+        if (q + 1 < n && !((last->term == 1 || last->term == 2) && !strcmp(last->cond, "true"))) { x->fail = true; return; }
+        sp(&x->out, "  %sif (bt == %uu) {\n", q ? "} else " : "", x->b[tb[q]].s * 8);
+        st_range_alt(x, tb[q], e, -1, depth + 1, end);
+    }
+    sp(&x->out, "  } else { %s }\n  }\n", st_jump(x, -1));
+}
+
 // Rewrites c->body (the state machine's, with per-instruction text in [us[i], ue[i])) as structured code.
 static bool structure(Ctx *c, const uint64_t *code, size_t end, const uint8_t *label, const uint32_t *us, const uint32_t *ue) {
-    SCtx x = {.src = c->body.buf, .us = us, .ue = ue, .w = code};
+    SCtx x = {.c = c, .src = c->body.buf, .us = us, .ue = ue, .w = code};
     x.skip = calloc(end + 1, 1);
     int *blk = malloc((end + 1) * sizeof *blk);
     x.b = calloc(end + 1, sizeof *x.b);
@@ -1999,8 +2091,17 @@ static bool structure(Ctx *c, const uint64_t *code, size_t end, const uint8_t *l
         bool bra = (w & 0xfff0000000000020ull) == 0xe240000000000000ull;
         bool pop = (w & 0xfff8000000000000ull) == 0xf0f8000000000000ull || top == 0xe34 || top == 0xe35;
         bool ex = top == 0xe30;
+        int bx = top == 0xe25 ? brx_of(c, i) : -1;
         prev_flow = false;
         if (push) { x.skip[i] = 1; continue; }
+        if (bx >= 0 && !(pr == PT && prn)) {
+            x.skip[i] = 1;
+            prev_flow = true;
+            if (pr != PT || prn) ok = false;  // (a guarded one: not handled)
+            b->term = 3, b->brx = bx, b->tgt = -1;
+            strcpy(b->cond, "true");
+            continue;
+        }
         if (!(bra || pop || ex) || (pr == PT && prn)) { b->code |= ue[i] > us[i]; continue; }  // (@!PT: never runs)
         x.skip[i] = 1;
         prev_flow = true;
@@ -2017,6 +2118,14 @@ static bool structure(Ctx *c, const uint64_t *code, size_t end, const uint8_t *l
         int ti = x.b[k].tgt;
         if (blk[ti] < 0 || x.b[blk[ti]].s != (uint32_t)ti) ok = false;  // (into the middle of a block)
         else x.b[k].tgt = blk[ti];
+    }
+    for (int k = 0; ok && k < nb; k++) {  // (a table's targets: block starts too)
+        if (x.b[k].term != 3) continue;
+        const uint32_t *t = c->brx[x.b[k].brx].t;
+        for (int q = 0; q < c->brx[x.b[k].brx].n && ok; q++) {
+            size_t ti = t[q] / 8;
+            if (blk[ti] < 0 || x.b[blk[ti]].s != (uint32_t)ti) ok = false;
+        }
     }
     for (int k = 0; ok && k < nb; k++)
         if (x.b[k].term == 1 && x.b[k].tgt <= k && k > x.latch[x.b[k].tgt]) x.latch[x.b[k].tgt] = k;
@@ -2231,7 +2340,9 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
             // (maxwell_brx_window) a jump table's targets lie between the BRX and the join of the PBK / SSY pushed
             // before it - how the compiler emits switches. Labels everywhere else split the straight code that
             // follows into blocks the GPU's compiler can't schedule (Adreno: an SSAO pass 20 ms instead of ~1)
-            if (maxwell_brx_window)
+            bool table = maxwell_brx_window && c->glsl && max_size < 0x10000 &&
+                         brx_table(c, (const uint64_t *)code, i, end, (const uint32_t *)(blob + max_size), label);
+            if (maxwell_brx_window && !table)
                 for (size_t k = i; k-- > 0;) {
                     if (k % 4 == 0) continue;
                     uint64_t wk = ((const uint64_t *)code)[k];
@@ -2240,7 +2351,8 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
                     int64_t t = norm_target((int64_t)k * 8 + 8 + sbits(wk, 20, 24));
                     if (t > (int64_t)pc && (size_t)(t / 8) < end) { hi = (size_t)(t / 8); break; }
                 }
-            if (hi) for (size_t k = i + 1; k <= hi; k++) label[k] = 1;
+            if (table) {}
+            else if (hi) for (size_t k = i + 1; k <= hi; k++) label[k] = 1;
             else memset(label, 1, end);
         }
         if ((w & 0xfff8000000000000ull) == 0xf0f8000000000000ull || (w & 0xfff0000000000000ull) == 0xe340000000000000ull ||
@@ -2255,7 +2367,7 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
     c->branchy = any_branch;
     if (c->glsl && any_branch && maxwell_static_stacks) {
         c->flow_to = malloc(end * sizeof *c->flow_to + 4);
-        c->static_stacks = c->flow_to && resolve_stacks((const uint64_t *)code, end, c->flow_to);
+        c->static_stacks = c->flow_to && resolve_stacks(c, (const uint64_t *)code, end, c->flow_to);
     }
     uint32_t *us = NULL, *ue = NULL;  // (maxwell_structured) each instruction's text in the body
     if (c->static_stacks && maxwell_structured) {
