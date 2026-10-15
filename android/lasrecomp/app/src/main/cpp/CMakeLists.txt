@@ -14,19 +14,7 @@ if(NOT LAS_GEN_DIR)
     message(FATAL_ERROR "LAS_GEN_DIR (the Gradle build's generated files: smaa_hlsl.inc) is not set")
 endif()
 
-# GAMELIB_ID (runtime/gamelib.h): what the game code is built from, as in the Makefile (the generator, the headers
-# the generated code is compiled against, and its flags), so lasgame.so and this library agree
-set(GAMELIB_FLAGS "-O1 -fno-strict-aliasing -Wno-return-type -Wno-unused-label -fvisibility=hidden -Iruntime -fPIC --dyn-base")
-set(GAMELIB_SRCS tools/gen.py tools/lifter.py tools/analyze.py tools/nso.py tools/passes.py tools/patches.py
-    tools/simd_c.py tools/rando/patch_variants.json tools/gamelib_entry.c runtime/hle/hle_symbols.txt
-    runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h)
-set(id_text "")
-foreach(f ${GAMELIB_SRCS})
-    file(READ ${R}/${f} t)
-    string(APPEND id_text "${t}")
-endforeach()
-string(SHA256 id "${id_text}${GAMELIB_FLAGS}")
-string(SUBSTRING ${id} 0 16 GAMELIB_ID)
+include(${R}/android/gamelib_id.cmake)  # (GAMELIB_ID: the same as lasgame.so's, android/gamelib)
 message(STATUS "GAMELIB_ID ${GAMELIB_ID}")
 
 add_subdirectory(${R}/third_party/libadrenotools ${CMAKE_BINARY_DIR}/adrenotools)
@@ -38,7 +26,17 @@ set_target_properties(shaderc_shared PROPERTIES IMPORTED_LOCATION ${DEPS}/lib/li
 
 file(GLOB RT_SRC ${R}/runtime/*.c ${R}/runtime/hle/*.c ${R}/runtime/services/*.c ${R}/runtime/nvn/*.c
      ${R}/runtime/nvn/maxwell/*.c)
-list(REMOVE_ITEM RT_SRC ${R}/runtime/hle/movie.c)  # (FFmpeg: Fase 2)
+# FFmpeg (android/deps/build_ffmpeg.sh): the game's movies and the start screen's background; without it, neither
+set(HAVE_FFMPEG FALSE)
+if(EXISTS ${DEPS}/lib/libavformat.so)
+    set(HAVE_FFMPEG TRUE)
+    foreach(l avcodec avformat avutil swscale)
+        add_library(${l} SHARED IMPORTED)
+        set_target_properties(${l} PROPERTIES IMPORTED_LOCATION ${DEPS}/lib/lib${l}.so)
+    endforeach()
+else()
+    list(REMOVE_ITEM RT_SRC ${R}/runtime/hle/movie.c)
+endif()
 file(GLOB VK_SRC ${R}/runtime/nvn/vulkan/*.c ${R}/runtime/nvn/vulkan/*.cpp)
 file(GLOB UI_SRC ${R}/runtime/ui/*.mm)
 set(IMGUI ${R}/third_party/imgui)
@@ -56,8 +54,12 @@ target_include_directories(main PRIVATE ${R}/runtime ${R}/runtime/nvn ${IMGUI} $
                            ${DEPS}/volk ${LAS_GEN_DIR} ${R}/third_party/smaa/Textures ${R}/android/common)
 target_compile_definitions(main PRIVATE
     VK_NO_PROTOTYPES VK_USE_PLATFORM_ANDROID_KHR IMGUI_IMPL_VULKAN_USE_VOLK   # Vulkan from the loaded driver (volk)
-    VMA_STATIC_VULKAN_FUNCTIONS=0 VMA_DYNAMIC_VULKAN_FUNCTIONS=1
-    LARECOMP_NO_FFMPEG)
+    VMA_STATIC_VULKAN_FUNCTIONS=0 VMA_DYNAMIC_VULKAN_FUNCTIONS=1)
+if(HAVE_FFMPEG)
+    target_link_libraries(main PRIVATE avcodec avformat avutil swscale)
+else()
+    target_compile_definitions(main PRIVATE LARECOMP_NO_FFMPEG)
+endif()
 target_compile_options(main PRIVATE -fno-strict-aliasing -Wall -Wno-unused-function -Wno-format  # (as on Linux: %llx for uint64_t)
    
     $<$<COMPILE_LANGUAGE:CXX>:-std=c++17>)

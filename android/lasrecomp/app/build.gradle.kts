@@ -46,7 +46,8 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = true  // adrenotools loads its hooks from nativeLibraryDir
-            pickFirsts += listOf("**/libSDL3.so", "**/libshaderc_shared.so")
+            pickFirsts += listOf("**/libSDL3.so", "**/libshaderc_shared.so", "**/libavcodec.so", "**/libavformat.so",
+                                 "**/libavutil.so", "**/libswscale.so")
         }
     }
 
@@ -69,7 +70,9 @@ val prepareLasRecomp by tasks.registering {
     val smaa = repo.resolve("third_party/smaa/SMAA.hlsl")
     val font = repo.resolve("third_party/fonts/Baloo2/Baloo2-SemiBold.ttf")
     val icon = repo.resolve("docs/icon/icon_1024.png")
-    inputs.files(smaa, font, icon, deps.resolve("lib/libSDL3.so"), deps.resolve("lib/libshaderc_shared.so"))
+    val libs = listOf("libSDL3.so", "libshaderc_shared.so", "libavcodec.so", "libavformat.so", "libavutil.so", "libswscale.so")
+    inputs.files(smaa, font, icon)
+    inputs.files(libs.map { deps.resolve("lib/$it") }.filter { it.exists() })
     outputs.dir(gen)
     doLast {
         val out = gen.get().asFile
@@ -79,9 +82,10 @@ val prepareLasRecomp by tasks.registering {
         val inc = lines.joinToString("") { "\"" + it.replace("\\", "\\\\").replace("\"", "\\\"") + "\\n\"\n" }
         out.resolve("inc").mkdirs()
         out.resolve("inc/smaa_hlsl.inc").writeText(inc)
-        for (lib in listOf("libSDL3.so", "libshaderc_shared.so"))
-            deps.resolve("lib/$lib").copyTo(out.resolve("jniLibs/arm64-v8a/$lib"), overwrite = true)
+        for (lib in libs)  // (FFmpeg's only once android/deps/build_ffmpeg.sh made them)
+            if (deps.resolve("lib/$lib").exists()) deps.resolve("lib/$lib").copyTo(out.resolve("jniLibs/arm64-v8a/$lib"), overwrite = true)
         font.copyTo(out.resolve("assets/res/Baloo2-SemiBold.ttf"), overwrite = true)
+        deps.resolve("fonts/DejaVuSans.ttf").copyTo(out.resolve("assets/res/DejaVuSans.ttf"), overwrite = true)
         icon.copyTo(out.resolve("assets/res/icon.png"), overwrite = true)
         icon.copyTo(out.resolve("res/mipmap-xxxhdpi/ic_launcher.png"), overwrite = true)
     }

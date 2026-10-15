@@ -3,7 +3,9 @@
 // - the shipped resources (assets/res: the start screen's font, the icon) copied to <internal files>/res;
 // - the Vulkan driver: the first driver in <external files>/drivers (a .so, or an adrenotools .zip: Turnip), copied to
 //   internal storage (dlopen refuses external storage) and named in LARECOMP_VK_DRIVER; none there = the system's;
-// - LARECOMP_NATIVE_LIB_DIR: where adrenotools finds its hook libraries.
+// - LARECOMP_NATIVE_LIB_DIR: where adrenotools finds its hook libraries;
+// - the game code (lasgame.so + lasgame.so.id, built from the player's own game files: android/build_gamelib.sh) from
+//   <external files>/extracted to <internal files>/res, where runtime/gamelib.c looks for it next to "the executable".
 // The data root (game files, saves, settings) is <external files>: /sdcard/Android/data/com.lasrecomp.android/files.
 package com.lasrecomp;
 
@@ -36,10 +38,22 @@ public class LASRecompActivity extends SDLActivity {
     @Override
     protected void onCreate(Bundle state) {
         try {
-            copyAssets("res", new File(getFilesDir(), "res"));
+            File res = new File(getFilesDir(), "res");
+            copyAssets("res", res);
+            File games = new File(getExternalFilesDir(null), "extracted");
+            copyIfChanged(new File(games, "lasgame.so"), new File(res, "lasgame.so"));
+            copyIfChanged(new File(games, "lasgame.so.id"), new File(res, "lasgame.so.id"));
             setenv("LARECOMP_NATIVE_LIB_DIR", getApplicationInfo().nativeLibraryDir);
             File driver = customDriver();
             setenv("LARECOMP_VK_DRIVER", driver != null ? driver.getAbsolutePath() : "");
+            // testing: the runtime's LARECOMP_* switches from the launch intent,
+            // e.g. adb shell am start -n com.lasrecomp.android/com.lasrecomp.LASRecompActivity --es env "LARECOMP_NO_LAUNCHER=1"
+            String env = getIntent() != null ? getIntent().getStringExtra("env") : null;
+            if (env != null)
+                for (String kv : env.trim().split("\\s+")) {
+                    int eq = kv.indexOf('=');
+                    if (eq > 0) setenv(kv.substring(0, eq), kv.substring(eq + 1));
+                }
         } catch (IOException | ErrnoException e) {
             Log.e(TAG, "setup: " + e);
         }
@@ -47,6 +61,16 @@ public class LASRecompActivity extends SDLActivity {
         // SDL's own immersive full screen (no status / navigation bar, the camera cutout used): SDL's onCreate asks
         // for the windowed style, and keeps the bars hidden once its full screen mode is on
         setWindowStyle(true);
+    }
+
+    // (by size and date: the game code is ~100 MB)
+    private static void copyIfChanged(File src, File dst) throws IOException {
+        if (!src.exists()) return;
+        if (dst.exists() && dst.length() == src.length() && dst.lastModified() >= src.lastModified()) return;
+        try (InputStream in = new FileInputStream(src)) {
+            copy(in, dst);
+        }
+        Log.i(TAG, "copied " + src + " -> " + dst);
     }
 
     private static void setenv(String name, String value) throws ErrnoException {

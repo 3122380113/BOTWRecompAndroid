@@ -2,7 +2,8 @@
 # android/deps/build_deps.sh: what the Android app links against, from pinned sources (the versions of
 # tools/linux/build_deps.sh where both have them) into android/deps/out for arm64-v8a:
 #   SDL3 (shared, plus its Java glue), shaderc (one shared library, glslang and SPIRV-Tools inside), and the headers
-#   Vulkan-Headers, Vulkan Memory Allocator and volk (the Vulkan functions come from the driver adrenotools loads).
+#   Vulkan-Headers, Vulkan Memory Allocator and volk (the Vulkan functions come from the driver adrenotools loads),
+#   and the DejaVu Sans font.
 # FFmpeg is not here yet (docs/ANDROID-PORT.md, Fase 2).
 # Runs in Git Bash on Windows (or any bash) with the Android SDK's NDK and CMake; each part is skipped when its output
 # exists (delete out/ to redo).
@@ -41,6 +42,15 @@ fetch https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/
       c4f6bbe6b5a45c2eb610ca9d231158e313086d5b1a40c9922cb42b597419b14e VulkanMemoryAllocator-3.3.0.tar.gz
 fetch https://github.com/zeux/volk/archive/refs/tags/vulkan-sdk-1.4.350.1.tar.gz \
       078a9411298e4e0f60f5f5398c890783427c25a414619294ca8e69587bbd5eae volk-1.4.350.1.tar.gz
+fetch https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/dejavu-fonts-ttf-2.37.tar.bz2 \
+      fa9ca4d13871dd122f61258a80d01751d603b4d3ee14095d65453b4e846e17d7 dejavu-fonts-ttf-2.37.tar.bz2
+
+# DejaVu Sans: the system font substitute when the player hasn't imported the Switch's (runtime/hle/pl.c; the one
+# Linux uses - Android's Roboto lacks glyphs the game asks for)
+if [ ! -f "$P/fonts/DejaVuSans.ttf" ]; then
+    unpack dejavu-fonts-ttf-2.37.tar.bz2 dejavu
+    mkdir -p "$P/fonts" && cp "$W/dejavu/ttf/DejaVuSans.ttf" "$P/fonts/" && cp "$W/dejavu/LICENSE" "$P/fonts/DejaVu-LICENSE.txt"
+fi
 
 # headers: Vulkan (the backend's, newer than the NDK's), VMA, volk (built into the app: volk.c next to volk.h)
 if [ ! -f "$P/include/vulkan/vulkan_core.h" ]; then
