@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "gamelib.h"
 #include "paths.h"
 #include "settings.h"
 #include "hle.h"
@@ -129,6 +130,8 @@ static void boot(const char *root) {
     snprintf(npdm_path, sizeof npdm_path, "%s/main.npdm", exefs);
     if (!g_romfs_dir) g_romfs_dir = strdup(romfs);
 
+    char why[512];
+    if (!gamelib_load(root, why, sizeof why)) FATAL("%s\n", why);
     loader_load(exefs);
     rando_boot();  // the chosen seed's data patches go into the freshly loaded module
     { extern void settings_load(void); settings_load(); }

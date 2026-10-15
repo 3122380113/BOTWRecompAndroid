@@ -874,9 +874,12 @@ void renderer_save_texture_alpha(id<MTLTexture> tex, const char *path) {
     CGImageRef img = CGBitmapContextCreateImage(ctx);
     CFURLRef url = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)path, strlen(path), false);
     CGImageDestinationRef dest = CGImageDestinationCreateWithURL(url, (__bridge CFStringRef)UTTypePNG.identifier, 1, NULL);
-    CGImageDestinationAddImage(dest, img, NULL);
-    CGImageDestinationFinalize(dest);
-    CFRelease(dest); CFRelease(url); CGImageRelease(img); CGContextRelease(ctx); CGColorSpaceRelease(cs);
+    if (dest) {  // (NULL: the folder isn't there)
+        CGImageDestinationAddImage(dest, img, NULL);
+        CGImageDestinationFinalize(dest);
+        CFRelease(dest);
+    }
+    CFRelease(url); CGImageRelease(img); CGContextRelease(ctx); CGColorSpaceRelease(cs);
     free(a);
     LOG("[metal] saved alpha %s (%lux%lu, max %u)\n", path, (unsigned long)w, (unsigned long)h, amax);
 }
@@ -927,9 +930,12 @@ void renderer_save_texture(id<MTLTexture> tex, const char *path) {
     CGImageRef img = CGBitmapContextCreateImage(ctx);
     CFURLRef url = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)path, strlen(path), false);
     CGImageDestinationRef dest = CGImageDestinationCreateWithURL(url, (__bridge CFStringRef)UTTypePNG.identifier, 1, NULL);
-    CGImageDestinationAddImage(dest, img, NULL);
-    CGImageDestinationFinalize(dest);
-    CFRelease(dest); CFRelease(url); CGImageRelease(img); CGContextRelease(ctx); CGColorSpaceRelease(cs);
+    if (dest) {  // (NULL: the folder isn't there)
+        CGImageDestinationAddImage(dest, img, NULL);
+        CGImageDestinationFinalize(dest);
+        CFRelease(dest);
+    }
+    CFRelease(url); CGImageRelease(img); CGContextRelease(ctx); CGColorSpaceRelease(cs);
     free(px);
     LOG("[metal] saved %s (%lux%lu)\n", path, (unsigned long)w, (unsigned long)h);
 }

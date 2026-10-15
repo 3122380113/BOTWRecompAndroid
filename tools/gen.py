@@ -496,7 +496,9 @@ def main():
     ap.add_argument('base', type=lambda s: int(s, 0))
     ap.add_argument('outdir')
     ap.add_argument('--hle')
-    ap.add_argument('--chunk', type=int, default=1500)
+    ap.add_argument('--chunk', type=int, default=1500)  # functions per file at most
+    ap.add_argument('--chunk-bytes', type=int, default=1500000)  # and about this much C (even compile times)
+    ap.add_argument('--big-fn', type=int, default=100000)  # bytes of C from which a function gets its own file
     ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--simd', choices=('asm', 'c'),
                     default='asm' if platform.machine().lower() in ('arm64', 'aarch64') else 'c')
@@ -570,20 +572,44 @@ def main():
     if args.limit:
         order = order[:args.limit]
     nchunks = 0
-    for ci in range(0, len(order), args.chunk):
-        body, refs = [], set()
-        for a in order[ci:ci + args.chunk]:
-            end, labels, tables = entries[a]
-            body += m.emit_function(a, end, labels, tables, hle)
-            refs |= getattr(m, '_refs', set())
-            m._refs = set()
+    ci = 0
+    pending = None  # (address, lines, refs) of a big function that starts the next file
+    while ci < len(order) or pending:
+        body, refs, size, fns = [], set(), 0, []
+        while (pending or ci < len(order)) and len(fns) < args.chunk and size < args.chunk_bytes:
+            if pending:
+                a, lines, r = pending
+                pending = None
+            else:
+                a = order[ci]
+                ci += 1
+                end, labels, tables = entries[a]
+                lines = m.emit_function(a, end, labels, tables, hle)
+                r = getattr(m, '_refs', set())
+                m._refs = set()
+            n = sum(len(l) + 1 for l in lines)
+            if n > args.big_fn and fns:  # (a big function gets a file of its own: they compile in parallel)
+                pending = (a, lines, r)
+                break
+            body += lines
+            size += n
+            fns.append(a)
+            refs |= r
+            if n > args.big_fn:
+                break
         path = os.path.join(args.outdir, f'{args.name}_{nchunks:03d}.c')
         text = ['#include "cpu.h"\n' + ('#include "simd.h"\n' if m.lifter.sc else '')]
         text += [f'void {fname(r)}(Cpu *c);\n' for r in sorted(refs)]
-        text += [f'void {sanitize(hle[a])}(Cpu *c);\n' for a in sorted(set(hle) & set(order[ci:ci + args.chunk]))]
+        text += [f'void {sanitize(hle[a])}(Cpu *c);\n' for a in sorted(set(hle) & set(fns))]
         text += ['\n'.join(body), '\n']
         write_if_changed(path, ''.join(text))
         nchunks += 1
+        # (the start screen's setup reads these for its progress bar: runtime/gamebuild.c)
+        print(f'{args.name}: progress {ci}/{len(order)} files {nchunks}', file=sys.stderr, flush=True)
+    for fn in os.listdir(args.outdir):  # an earlier run's extra chunks
+        mm = re.fullmatch(re.escape(args.name) + r'_(\d{3})\.c', fn)
+        if mm and int(mm.group(1)) >= nchunks:
+            os.remove(os.path.join(args.outdir, fn))
     import io
     with io.StringIO() as f:
         f.write('#include "cpu.h"\n')

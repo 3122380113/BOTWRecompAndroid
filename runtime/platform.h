@@ -23,6 +23,10 @@ bool plat_reserve_guest(uint64_t lo, uint64_t hi);
 void plat_commit(uint64_t addr, uint64_t size);
 // In-place reboot: every page of [lo, hi) back to zero (and unbacked), the window still claimed.
 bool plat_reset_guest(uint64_t lo, uint64_t hi);
+// Pages of [addr, addr+size) in the guest window the CPU wrote since the last call over them (write tracking: Windows
+// MEM_WRITE_WATCH), their addresses into pages[] (at most max), and the tracking reset for the range. Returns the
+// count (max: maybe more), or -1 where there is no tracking (macOS, Linux). Page size: *page.
+int plat_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, int max, uint64_t *page);
 enum { PLAT_PROT_NONE = 0, PLAT_PROT_READ = 1, PLAT_PROT_RW = 3 };
 int plat_protect(uint64_t addr, uint64_t size, int prot);  // 0 on success
 #define PLAT_PAGE 0x4000ull  // largest page size we deal with (macOS 16K; multiple of Windows' 4K)
@@ -44,6 +48,7 @@ void plat_terminate(void);  // end the process now, skipping DLL teardown (exit 
 typedef intptr_t PlatProc;  // 0 = failed to start
 PlatProc plat_spawn(const char *const argv[], const char *log_path, bool append_log);
 int plat_proc_wait(PlatProc p, bool block);  // exit code, or -1 while still running (block = false)
+void plat_proc_kill(PlatProc p);             // end it and what it started (then it's gone: no wait)
 bool plat_remove_tree(const char *dir);      // rm -rf
 #ifdef _WIN32
 #define PLAT_EXE_SUFFIX ".exe"

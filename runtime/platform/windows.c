@@ -37,13 +37,29 @@ static LONG CALLBACK vectored_handler(EXCEPTION_POINTERS *ep) {
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
+// The window keeps write tracking (MEM_WRITE_WATCH: the Vulkan renderer's vertex / index cache re-copies only pages the
+// CPU wrote, runtime/nvn/vulkan/exec.c). Without it (refused): no tracking, the renderer reads guest memory in place.
+static bool g_write_watch;
+
 bool plat_reserve_guest(uint64_t lo, uint64_t hi) {
-    void *p = VirtualAlloc((void *)(uintptr_t)lo, hi - lo, MEM_RESERVE, PAGE_READWRITE);
+    void *p = VirtualAlloc((void *)(uintptr_t)lo, hi - lo, MEM_RESERVE | MEM_WRITE_WATCH, PAGE_READWRITE);
+    if (p == (void *)(uintptr_t)lo) g_write_watch = true;
+    else p = VirtualAlloc((void *)(uintptr_t)lo, hi - lo, MEM_RESERVE, PAGE_READWRITE);
     if (p != (void *)(uintptr_t)lo) return false;
     g_lo = lo;
     g_hi = hi;
     AddVectoredExceptionHandler(1, vectored_handler);
     return true;
+}
+
+int plat_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, int max, uint64_t *page) {
+    if (!g_write_watch || addr < g_lo || addr + size > g_hi || max <= 0) return -1;
+    ULONG_PTR n = (ULONG_PTR)max;
+    DWORD gran = 4096;
+    if (GetWriteWatch(WRITE_WATCH_FLAG_RESET, (void *)(uintptr_t)addr, (SIZE_T)size, (PVOID *)pages, &n, &gran) != 0) return -1;
+    *page = gran;
+    if (n >= (ULONG_PTR)max) ResetWriteWatch((void *)(uintptr_t)addr, (SIZE_T)size);  // (more than fit: caller takes all)
+    return (int)n;
 }
 
 // Decommit everything: the range stays reserved, and pages come back zeroed when committed again (lazily).
@@ -329,21 +345,38 @@ PlatProc plat_spawn(const char *const argv[], const char *log_path, bool append_
     MultiByteToWideChar(CP_UTF8, 0, argv[0], -1, wprog, MAX_PATH);
     for (wchar_t *p = wprog; *p; p++) if (*p == L'/') *p = L'\\';
     const wchar_t *app = GetFullPathNameW(wprog, MAX_PATH, wfull, NULL) ? wfull : NULL;
-    BOOL ok = CreateProcessW(app, wcmd, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
+    BOOL ok = CreateProcessW(app, wcmd, NULL, NULL, TRUE, CREATE_NO_WINDOW | CREATE_SUSPENDED, NULL, NULL, &si, &pi);
     if (!ok) fprintf(stderr, "[plat] could not start %s (error %lu)\n", argv[0], GetLastError());
     CloseHandle(log);
     if (!ok) return 0;
+    // every child in one job that ends with this process (a compiler's own children too: no leftovers on quit)
+    static HANDLE job;
+    if (!job && (job = CreateJobObjectW(NULL, NULL))) {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION li = {0};
+        li.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        SetInformationJobObject(job, JobObjectExtendedLimitInformation, &li, sizeof li);
+    }
+    if (job) AssignProcessToJobObject(job, pi.hProcess);
+    ResumeThread(pi.hThread);
     CloseHandle(pi.hThread);
     return (PlatProc)pi.hProcess;
 }
 
+void plat_proc_kill(PlatProc p) {  // (what it started ends with this process: the job above)
+    TerminateProcess((HANDLE)p, 255);
+    WaitForSingleObject((HANDLE)p, INFINITE);
+    CloseHandle((HANDLE)p);
+}
+
 int plat_proc_wait(PlatProc p, bool block) {
     HANDLE h = (HANDLE)p;
-    if (WaitForSingleObject(h, block ? INFINITE : 0) != WAIT_OBJECT_0) return -1;
+    DWORD w = WaitForSingleObject(h, block ? INFINITE : 0);
+    if (w == WAIT_TIMEOUT) return -1;
+    if (w != WAIT_OBJECT_0) return 255;  // (not a process we can wait for: ended as far as the caller is concerned)
     DWORD code = 255;
     GetExitCodeProcess(h, &code);
     CloseHandle(h);
-    return (int)code;
+    return code > 255 ? 255 : (int)code;  // (a crash's NTSTATUS, e.g. 0xC0000409, is not "still running" (-1))
 }
 
 bool plat_remove_tree(const char *dir) {

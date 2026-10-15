@@ -1400,7 +1400,50 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         static const char *const ld_small[] = {"uint(gmem[ga])", "uint(int(char(gmem[ga])))",
                                                "uint(*(device ushort *)(gmem + ga))", "uint(int(*(device short *)(gmem + ga)))"};
         int nw = size == 5 ? 2 : size >= 6 ? 4 : 1;
-        if (c->glsl) {  // gmem_.w[]: 32-bit words; sub-word accesses within the containing word
+        if (c->glsl && c->stage == STAGE_COMPUTE) {
+            // Compute (Vulkan): the guest heap is host memory across PCIe on a discrete GPU, and a shader storing to
+            // it in a loop crawls (the little chain chomps in Madam MeowMeow's house: ~4 ms a dispatch, ~0.07 ms without
+            // the heap stores). The dispatch's storage buffers are copied to a device-local buffer (gfast_, address
+            // table gmap: exec.c gfast_prepare) and back after it: loads and stores inside them use that copy.
+            // Anything outside the table goes to the heap as before.
+            c->info->uses_gmem_map = true;
+            static const char *const gl_small[] = {
+                "(%s >> (uint(ga & 3ul) * 8u)) & 0xFFu", "uint(sx8(%s >> (uint(ga & 3ul) * 8u)))",
+                "(%s >> (uint(ga & 2ul) * 8u)) & 0xFFFFu", "uint(sx16(%s >> (uint(ga & 2ul) * 8u)))"};
+            sp(&c->body, "      uint fw = ok ? gfind(uint(ga)) : 0xFFFFFFFFu;\n");
+            if (!store) {
+                if (size < 4) {
+                    if (d != RZ) {
+                        char fast[160], slow[160];
+                        snprintf(fast, sizeof fast, gl_small[size], "gfast_.w[fw]");
+                        snprintf(slow, sizeof slow, gl_small[size], "gmem_.w[uint(ga >> 2)]");
+                        c->reg_used[d] = 1;
+                        sp(&c->body, "      r%d = fw != 0xFFFFFFFFu ? %s : ok ? %s : 0u;\n", d, fast, slow);
+                    }
+                } else {
+                    for (int k = 0; k < nw; k++)
+                        if (d != RZ && d + k < RZ) {
+                            c->reg_used[d + k] = 1;
+                            sp(&c->body, "      r%d = fw != 0xFFFFFFFFu ? gfast_.w[fw + %du] : ok ? gmem_.w[uint(ga >> 2) + %du] : 0u;\n",
+                               d + k, k, k);
+                        }
+                }
+            } else {
+                c->uses_gmem_store = true;
+                c->info->uses_gmem_store = true;
+                if (size < 4) {
+                    uint32_t m = size < 2 ? 0xFFu : 0xFFFFu;
+                    const char *bm = size < 2 ? "3ul" : "2ul";
+                    sp(&c->body, "      if (ok) { uint sh = uint(ga & %s) * 8u; uint v = (%s & 0x%xu) << sh;\n", bm, R(d), m);
+                    sp(&c->body, "        if (fw != 0xFFFFFFFFu) { atomicAnd(gfast_.w[fw], ~(0x%xu << sh)); atomicOr(gfast_.w[fw], v); }\n", m);
+                    sp(&c->body, "        else { atomicAnd(gmem_.w[uint(ga >> 2)], ~(0x%xu << sh)); atomicOr(gmem_.w[uint(ga >> 2)], v); } }\n", m);
+                } else {
+                    for (int k = 0; k < nw; k++)
+                        sp(&c->body, "      if (fw != 0xFFFFFFFFu) gfast_.w[fw + %du] = %s; else if (ok) gmem_.w[uint(ga >> 2) + %du] = %s;\n", k,
+                           R(d == RZ ? RZ : d + k), k, R(d == RZ ? RZ : d + k));
+                }
+            }
+        } else if (c->glsl) {  // gmem_.w[]: 32-bit words; sub-word accesses within the containing word
             static const char *const gl_small[] = {
                 "(gmem_.w[uint(ga >> 2)] >> (uint(ga & 3ul) * 8u)) & 0xFFu",
                 "uint(sx8(gmem_.w[uint(ga >> 2)] >> (uint(ga & 3ul) * 8u)))",
@@ -1759,6 +1802,13 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     if (info->uses_gmem)
         sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GMem { uint w[]; } gmem_;\n", set, GMEM_BUFFER_INDEX,
            c->uses_gmem_store ? "" : "readonly ");
+    if (info->uses_gmem_map) {  // (compute) the dispatch's storage buffers, device-local: gmap[i] = heap offset, size, word
+        sp(&s, "layout(std140, set = %d, binding = %d) uniform GMap { uvec4 gmap[%d]; };\n", set, GMAP_BUFFER_INDEX, GMAP_MAX + 1);
+        sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GFast { uint w[]; } gfast_;\n", set, GFAST_BUFFER_INDEX,
+           c->uses_gmem_store ? "" : "readonly ");
+        sp(&s, "uint gfind(uint g) { uint n = gmap[%d].x; for (uint i = 0u; i < n; i++) { uint o = g - gmap[i].x; "
+               "if (g >= gmap[i].x && o < gmap[i].y) return gmap[i].z + (o >> 2); } return 0xFFFFFFFFu; }\n", GMAP_MAX);
+    }
     if (c->uses_rscale && stage != STAGE_VERTEX) {
         sp(&s, "layout(std140, set = %d, binding = 18) uniform RScale { vec4 rscale[%d]; };\n", set,
            key && key->flip_x ? 66 : 65);  // ([65]: mirror mode's render target width)

@@ -37,6 +37,8 @@ extern "C" {
 #include <libswscale/swscale.h>
 #include "platform.h"
 #include "paths.h"
+#include "gamebuild.h"
+#include "gamelib.h"
 #include "romfs_build.h"
 #include "settings.h"
 #include "input_bind.h"
@@ -83,7 +85,7 @@ static void save_png(id<MTLTexture> tex, const char *path) {
 static const uint8_t BUILD_ID[8] = {0xae, 0x16, 0xf7, 0x1e, 0x00, 0x2a, 0xf8, 0xcb};  // Link's Awakening v1.0.0 main
 // The release tag this build is (also names the release files; Makefile / tools/bundle_macos.sh / make_dmg.sh read
 // it): beta_<n> until 1.0, then v<major>.<minor>.<patch>.
-#define LARECOMP_VERSION "beta_2"
+#define LARECOMP_VERSION "beta_3"
 
 // ------------------------------------------------------------------ update check
 // The start screen asks GitHub for the project's releases once per launch (a background curl, which macOS and
@@ -166,8 +168,8 @@ static bool file_exists(const std::string &p) {
     return stat(p.c_str(), &st) == 0;
 }
 
-// "" = ready, else what is wrong
-static std::string check_game_files(const std::string &root) {
+// The copied game files alone ("" = there), without the game code built from them
+static std::string check_copied_files(const std::string &root) {
     FILE *f = fopen((root + "/exefs/main").c_str(), "rb");
     if (!f) return "No game files";
     uint8_t id[8] = {0};
@@ -177,6 +179,13 @@ static std::string check_game_files(const std::string &root) {
     if (n != 8 || memcmp(id, BUILD_ID, 8)) return "Wrong game version (needs v1.0.0)";
     if (!file_exists(root + "/romfs/region_common") || !file_exists(root + "/romfs.bin")) return "Game data missing";
     return "";
+}
+
+// "" = ready to play, else what is wrong
+static std::string check_game_files(const std::string &root) {
+    std::string why = check_copied_files(root);
+    if (why.empty() && !gamelib_present(root.c_str())) return "Game code not built yet";
+    return why;
 }
 
 // ------------------------------------------------------------------ setup (background thread)
@@ -198,19 +207,21 @@ static void set_job(const std::string &s, bool failed = false, const std::string
     pthread_mutex_unlock(&g_lock);
 }
 
-// Setup failures: a short headline and what to do next (also LARECOMP_LAUNCHER_SHOT=<f>:fail<1-5>, screenshots)
-enum { FAIL_NOT_FOUND = 1, FAIL_UNUSABLE, FAIL_COPY, FAIL_VERSION, FAIL_MISSING };
+// Setup failures: a short headline and what to do next (also LARECOMP_LAUNCHER_SHOT=<f>:fail<1-6>, screenshots)
+enum { FAIL_NOT_FOUND = 1, FAIL_UNUSABLE, FAIL_COPY, FAIL_VERSION, FAIL_MISSING, FAIL_BUILD };
 static void set_failure(int k) {
     static const char *const head[] = {"", "No game files found in that folder", "Those files can't be used",
-                                       "Setup didn't finish", "Wrong version of the game", "Game files incomplete"};
+                                       "Setup didn't finish", "Wrong version of the game", "Game files incomplete",
+                                       "The game code didn't build"};
     static const char *const hint[] = {
         "",
         "Choose the folder that holds the game files.",
         "Choose the folder that holds the game files.",
         "Make sure there's about 12 GB free and try again.",
         "LAS Recomp needs version 1.0.0 of the game, without updates.",
-        "Some files are missing. Choose the folder again; if it happens again, dump the game again."};
-    if (k >= 1 && k <= 5) set_job(head[k], true, hint[k]);
+        "Some files are missing. Choose the folder again; if it happens again, dump the game again.",
+        "Make sure there's about 2 GB free and try again. If it keeps happening, report it on Discord or GitHub."};
+    if (k >= 1 && k <= 6) set_job(head[k], true, hint[k]);
 }
 
 static bool is_dir(const std::string &p) {
@@ -252,13 +263,34 @@ static bool build_id_ok(const std::string &main_path) {
 
 // progress (the overlay's bar): the romfs copy, then the image build - each about the size of romfs/
 static std::atomic<unsigned long long> g_done, g_total;
+// The bar: copying and the data image are the first tenth, building the game code (runtime/gamebuild.c) the rest
 static unsigned long long g_phase_base;
+static std::atomic<float> g_build_frac{-1};  // -1: not building
+static bool g_copy_skipped;                  // (only the game code to build: the bar is all of that)
 static void setup_progress(uint64_t done, uint64_t) { g_done = g_phase_base + done; }
+static void build_progress(double f, const char *step) {
+    g_build_frac = (float)f;
+    static const char *last;
+    if (step != last) last = step, set_job(step);
+}
 static float extract_progress(void) {
     unsigned long long t = g_total, d = g_done;
-    if (!t) return 0;
-    float f = (float)((double)d / (double)t);
+    float b = g_build_frac, f = b >= 0 ? (g_copy_skipped ? b : 0.1f + 0.9f * b) : t ? 0.1f * (float)((double)d / (double)t) : 0;
     return f < 0 ? 0 : f > 0.99f ? 0.99f : f;
+}
+
+// Builds the game code from the copied files (a few minutes); false = failed (the job line says so)
+static bool build_game_code(void) {
+    int cores = SDL_GetNumLogicalCPUCores(), ram_gb = SDL_GetSystemRAM() / 1024;
+    GameBuildOpts o = {build_progress, cores < ram_gb - 2 ? cores : ram_gb - 2 > 1 ? ram_gb - 2 : 1};
+    char why[256] = "";
+    g_build_frac = 0;
+    bool ok = gamebuild_run(g_root.c_str(), &o, why, sizeof why);
+    if (!ok) {
+        fprintf(stderr, "[launcher] game code: %s\n", why);
+        set_failure(FAIL_BUILD);
+    }
+    return ok;
 }
 
 static void *extract_thread(void *) {
@@ -266,9 +298,14 @@ static void *extract_thread(void *) {
     pthread_mutex_lock(&g_lock);
     src = g_src;
     pthread_mutex_unlock(&g_lock);
-    g_done = 0, g_total = 0, g_phase_base = 0;
+    g_done = 0, g_total = 0, g_phase_base = 0, g_build_frac = -1, g_copy_skipped = false;
     std::string exefs, romfs;
     bool unusable = false;  // (game packages rather than its files)
+    if (src.empty() && check_copied_files(g_root).empty()) {  // copied already (an update needs new game code)
+        g_copy_skipped = true;
+        if (!build_game_code()) goto done;
+        goto check;
+    }
     set_job("Looking for the game files...");
     find_game(src, 0, exefs, romfs, unusable);
     if (exefs.empty() || romfs.empty()) { set_failure(unusable ? FAIL_UNUSABLE : FAIL_NOT_FOUND); goto done; }
@@ -300,7 +337,9 @@ static void *extract_thread(void *) {
             set_failure(FAIL_COPY);
             goto done;
         }
+        if (!build_game_code()) goto done;
     }
+check:
     {
         std::string why = check_game_files(g_root);
         if (why.empty()) set_job("Game files ready.");
@@ -895,6 +934,14 @@ extern "C" void launcher_run(const char *root) {
         fprintf(stderr, "[launcher] setup: %s -> %s\n", g_job.c_str(), check_game_files(g_root).empty() ? "READY" : "NOT READY");
         exit(0);
     }
+    if (const char *t = getenv("LARECOMP_LAUNCHER_SETUP")) {  // (test) <folder>: Set up started on the start screen
+        g_src = t;
+        g_busy = true;
+        page = SETUP;
+        pthread_t th;
+        pthread_create(&th, NULL, extract_thread, NULL);
+        pthread_detach(th);
+    }
     if (getenv("LARECOMP_LAUNCHER_DELETE")) {  // (test) what DELETE GAME FILES does, logged; then the start screen
         double gb = rt_game_files_size(g_root.c_str()) / 1e9;
         bool ok = rt_remove_game_files(g_root.c_str());
@@ -1233,8 +1280,8 @@ extern "C" void launcher_run(const char *root) {
                 if (!src.empty()) src_d += "\n\nChosen: " + src;
                 // the step that's running / its result, under the rows and in the Set up row's explanation
                 const std::string &job_line = job;
-                std::string ex_d = "Copies the game files LAS Recomp needs, once: a few minutes. Your own files aren't "
-                                   "changed.";
+                std::string ex_d = "Copies the game files LAS Recomp needs and recompiles the game from them. This only "
+                                   "needs to be done once and may take a while. Your own files aren't changed.";
                 if (!job.empty()) ex_d += "\n\n" + job + (job_hint.empty() ? "" : ".\n" + job_hint);
 
                 // the controller's cursor starts on the first row (not the X), a few frames while the window lays out
@@ -1253,7 +1300,7 @@ extern "C" void launcher_run(const char *root) {
                     check_left_of_value(src_v);
                     first_row();
                     opt_section("Set up");
-                    if (busy || src.empty()) opt_disable_next();
+                    if (busy || (src.empty() && !check_copied_files(g_root).empty())) opt_disable_next();
                     if (opt_action("Set up game files", busy ? "Working..." : "", ex_d.c_str(), true)) {
                         pthread_mutex_lock(&g_lock);
                         g_busy = true;
@@ -1318,11 +1365,19 @@ extern "C" void launcher_run(const char *root) {
                     ImVec2 o = ImGui::GetMainViewport()->Pos;
                     fg->AddRectFilled(o, ImVec2(o.x + ds.x, o.y + ds.y), IM_COL32(0, 0, 0, 170));
                     float f = test_busy ? 0.42f : extract_progress();
-                    const char *title = "Setting up the game files";
+                    // (while the game code is built: what's happening, on whose files - runtime/gamebuild.c)
+                    bool recompiling = g_build_frac >= 0;
+                    const char *title = recompiling ? "Recompiling the game" : "Setting up the game files";
+                    static const char *const notes[] = {"This only needs to be done once and may take a while."};
+                    int nnotes = recompiling ? 1 : 0;
                     float tfs = g_font_menu->FontSize * 0.75f, sfs = g_font_small->FontSize * 0.85f;
                     ImVec2 ts = g_font_menu->CalcTextSizeA(tfs, FLT_MAX, 0, title);
+                    float line_h = g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, "A").y;
                     float pw = fminf(ds.x * 0.6f, 900 * sc), bar_y = 36 * sc + ts.y + 30 * sc;
-                    float ph = bar_y + 24 * sc + 26 * sc + g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, "A").y + 40 * sc;
+                    for (int i = 0; i < nnotes; i++)  // (wide enough for its text, within the window)
+                        pw = fmaxf(pw, g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, notes[i]).x + 96 * sc);
+                    pw = fminf(fmaxf(pw, ts.x + 96 * sc), ds.x - 32 * sc);
+                    float ph = bar_y + 24 * sc + 26 * sc + line_h + (nnotes ? 14 * sc + nnotes * line_h : 0) + 40 * sc;
                     ImVec2 a(o.x + (ds.x - pw) * 0.5f, o.y + (ds.y - ph) * 0.5f), b(a.x + pw, a.y + ph);
                     fg->AddRectFilled(a, b, IM_COL32(15, 23, 20, 250), 14 * sc);
                     fg->AddRect(a, b, IM_COL32(236, 194, 84, 140), 14 * sc, 0, 1.5f * sc);
@@ -1335,6 +1390,11 @@ extern "C" void launcher_run(const char *root) {
                              (int)(f * 100));
                     ImVec2 ls = g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, line);
                     fg->AddText(g_font_small, sfs, ImVec2((a.x + b.x - ls.x) * 0.5f, bb.y + 26 * sc), IM_COL32(220, 216, 205, 255), line);
+                    for (int i = 0; i < nnotes; i++) {
+                        ImVec2 ns = g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, notes[i]);
+                        fg->AddText(g_font_small, sfs, ImVec2((a.x + b.x - ns.x) * 0.5f, bb.y + 26 * sc + (i + 1) * line_h + 14 * sc),
+                                    IM_COL32(150, 148, 140, 255), notes[i]);
+                    }
                 }
             }
 

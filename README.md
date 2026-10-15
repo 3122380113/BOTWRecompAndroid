@@ -1,9 +1,5 @@
 # LAS Recomp
 
-> [!CAUTION]
-> **Releases have been pulled to address an urgent issue.** Beta 3 will be released addressing it as soon as possible.
-> See [issue #6](https://github.com/peiikai/LASRecomp/issues/6) for more details.
-
 > [!IMPORTANT]
 > **This project was made almost exclusively with AI.** Nearly all of the code, tooling, reverse engineering and
 > documentation in this repository was written by and will be maintained by an AI (Anthropic's Claude, through Claude Code),
@@ -26,10 +22,10 @@ native Windows, macOS and Linux application.
 ![Mabe Village in a 21:9 window: the unlocked aspect ratio shows more of the island](docs/ultrawide.jpg)
 
 > [!NOTE]
-> **No game files are included.** LAS Recomp needs your own legally obtained copy of the game files of
+> **No game files are included.** LAS Recomp needs your own legally obtained copy of the extracted game files of
 > *Link's Awakening* **v1.0.0**. Instructions on how to obtain these files will **NOT** be provided.
-> On first launch the start screen sets up what it needs from them. No game files, assets or fonts are included.
-> The screenshot shows the start screen after extraction; no Nintendo artwork is included until provided by the user.
+> On first launch the app sets up what it needs, including the actual recompilation locally. No game files, assets or fonts are included.
+> The screenshot shows the start screen after setup; no Nintendo artwork is included until provided by the user.
 
 ![The start screen: choose vanilla or a randomizer seed, set up your game files, settings](docs/start_screen.jpg)
 
@@ -119,8 +115,10 @@ This is a beta release. That means bugs are likely, crashes could occur, randomi
 ## Building from source
 
 Every platform needs your own v1.0.0 game files: build first, then use the start screen's game-file setup.
-`make gen` then recompiles the game code from your own game files into `generated/`; without it the build runs the
-start screen only.
+`make gen` then recompiles the game code from your own game files into `generated/`, and `make` builds it into its own
+library next to the app (`build/lasgame.*`); without it the start screen builds that library itself, as it does for
+players. Release builds hold none of the game's code: the start screen builds it on each player's machine from their
+own game files, with the bundled generator (`make gen-helper`) and compiler (`tools/fetch_zig.sh`).
 
 ### macOS
 
@@ -132,7 +130,8 @@ Python 3.12.
    `python3.12 -m venv venv && venv/bin/pip install -r requirements.txt`.
 3. Run: `./build/lasrecomp extracted` (start screen) or `./build/lasrecomp extracted --play` (straight into the game).
 4. Package: `make deps` (once: SDL3, FFmpeg, keystone and Python from pinned sources, built for macOS 15),
-   `make rando-helper` (the seed generator as a standalone helper, so players need no Python), then `make app` ->
+   `make rando-helper` (the seed generator as a standalone helper, so players need no Python), `make gen-helper` and
+   `tools/fetch_zig.sh` (what the start screen builds the game code with), then `make app` ->
    `build/LAS Recomp.app` (macOS 15+, Apple Silicon) and `make dmg` -> `build/dist/LAS Recomp-<version>-macOS.dmg`.
 
 ### Windows
@@ -201,23 +200,30 @@ none of their files are used):
   bootloader exception, which allows distributing the packed program). The helper bundles CPython (PSF License),
   oead / evfl (GPL 2.0+), [Keystone](https://www.keystone-engine.org) (GPL 2.0; Python bindings BSD), quicktex
   (LGPL 3), Pillow (MIT-CMU), PyYAML (MIT) and appdirs (MIT)
-- [Capstone](https://www.capstone-engine.org) - disassembly in the development tools
+- [Zig](https://ziglang.org) - its C compiler (`zig cc`: Clang and LLD) builds the game code on the player's
+  machine during setup (MIT; LLVM, Clang, LLD: Apache 2.0 with LLVM exceptions)
+- The game code generator (`tools/gen.py`) is packed by PyInstaller into a standalone helper too. It bundles CPython,
+  [Capstone](https://www.capstone-engine.org) (BSD 3-clause; disassembly), [Unicorn](https://www.unicorn-engine.org)
+  (GPL 2.0; Python bindings BSD; runs small pieces of code to resolve jump tables) and
+  [python-lz4](https://github.com/python-lz4/python-lz4) (BSD 3-clause, with the LZ4 library: BSD 2-clause)
 - [envytools](https://github.com/envytools/envytools) - NVIDIA GPU documentation used for the shader translator
 - The Switch homebrew community's documentation ([Switchbrew](https://switchbrew.org))
 
 ## Legal
 
 LAS Recomp is a fan project. It is not affiliated with, endorsed by or sponsored by Nintendo. *The Legend of Zelda*
-and *Link's Awakening* are trademarks of Nintendo. No game files, assets or fonts are included - not in this
-repository and not in release builds. You must provide your own legally obtained copy of the game files to play.
+and *Link's Awakening* are trademarks of Nintendo. No game files, game code, assets or fonts are included - not in
+this repository and not in release builds. You must provide your own legally obtained copy of the game files to play.
 
 ## License
 
 LAS Recomp's own code (the recompiler tools, the runtime, the randomizer additions) is open source under the
 [MIT License](LICENSE). Third-party components keep their own licenses: LAS-Randomizer (MIT), Dear ImGui (MIT),
-Vulkan Memory Allocator (MIT), SMAA (MIT), AMD FSR 1 (MIT), the Baloo 2 font (SIL OFL 1.1), SDL 3 (zlib), FFmpeg (LGPL 2.1+, linked dynamically), and the seed generator
-helper's bundled libraries listed under Credits (oead / evfl / Keystone are GPL 2.0+: the helper is a separate program
-the game runs, and its sources are this repository plus those projects' published sources). The license covers LAS Recomp's code only - it grants
+Vulkan Memory Allocator (MIT), SMAA (MIT), AMD FSR 1 (MIT), the Baloo 2 font (SIL OFL 1.1), SDL 3 (zlib), FFmpeg (LGPL 2.1+, linked dynamically), the
+Zig compiler (MIT; its LLVM / Clang / LLD: Apache 2.0 with LLVM exceptions; its C library headers keep their own
+licenses), and the generator helpers' bundled libraries listed under Credits (oead / evfl / Keystone in the seed
+generator and Unicorn in the game code generator are under the GPL, versions in the table below: each helper is a separate program the game runs, and its
+sources are this repository plus those projects' published sources). The license covers LAS Recomp's code only - it grants
 nothing for Nintendo's game, which you must supply yourself.
 
 ### Source code of bundled third-party components
@@ -230,8 +236,12 @@ Release builds include these components; their source code for the exact version
 | oead (seed generator) | 1.3.0 | GPL 2.0+ | https://github.com/zeldamods/oead/releases/tag/v1.3.0 |
 | evfl (seed generator) | 1.2.0 | GPL 2.0+ | https://github.com/zeldamods/evfl/releases/tag/v1.2.0 |
 | quicktex (seed generator) | 0.2.1 | LGPL 3.0 | https://github.com/drewcassidy/quicktex/releases/tag/v0.2.1 |
-| PyInstaller (packs the seed generator) | 6.22.3 | GPL 2.0+ with bootloader exception | https://github.com/pyinstaller/pyinstaller/releases/tag/v6.22.3 |
-| CPython (seed generator) | 3.12.14 (macOS), 3.12.10 (Windows), 3.12.15 (Linux) | PSF | https://github.com/python/cpython/releases/tag/v3.12.14, https://github.com/python/cpython/releases/tag/v3.12.10, https://github.com/python/cpython/releases/tag/v3.12.15 |
+| PyInstaller (packs the seed and game code generators) | 6.22.3 | GPL 2.0+ with bootloader exception | https://github.com/pyinstaller/pyinstaller/releases/tag/v6.22.3 |
+| CPython (seed and game code generators) | 3.12.14 (macOS), 3.12.10 (Windows), 3.12.15 (Linux) | PSF | https://github.com/python/cpython/releases/tag/v3.12.14, https://github.com/python/cpython/releases/tag/v3.12.10, https://github.com/python/cpython/releases/tag/v3.12.15 |
+| Zig (builds the game code during setup; includes LLVM, Clang, LLD) | 0.17.0 | MIT; LLVM: Apache 2.0 with LLVM exceptions | https://ziglang.org/download/0.17.0/zig-0.17.0.tar.xz |
+| Capstone (game code generator) | 5.0.9 | BSD 3-clause | https://pypi.org/project/capstone/5.0.9/ |
+| Unicorn (game code generator) | 2.1.4 | GPL 2.0 (Python bindings: BSD) | https://pypi.org/project/unicorn/2.1.4/, https://github.com/unicorn-engine/unicorn |
+| python-lz4 (game code generator; includes LZ4) | 4.4.5 | BSD 3-clause; LZ4: BSD 2-clause | https://pypi.org/project/lz4/4.4.5/ |
 | FFmpeg (LGPL configuration, macOS, Windows and Linux builds) | 9.0.2 | LGPL 2.1+ | https://ffmpeg.org/releases/ |
 | SDL 3 | 3.4.18 (macOS, Windows), 3.4.16 (Linux) | zlib | https://github.com/libsdl-org/SDL/releases/tag/release-3.4.18, https://github.com/libsdl-org/SDL/releases/tag/release-3.4.16 |
 | shaderc (Windows, Linux: GLSL to SPIR-V; Linux: with glslang, SPIRV-Tools inside) | 2026.4 (Windows), 2026.3 (Linux) | Apache 2.0 | https://github.com/google/shaderc |

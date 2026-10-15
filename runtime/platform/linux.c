@@ -43,6 +43,11 @@ bool plat_reset_guest(uint64_t lo, uint64_t hi) {
 
 void plat_commit(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
 
+int plat_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, int max, uint64_t *page) {  // (no write tracking)
+    (void)addr; (void)size; (void)pages; (void)max; (void)page;
+    return -1;
+}
+
 int plat_protect(uint64_t addr, uint64_t size, int prot) {
     int p = prot == PLAT_PROT_NONE ? PROT_NONE : prot == PLAT_PROT_READ ? PROT_READ : PROT_READ | PROT_WRITE;
     return mprotect((void *)(uintptr_t)addr, size, p);
@@ -230,10 +235,20 @@ PlatProc plat_spawn(const char *const argv[], const char *log_path, bool append_
     posix_spawn_file_actions_addopen(&fa, 1, log_path ? log_path : "/dev/null",
                                      O_WRONLY | O_CREAT | (append_log ? O_APPEND : O_TRUNC), 0644);
     posix_spawn_file_actions_adddup2(&fa, 1, 2);
+    posix_spawnattr_t at;  // (its own process group: plat_proc_kill ends what it starts, e.g. a compiler's own child)
+    posix_spawnattr_init(&at);
+    posix_spawnattr_setflags(&at, POSIX_SPAWN_SETPGROUP);
+    posix_spawnattr_setpgroup(&at, 0);
     pid_t pid;
-    int rc = posix_spawn(&pid, argv[0], &fa, NULL, (char *const *)argv, environ);
+    int rc = posix_spawn(&pid, argv[0], &fa, &at, (char *const *)argv, environ);
+    posix_spawnattr_destroy(&at);
     posix_spawn_file_actions_destroy(&fa);
     return rc ? 0 : (PlatProc)pid;
+}
+
+void plat_proc_kill(PlatProc p) {
+    kill(-(pid_t)p, SIGKILL);
+    waitpid((pid_t)p, NULL, 0);
 }
 
 int plat_proc_wait(PlatProc p, bool block) {
