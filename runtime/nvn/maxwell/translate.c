@@ -1835,7 +1835,7 @@ static bool resolve_stacks(const uint64_t *code, size_t end, int32_t *flow_to) {
             uint32_t to = S.v[k][S.n[k] - 1];
             flow_to[i] = (int32_t)to;
             if (cond) FLOW_GO(FLOW_NEXT(i), S);
-            if (k != 2) S.n[k]--;
+            if (k != 2) S.v[k][--S.n[k]] = 0;  // (cleared: states are compared whole)
             FLOW_GO(to / 8, S);
         } else if (top == 0xe30) {  // EXIT
             if (cond) FLOW_GO(FLOW_NEXT(i), S);
