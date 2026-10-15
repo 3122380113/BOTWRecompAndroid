@@ -2802,7 +2802,22 @@ static void draw_(CmdRec *r, bool indexed) {
         uint64_t fs = st.program->stages[1].code_addr;
         if (fs != last_fs) {
             last_fs = fs;
+#ifdef __ANDROID__
+            // (memoized per shader address, checked against a copy of its bytes: the byte-serial hash on every
+            // fragment-shader change was ~40% of draw_)
+            static struct { uint64_t addr, hash; uint8_t code[0x200]; } fsh[64];
+            const void *code = (const void *)(uintptr_t)(fs + 0x30);
+            unsigned i = (unsigned)(fs >> 8) & 63;
+            if (!fs) last_hash = 0;
+            else if (fsh[i].addr == fs && !memcmp(fsh[i].code, code, 0x200)) last_hash = fsh[i].hash;
+            else {
+                last_hash = hmix(1469598103934665603ull, code, 0x200);
+                fsh[i].addr = fs, fsh[i].hash = last_hash;
+                memcpy(fsh[i].code, code, 0x200);
+            }
+#else
             last_hash = fs ? hmix(1469598103934665603ull, (const void *)(uintptr_t)(fs + 0x30), 0x200) : 0;
+#endif
         }
         static uint64_t skip[16];
         static int nskip = -1;
@@ -2887,8 +2902,21 @@ static void draw_(CmdRec *r, bool indexed) {
     k.a2c = st.ms[0xC] != 0;
     k.topo_class = cls;
     k.poly_fill = st.poly[2] != 1;
+#ifdef __ANDROID__
+    // (consecutive draws mostly share their pipeline: a compare instead of the serial hash of the ~700-byte key)
+    static PipeKey last_k;
+    static uint64_t last_ph;
+    uint64_t ph;
+    if (last_ph && !memcmp(&k, &last_k, sizeof k)) ph = last_ph;
+    else {
+        ph = hash_words(0xcbf29ce484222325ull, &k, sizeof k);
+        if (!ph) ph = 1;
+        last_k = k, last_ph = ph;
+    }
+#else
     uint64_t ph = hash_words(0xcbf29ce484222325ull, &k, sizeof k);
     if (!ph) ph = 1;
+#endif
     uint32_t pslot = (uint32_t)(ph ^ (ph >> 29)) & (PIPE_TAB - 1);
     while (pipe_tab[pslot].key && pipe_tab[pslot].key != ph) pslot = (pslot + 1) & (PIPE_TAB - 1);
     Pipe *pp = pipe_tab[pslot].pipe;
