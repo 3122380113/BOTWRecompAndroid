@@ -160,10 +160,10 @@ static int vk_counter_mode(void) {
 extern __thread uint64_t g_blocked_ns;  // kernel.c: this thread's time blocked in waits / sleeps
 static bool pace_slow;
 static uint64_t stat_pace_over;
+static int pace_on = -1;
 
 void vk_pace_frame(void) {
-    static int on = -1;
-    if (on < 0) { const char *e = getenv("LARECOMP_PACE"); on = !e || atoi(e) != 0; }
+    if (pace_on < 0) { const char *e = getenv("LARECOMP_PACE"); pace_on = !e || atoi(e) != 0; }
     static uint64_t last, last_wait;
     static uint8_t over[60];
     static int idx, nover, calm;
@@ -183,7 +183,7 @@ void vk_pace_frame(void) {
     nover += o - over[idx];
     over[idx] = (uint8_t)o;
     idx = (idx + 1) % 60;
-    if (!on) return;  // (measured and counted all the same: LARECOMP_LOG_PACE, the stats)
+    if (!pace_on) return;  // (measured and counted all the same: LARECOMP_LOG_PACE, the stats)
 #ifdef __ANDROID__
     // Trials: a 30 fps frame carries more of the game's CPU work than a 60 fps one, so the headroom test below rarely
     // passes there - one hitch (a pipeline compile) kept the overworld at 30 for good. Every probe_wait seconds at
@@ -223,8 +223,24 @@ void vk_pace_frame(void) {
 }
 
 // a pair's end counter (the 16 bytes after its start) is at least PACE_SLOW_NS after it while pace_slow
+#ifdef __ANDROID__
+// LARECOMP_FAST_COUNTERS=1 (a test): at most PACE_FAST_NS after it otherwise, so the game always tries its 60 fps
+// mode and the pacer alone brings the 30 back. In the overworld its 60 fps frames averaged 10.5 ms busy, but 4.5%
+// went over 16 ms in bursts: slow motion (the game steps its world once per frame), which the game's own threshold
+// (it keeps 30 there at ~13-14 ms of GPU a frame) avoids. So by default the game chooses from the real times.
+#define PACE_FAST_NS 8000000ull
+#endif
 static uint64_t pace_end_counter(const uint64_t *start_entry, const uint64_t *entry, uint64_t value) {
-    if (!pace_slow || !start_entry || (const uint8_t *)entry - (const uint8_t *)start_entry != 16) return value;
+    if (!start_entry || (const uint8_t *)entry - (const uint8_t *)start_entry != 16) return value;
+#ifdef __ANDROID__
+    static int fast = -1;
+    if (fast < 0) fast = getenv("LARECOMP_FAST_COUNTERS") != NULL;
+    if (!pace_slow && pace_on > 0 && fast) {
+        uint64_t max = start_entry[1] + ns_to_gpu_ticks(PACE_FAST_NS);
+        return value > max ? max : value;
+    }
+#endif
+    if (!pace_slow) return value;
     uint64_t min = start_entry[1] + ns_to_gpu_ticks(PACE_SLOW_NS);
     return value < min ? min : value;
 }
