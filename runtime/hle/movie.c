@@ -544,6 +544,12 @@ static void dec_stop(Cpu *c) {
 
 static uint64_t n_acq_in, n_send, n_acq_out, n_get_out, n_rel_out, n_frames;
 static void movie_stats(void) {
+#ifdef __ANDROID__
+    // (LARECOMP_LOG_MOVIE=1 only: the title movie loops, and these lines pushed everything else out of logcat's buffer)
+    static int on = -1;
+    if (on < 0) on = getenv("LARECOMP_LOG_MOVIE") != NULL;
+    if (!on) return;
+#endif
     static uint64_t last;
     uint64_t now = n_acq_in + n_send + n_acq_out + n_rel_out;
     if (now / 200 != last / 200)
