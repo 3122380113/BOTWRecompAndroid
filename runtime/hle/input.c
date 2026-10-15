@@ -61,6 +61,13 @@ static void recompute_pad(void) {
     uint64_t b = 0;
     for (int i = 0; i < BIND_PAD_COUNT; i++)
         if (g_bind_pad[i] >= 0 && g_bind_pad[i] < PADB_HOST_COUNT && (host >> g_bind_pad[i] & 1)) b |= 1ull << i;
+    {   // LARECOMP_LOG_PAD=1 (debugging a controller): the host buttons (SDL_GamepadButton bits) and what they become
+        static int log_pad = -1;
+        static uint32_t last_host;
+        if (log_pad < 0) log_pad = getenv("LARECOMP_LOG_PAD") != NULL;
+        if (log_pad && host != last_host) LOG("[input] pad host %#x -> switch %#llx\n", host, (unsigned long long)b);
+        last_host = host;
+    }
     pad_buttons = b;
     if (!pad || host_test) { pad_lx = test_lx, pad_ly = test_ly, pad_rx = pad_ry = 0; return; }
     pad_lx = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX);

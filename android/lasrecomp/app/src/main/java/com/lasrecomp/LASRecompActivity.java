@@ -46,11 +46,12 @@ public class LASRecompActivity extends SDLActivity {
             setenv("LARECOMP_NATIVE_LIB_DIR", getApplicationInfo().nativeLibraryDir);
             File driver = customDriver();
             setenv("LARECOMP_VK_DRIVER", driver != null ? driver.getAbsolutePath() : "");
-            // testing: the runtime's LARECOMP_* switches from the launch intent,
-            // e.g. adb shell am start -n com.lasrecomp.android/com.lasrecomp.LASRecompActivity --es env "LARECOMP_NO_LAUNCHER=1"
+            // testing: the runtime's LARECOMP_* switches from the launch intent, separated by commas (adb shell drops
+            // the quotes around spaces), e.g. LARECOMP_VK_DRIVER= is the system driver:
+            // adb shell am start -n com.lasrecomp.android/com.lasrecomp.LASRecompActivity --es env LARECOMP_NO_LAUNCHER=1,LARECOMP_VK_DRIVER=
             String env = getIntent() != null ? getIntent().getStringExtra("env") : null;
             if (env != null)
-                for (String kv : env.trim().split("\\s+")) {
+                for (String kv : env.trim().split("[,\\s]+")) {
                     int eq = kv.indexOf('=');
                     if (eq > 0) setenv(kv.substring(0, eq), kv.substring(eq + 1));
                 }

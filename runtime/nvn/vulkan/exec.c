@@ -73,6 +73,13 @@ static void wait_account(uint64_t ns) {
 
 static void cq_resolve_done(uint64_t done);
 
+#ifdef __ANDROID__
+static bool gcopy_mode;   // (no heap import: global memory copied by the CPU, gcopy_prepare)
+static VkSpan gc_span;    // this draw's / dispatch's copy, gc_size bytes (0: none)
+static uint64_t gc_size;
+static void gcopy_retire(uint64_t done);
+#endif
+
 void vk_wait_seq(uint64_t seq) {
     if (!seq) { wait_why = NULL; return; }
     VkSemaphoreWaitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &g_vk.timeline,
@@ -84,6 +91,9 @@ void vk_wait_seq(uint64_t seq) {
     wait_account(SDL_GetTicksNS() - t0);
     if (r == VK_TIMEOUT) LOG("[vk] GPU did not finish submission %llu within 10 s (device lost?)\n", (unsigned long long)seq);
     else if (r == VK_SUCCESS) cq_resolve_done(seq);  // (the game reads its timing counters after waiting)
+#ifdef __ANDROID__
+    if (r == VK_SUCCESS) gcopy_retire(seq);
+#endif
     else {
         extern void vk_devlost_dump(void);
         vk_devlost_dump();
@@ -498,6 +508,9 @@ VkSpan vk_transient(uint64_t size, uint64_t align) {
         }
     }
     uint64_t done = vk_completed_seq();
+#ifdef __ANDROID__
+    gcopy_retire(done);  // (copies back out of chunks about to be reused)
+#endif
     int pick = -1;
     for (int i = 0; i < nchunks; i++)
         if (i != active && chunks[i].seq <= done && chunks[i].size >= size) { pick = i; break; }
@@ -787,6 +800,10 @@ static void st_defaults(void) {
 
 void vk_exec_init(void) {
     prof = getenv("LARECOMP_VK_PROF") != NULL;
+#ifdef __ANDROID__
+    gcopy_mode = !g_vk.host_import && !getenv("LARECOMP_VK_NO_GCOPY");
+    if (gcopy_mode) LOG("[vk] no heap import: shader global memory through CPU copies\n");
+#endif
     if (prof) {
         prof_up_ns = 0;
         VkQueryPoolCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP, .queryCount = SUBS * 2};
@@ -1203,6 +1220,9 @@ static void translate_program(void *arg) {
     Prog *p = arg;
     maxwell_gmem_base = HEAP_BASE;
     maxwell_gmem_size = HEAP_MAX;
+#ifdef __ANDROID__
+    maxwell_gmem_map_all = gcopy_mode;
+#endif
     pthread_mutex_lock(&translate_lock);
     p->vi = maxwell_translate((const uint8_t *)(uintptr_t)p->code[0], p->cmax[0], STAGE_VERTEX, &p->vkey);
     if (p->vi->msl) {
@@ -1973,6 +1993,9 @@ static VkBufferCopy gfast_cp[GMAP_MAX];       // its copies heap -> gfast_buf (r
 static int gfast_n;
 
 static VkDescriptorBufferInfo gfast_info(void) {
+#ifdef __ANDROID__
+    if (gcopy_mode && gc_size) return (VkDescriptorBufferInfo){gc_span.buf, gc_span.off, gc_size};
+#endif
     if (!gfast_buf) {
         VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = GFAST_SIZE,
                                  .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
@@ -2044,6 +2067,79 @@ static void gfast_finish(VkCommandBuffer cb) {
     vk_full_barrier(cb);
     gfast_n = 0;
 }
+
+#ifdef __ANDROID__
+// ---- global memory without the heap import (Android: neither the Qualcomm driver nor Turnip has
+// VK_EXT_external_memory_host). Every stage then reaches global memory through the GMap table (translate.c,
+// maxwell_gmem_map_all): before a draw or dispatch whose shaders access it, the storage buffers bound to their stages
+// are copied by the CPU into the transient ring (on Adreno the same memory as the CPU's) and the table points there.
+// What a storing shader wrote goes back to guest memory once its submission is done (gcopy_retire: from vk_transient
+// before the ring reuses a chunk, and after every wait). Without this, global loads read zero: the game's text is
+// drawn by a vertex shader that reads its vertices that way (nothing of it showed).
+typedef struct { const uint8_t *src; uint64_t addr, len, seq; } GcBack;
+static GcBack gc_back[256];
+static int gc_nback;
+static pthread_mutex_t gc_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void gcopy_retire(uint64_t done) {
+    pthread_mutex_lock(&gc_lock);
+    int k = 0;
+    for (int i = 0; i < gc_nback; i++) {
+        if (gc_back[i].seq <= done) memcpy((void *)(uintptr_t)gc_back[i].addr, gc_back[i].src, gc_back[i].len);
+        else gc_back[k++] = gc_back[i];
+    }
+    gc_nback = k;
+    pthread_mutex_unlock(&gc_lock);
+}
+
+// The storage buffers of the stages in stage_mask (bit = st.sbuf index) into the ring; store: copied back later.
+static void gcopy_prepare(unsigned stage_mask, bool store) {
+    memset(gmap_tab, 0, sizeof gmap_tab);
+    gfast_n = 0;
+    gc_size = 0;
+    struct { uint64_t lo, hi; } r[6 * 16];
+    int n = 0;
+    for (int s = 0; s < 6; s++) {
+        if (!(stage_mask & (1u << s))) continue;
+        for (int i = 0; i < 16; i++) {  // heap offsets, 256-aligned
+            uint64_t a = st.sbuf[s][i].addr, sz = st.sbuf[s][i].size;
+            if (!a || !sz || a < HEAP_BASE || a - HEAP_BASE + sz > HEAP_MAX) continue;
+            uint64_t lo = (a - HEAP_BASE) & ~255ull, hi = (a - HEAP_BASE + sz + 255) & ~255ull;
+            int k = n++;
+            while (k > 0 && r[k - 1].lo > lo) { r[k] = r[k - 1]; k--; }
+            r[k].lo = lo; r[k].hi = hi;
+        }
+    }
+    int m = 0;
+    for (int i = 0; i < n; i++) {  // merged (nearby ranges too: a table entry costs more than a small gap)
+        if (m && r[i].lo <= r[m - 1].hi + 4096) { if (r[i].hi > r[m - 1].hi) r[m - 1].hi = r[i].hi; }
+        else r[m++] = r[i];
+    }
+    if (m > GMAP_MAX) {  // (more ranges than the table holds: one covering them all)
+        r[0].hi = r[m - 1].hi;
+        m = 1;
+    }
+    uint64_t total = 0;
+    for (int i = 0; i < m; i++) total += (r[i].hi - r[i].lo + 255) & ~255ull;
+    if (!m || total > CHUNK_SIZE) return;  // (too much: those loads read zero, as without this)
+    gc_span = vk_transient(total, 256);
+    gc_size = total;
+    uint64_t off = 0, seq = vk_pending_seq();
+    pthread_mutex_lock(&gc_lock);
+    for (int i = 0; i < m; i++) {
+        uint64_t len = r[i].hi - r[i].lo;
+        memcpy((uint8_t *)gc_span.ptr + off, (const void *)(uintptr_t)(HEAP_BASE + r[i].lo), len);
+        gmap_tab[i * 4 + 0] = (uint32_t)r[i].lo;
+        gmap_tab[i * 4 + 1] = (uint32_t)len;
+        gmap_tab[i * 4 + 2] = (uint32_t)(off >> 2);
+        if (store && gc_nback < 256)
+            gc_back[gc_nback++] = (GcBack){(const uint8_t *)gc_span.ptr + off, HEAP_BASE + r[i].lo, len, seq};
+        off += (len + 255) & ~255ull;
+    }
+    pthread_mutex_unlock(&gc_lock);
+    gmap_tab[GMAP_MAX * 4] = (uint32_t)m;
+}
+#endif
 
 // ---- vertex / index cache
 // Reading vertex / index data in place from the imported heap crosses PCIe for every vertex fetched on a discrete GPU
@@ -2380,6 +2476,19 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
         } else if (b->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
             bi[n] = b->binding == GFAST_BUFFER_INDEX ? gfast_info() : gmem_info();
             w[n].pBufferInfo = &bi[n];
+#ifdef __ANDROID__
+            if (!gmem_buf && b->binding != GFAST_BUFFER_INDEX) {  // (diagnostic: global memory without the heap import)
+                static const void *seen[256];
+                static int nseen;
+                bool known = false;
+                for (int k = 0; k < nseen && !known; k++) known = seen[k] == si;
+                if (!known && nseen < 256) {
+                    seen[nseen++] = si;
+                    LOG("[vk] gmem off: stage %d shader %p %s (%d such shaders)\n", stage, (const void *)si,
+                        si->uses_gmem_store ? "STORES" : "loads", nseen);
+                }
+            }
+#endif
         } else {
             continue;  // rscale / tint: written below, once the textures (and their scales) are known
         }
@@ -2444,6 +2553,9 @@ static CsProg *compute_program(NvnProgram *np) {
     if (n < 256) { tab[n].addr = ss->code_addr; tab[n].cp = cp; g_cs_n = n + 1; }
     maxwell_gmem_base = HEAP_BASE;
     maxwell_gmem_size = HEAP_MAX;
+#ifdef __ANDROID__
+    maxwell_gmem_map_all = gcopy_mode;
+#endif
     ShaderKey k = {0};
     k.glsl = 1;
     pthread_mutex_lock(&translate_lock);
@@ -2502,6 +2614,10 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
         }
         LOG("\n");
     }
+#ifdef __ANDROID__
+    if (gcopy_mode && cp->si->uses_gmem_map) gcopy_prepare(1u << 5, cp->si->uses_gmem_store);
+    else
+#endif
     if (cp->si->uses_gmem_map) gfast_prepare(cb);
     VkDescriptorSet ds = stage_set(&cp->p, cp->p.set_layout[0], 0, 5, cp->si, NULL, NULL, gx, gy, gz, NULL);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cp->pipe);
@@ -2795,6 +2911,11 @@ static void draw_(CmdRec *r, bool indexed) {
     // build the vertex set now and the fragment set after the decision (stage_set fills tex_sc for stage 1).
     if (prof) prof_dyn += SDL_GetTicksNS() - prof_td_;
     PROF_T0();
+#ifdef __ANDROID__
+    if (gcopy_mode && (pr->vi->uses_gmem_map || pr->fi->uses_gmem_map))  // (the table both stages' sets use)
+        gcopy_prepare((pr->vi->uses_gmem_map ? 1u : 0u) | (pr->fi->uses_gmem_map ? 2u : 0u),
+                      pr->vi->uses_gmem_store || pr->fi->uses_gmem_store);
+#endif
     VkDescriptorSet vset = stage_set(pr, pr->set_layout[0], 0, 0, pr->vi, NULL, NULL, 0, 0, 0, NULL);
     PROF_ADD(prof_sets);
     VkDescriptorImageInfo fii[64];
