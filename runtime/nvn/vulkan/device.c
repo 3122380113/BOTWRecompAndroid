@@ -721,6 +721,20 @@ void ui_window_init(void) {
 
 SDL_Window *ui_window(void) { return window; }
 
+#ifdef __ANDROID__
+// For the performance overlay (ui/perf_overlay.mm): the GPU and its driver, short ("Adreno (TM) 830 - Turnip").
+const char *vk_gpu_desc(void) {
+    static char s[160];
+    if (s[0] || !g_vk.phys) return s;
+    VkPhysicalDeviceDriverProperties d = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+    VkPhysicalDeviceProperties2 p = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &d};
+    vkGetPhysicalDeviceProperties2(g_vk.phys, &p);
+    const char *drv = strstr(d.driverName, "turnip") ? "Turnip" : strstr(d.driverName, "Qualcomm") ? "Qualcomm" : d.driverName;
+    snprintf(s, sizeof s, "%s - %s", p.properties.deviceName, drv);
+    return s;
+}
+#endif
+
 void backend_init(void) {
     while (!atomic_load(&ui_ready)) SDL_Delay(1);
     LOG("[vk] %s, swapchain %ux%u\n", g_vk.props.deviceName, g_vk.sc_extent.width, g_vk.sc_extent.height);

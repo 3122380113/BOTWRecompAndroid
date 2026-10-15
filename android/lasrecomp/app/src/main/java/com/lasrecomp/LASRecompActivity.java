@@ -7,10 +7,18 @@
 // - the game code (lasgame.so + lasgame.so.id, built from the player's own game files: android/build_gamelib.sh) from
 //   <external files>/extracted to <internal files>/res, where runtime/gamelib.c looks for it next to "the executable".
 // The data root (game files, saves, settings) is <external files>: /sdcard/Android/data/com.lasrecomp.android/files.
+// While in front it reports the battery and thermal state once a second for the performance overlay
+// (runtime/ui/perf_overlay.mm): apps can't read those in /sys.
 package com.lasrecomp;
 
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.res.AssetManager;
+import android.os.BatteryManager;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.PowerManager;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.util.Log;
@@ -29,6 +37,17 @@ import java.util.zip.ZipInputStream;
 
 public class LASRecompActivity extends SDLActivity {
     private static final String TAG = "LASRecomp";
+
+    private final Handler stats = new Handler(Looper.getMainLooper());
+    private final Runnable report = new Runnable() {
+        @Override
+        public void run() {
+            reportDeviceStats();
+            stats.postDelayed(this, 1000);
+        }
+    };
+
+    private static native void nativeDeviceStats(float battTempC, float battPct, float watts, int thermal, float headroom);
 
     @Override
     protected String[] getLibraries() {
@@ -62,6 +81,42 @@ public class LASRecompActivity extends SDLActivity {
         // SDL's own immersive full screen (no status / navigation bar, the camera cutout used): SDL's onCreate asks
         // for the windowed style, and keeps the bars hidden once its full screen mode is on
         setWindowStyle(true);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        stats.post(report);
+    }
+
+    @Override
+    protected void onPause() {
+        stats.removeCallbacks(report);
+        super.onPause();
+    }
+
+    // Battery temperature, charge and power draw, and Android's thermal state (runtime/platform/android.c).
+    private void reportDeviceStats() {
+        try {
+            Intent b = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+            float temp = -1, pct = -1, watts = 0;
+            if (b != null) {
+                temp = b.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -10) / 10f;
+                int level = b.getIntExtra(BatteryManager.EXTRA_LEVEL, -1), scale = b.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+                if (level >= 0 && scale > 0) pct = level * 100f / scale;
+                int mv = b.getIntExtra(BatteryManager.EXTRA_VOLTAGE, 0);
+                BatteryManager bm = getSystemService(BatteryManager.class);
+                long now = bm != null ? Math.abs(bm.getLongProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW)) : 0;
+                if (now > 0 && now < 20000) now *= 1000;  // (some devices report mA instead of uA)
+                watts = now * (float) mv / 1e9f;
+            }
+            PowerManager pm = getSystemService(PowerManager.class);
+            int thermal = pm != null ? pm.getCurrentThermalStatus() : -1;
+            float headroom = pm != null ? pm.getThermalHeadroom(10) : -1;
+            nativeDeviceStats(temp, pct, watts, thermal, Float.isNaN(headroom) ? -1 : headroom);
+        } catch (Throwable t) {  // (also before libmain is loaded: UnsatisfiedLinkError)
+            Log.w(TAG, "device stats: " + t);
+        }
     }
 
     // (by size and date: the game code is ~100 MB)

@@ -68,6 +68,21 @@ void plat_crash_handler_install(void);  // per thread where the OS needs it (alt
 bool rt_fault_watch(uint64_t fault_addr, uint64_t host_pc);
 void rt_fault_report(const char *what, uint64_t fault_addr, uint64_t host_pc, uint64_t host_lr) __attribute__((noreturn));
 
+#ifdef __ANDROID__
+// ---- device state for the performance overlay (runtime/ui/perf_overlay.mm); -1 / 0 where unknown
+typedef struct {
+    int ncluster;                  // CPU clusters (cpufreq policies)
+    uint32_t cluster_mhz[8];
+    float cpu_pct;                 // this process's CPU time, as a share of all cores
+    uint32_t rss_mb, avail_mb;     // this process's memory, the system's available memory
+    float soc_temp_c;              // a thermal zone the app may read
+    float batt_temp_c, batt_pct, watts;  // from the activity (BatteryManager)
+    int thermal;                   // PowerManager thermal status: 0 none ... 6 shutdown
+    float headroom;                // PowerManager thermal headroom (1.0 = throttling begins)
+} PlatDeviceStats;
+void plat_device_stats(PlatDeviceStats *out);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

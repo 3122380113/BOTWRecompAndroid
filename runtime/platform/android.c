@@ -256,3 +256,114 @@ static int rm_entry(const char *path, const struct stat *sb, int flag, struct FT
 bool plat_remove_tree(const char *dir) { return nftw(dir, rm_entry, 16, FTW_DEPTH | FTW_PHYS) == 0; }
 
 void plat_terminate(void) { _exit(0); }
+
+// ---- device state for the performance overlay (runtime/ui/perf_overlay.mm)
+#include <dirent.h>
+#include <jni.h>
+#include <stdatomic.h>
+
+// What the activity reports once a second (LASRecompActivity.reportDeviceStats: public Android APIs; apps can't read
+// the battery or most thermal sensors in /sys).
+static pthread_mutex_t g_ds_lock = PTHREAD_MUTEX_INITIALIZER;
+static PlatDeviceStats g_ds = {.batt_temp_c = -1, .batt_pct = -1, .thermal = -1, .headroom = -1};
+
+JNIEXPORT void JNICALL Java_com_lasrecomp_LASRecompActivity_nativeDeviceStats(JNIEnv *env, jclass cls, jfloat batt_temp_c,
+                                                                            jfloat batt_pct, jfloat watts, jint thermal,
+                                                                            jfloat headroom) {
+    (void)env, (void)cls;
+    pthread_mutex_lock(&g_ds_lock);
+    g_ds.batt_temp_c = batt_temp_c;
+    g_ds.batt_pct = batt_pct;
+    g_ds.watts = watts;
+    g_ds.thermal = thermal;
+    g_ds.headroom = headroom;
+    pthread_mutex_unlock(&g_ds_lock);
+}
+
+static uint64_t read_u64(const char *path) {
+    char buf[64] = {0};
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return 0;
+    ssize_t n = read(fd, buf, sizeof buf - 1);
+    close(fd);
+    return n > 0 ? strtoull(buf, NULL, 10) : 0;
+}
+
+// The CPU clusters (cpufreq policies) and the thermal zones an app may read, found once.
+static char g_policy[8][96];
+static int g_npolicy = -1;
+static char g_tzone[96];  // a readable SoC / CPU temperature (most aren't readable by apps)
+
+static void find_sources(void) {
+    if (g_npolicy >= 0) return;
+    g_npolicy = 0;
+    DIR *d = opendir("/sys/devices/system/cpu/cpufreq");
+    if (d) {
+        char names[8][32];
+        int n = 0;
+        for (struct dirent *e; (e = readdir(d)) && n < 8;)
+            if (!strncmp(e->d_name, "policy", 6)) snprintf(names[n++], sizeof names[0], "%s", e->d_name);
+        closedir(d);
+        for (int i = 0; i < n; i++)  // (in core order: policy0, policy2, policy6 ...)
+            for (int j = i + 1; j < n; j++)
+                if (atoi(names[j] + 6) < atoi(names[i] + 6)) { char t[32]; memcpy(t, names[i], 32); memcpy(names[i], names[j], 32); memcpy(names[j], t, 32); }
+        for (int i = 0; i < n; i++)
+            snprintf(g_policy[g_npolicy++], sizeof g_policy[0], "/sys/devices/system/cpu/cpufreq/%s/scaling_cur_freq", names[i]);
+    }
+    int best = -1;  // (prefer CPU / SoC zones; any readable one beats none)
+    for (int z = 0; z < 128; z++) {
+        char tp[96], type[64] = {0}, path[96];
+        snprintf(tp, sizeof tp, "/sys/class/thermal/thermal_zone%d/type", z);
+        int fd = open(tp, O_RDONLY | O_CLOEXEC);
+        if (fd < 0) continue;
+        ssize_t n = read(fd, type, sizeof type - 1);
+        close(fd);
+        if (n <= 0) continue;
+        snprintf(path, sizeof path, "/sys/class/thermal/thermal_zone%d/temp", z);
+        uint64_t v = read_u64(path);
+        if (!v || v > 200000) continue;
+        int score = strstr(type, "cpu") ? 3 : strstr(type, "soc") || strstr(type, "aoss") ? 2 : 1;
+        if (score > best) { best = score; snprintf(g_tzone, sizeof g_tzone, "%s", path); }
+    }
+    fprintf(stderr, "[perf] %d CPU clusters, temperature from %s\n", g_npolicy, g_tzone[0] ? g_tzone : "(none readable)");
+}
+
+void plat_device_stats(PlatDeviceStats *out) {
+    find_sources();
+    pthread_mutex_lock(&g_ds_lock);
+    *out = g_ds;
+    pthread_mutex_unlock(&g_ds_lock);
+    out->ncluster = g_npolicy;
+    for (int i = 0; i < g_npolicy; i++) out->cluster_mhz[i] = (uint32_t)(read_u64(g_policy[i]) / 1000);
+    out->soc_temp_c = g_tzone[0] ? (float)read_u64(g_tzone) / 1000.0f : -1;
+    // this process's CPU time since the last call, as a share of every core
+    static uint64_t last_ticks, last_ns;
+    char buf[1024] = {0};
+    int fd = open("/proc/self/stat", O_RDONLY | O_CLOEXEC);
+    if (fd >= 0) {
+        ssize_t n = read(fd, buf, sizeof buf - 1);
+        close(fd);
+        const char *p = n > 0 ? strrchr(buf, ')') : NULL;  // (fields after the command name: utime = 14th, stime = 15th)
+        unsigned long long ut = 0, st = 0;
+        if (p && sscanf(p + 2, "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu", &ut, &st) == 2) {
+            uint64_t ticks = ut + st, ns = plat_now_ns();
+            long hz = sysconf(_SC_CLK_TCK), cores = sysconf(_SC_NPROCESSORS_ONLN);
+            if (last_ns && ns > last_ns && hz > 0 && cores > 0)
+                out->cpu_pct = (float)((double)(ticks - last_ticks) / hz / ((ns - last_ns) / 1e9) / cores * 100.0);
+            last_ticks = ticks, last_ns = ns;
+        }
+    }
+    // memory: this process's resident set, and what the system has available
+    out->rss_mb = out->avail_mb = 0;
+    FILE *f = fopen("/proc/self/status", "re");
+    if (f) {
+        char line[256];
+        while (fgets(line, sizeof line, f)) if (!strncmp(line, "VmRSS:", 6)) out->rss_mb = (uint32_t)(atoll(line + 6) / 1024);
+        fclose(f);
+    }
+    if ((f = fopen("/proc/meminfo", "re"))) {
+        char line[256];
+        while (fgets(line, sizeof line, f)) if (!strncmp(line, "MemAvailable:", 13)) out->avail_mb = (uint32_t)(atoll(line + 13) / 1024);
+        fclose(f);
+    }
+}

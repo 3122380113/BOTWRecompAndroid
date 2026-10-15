@@ -257,6 +257,11 @@ void menu_apply_window_requests(void *win) {
     g_pixel_density = SDL_GetWindowPixelDensity(w);
     static bool text_input;
     bool want_text = capturing();
+#ifdef __ANDROID__
+    // With a controller, the in-app keyboard only: Android's own keyboard would open over it, and while it is up it
+    // takes the controller's stick and d-pad (after naming Link the stick no longer moved him; buttons still worked)
+    if (want_text && SDL_HasGamepad()) want_text = false;
+#endif
     if (want_text != text_input) {
         if (want_text) SDL_StartTextInput(w);
         else SDL_StopTextInput(w);
@@ -868,6 +873,12 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
 #endif
     ImGui::NewFrame();
 
+#ifdef __ANDROID__
+    if (g_settings.show_fps) {  // (the full performance overlay: ui/perf_overlay.mm)
+        extern void perf_overlay_draw(ImVec2 display, float scale);
+        perf_overlay_draw(io.DisplaySize, scale);
+    }
+#else
     if (g_settings.show_fps) {
         ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 16 * scale, 16 * scale), 0, ImVec2(1, 0));
         ImGui::SetNextWindowBgAlpha(0.5f);
@@ -876,6 +887,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         ImGui::Text("%.0f fps", io.Framerate);
         ImGui::End();
     }
+#endif
 
     if (trk) tracker_overlay_draw(io.DisplaySize, g_font_big ? g_font_big : ImGui::GetFont());
     if (chaos) chaos_overlay_draw(io.DisplaySize, g_font_big ? g_font_big : ImGui::GetFont());

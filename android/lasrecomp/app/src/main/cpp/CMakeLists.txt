@@ -24,7 +24,7 @@ set_target_properties(SDL3 PROPERTIES IMPORTED_LOCATION ${DEPS}/lib/libSDL3.so)
 add_library(shaderc_shared SHARED IMPORTED)
 set_target_properties(shaderc_shared PROPERTIES IMPORTED_LOCATION ${DEPS}/lib/libshaderc_shared.so)
 
-file(GLOB RT_SRC ${R}/runtime/*.c ${R}/runtime/hle/*.c ${R}/runtime/services/*.c ${R}/runtime/nvn/*.c
+file(GLOB RT_SRC CONFIGURE_DEPENDS ${R}/runtime/*.c ${R}/runtime/hle/*.c ${R}/runtime/services/*.c ${R}/runtime/nvn/*.c
      ${R}/runtime/nvn/maxwell/*.c)
 # FFmpeg (android/deps/build_ffmpeg.sh): the game's movies and the start screen's background; without it, neither
 set(HAVE_FFMPEG FALSE)
@@ -37,8 +37,8 @@ if(EXISTS ${DEPS}/lib/libavformat.so)
 else()
     list(REMOVE_ITEM RT_SRC ${R}/runtime/hle/movie.c)
 endif()
-file(GLOB VK_SRC ${R}/runtime/nvn/vulkan/*.c ${R}/runtime/nvn/vulkan/*.cpp)
-file(GLOB UI_SRC ${R}/runtime/ui/*.mm)
+file(GLOB VK_SRC CONFIGURE_DEPENDS ${R}/runtime/nvn/vulkan/*.c ${R}/runtime/nvn/vulkan/*.cpp)
+file(GLOB UI_SRC CONFIGURE_DEPENDS ${R}/runtime/ui/*.mm)
 set(IMGUI ${R}/third_party/imgui)
 set(IMGUI_SRC ${IMGUI}/imgui.cpp ${IMGUI}/imgui_draw.cpp ${IMGUI}/imgui_tables.cpp ${IMGUI}/imgui_widgets.cpp
     ${IMGUI}/backends/imgui_impl_sdl3.cpp ${IMGUI}/backends/imgui_impl_vulkan.cpp)

@@ -21,7 +21,11 @@ Settings g_settings = {
     .volume = 1.0f,
     .reverb = true,
     .movie_audio = true,
+#ifdef __ANDROID__
+    .show_fps = true,  // (the performance overlay, ui/perf_overlay.mm: on until turned off in the menu)
+#else
     .show_fps = false,
+#endif
     .inv_keys = true,
     .tracker = true,
     .chaos_letters = CHAOS_LETTERS_MAP,

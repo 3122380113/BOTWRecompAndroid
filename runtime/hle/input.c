@@ -74,6 +74,15 @@ static void recompute_pad(void) {
     pad_ly = -SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY);
     pad_rx = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX);
     pad_ry = -SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY);
+    {   // LARECOMP_LOG_PAD=1: the left stick too, when it moves by more than ~1/8
+        static int log_axes = -1;
+        static int32_t llx, lly;
+        if (log_axes < 0) log_axes = getenv("LARECOMP_LOG_PAD") != NULL;
+        if (log_axes && (abs(pad_lx - llx) > 4096 || abs(pad_ly - lly) > 4096)) {
+            LOG("[input] pad left stick %d %d\n", (int)pad_lx, (int)pad_ly);
+            llx = pad_lx, lly = pad_ly;
+        }
+    }
 }
 
 // Forget held keys (the menu took focus); the gamepad is re-read on its next event.
