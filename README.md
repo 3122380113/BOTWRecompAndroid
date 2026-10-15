@@ -14,7 +14,7 @@ For the PC versions (Windows, macOS, Linux), features and the randomizer, see th
 > [!WARNING]
 > **Experimental.** An APK release is coming soon. Until then, the app and the game code are built on a PC from
 > your own game files, and copied to the phone with `adb`. The full plan, the state of each phase and the measurements are in
-> [docs/ANDROID-PORT.md](docs/ANDROID-PORT.md) (in Portuguese). The work lives on the `android-port` branch.
+> [docs/ANDROID-PORT.md](docs/ANDROID-PORT.md) (in Portuguese).
 
 > [!NOTE]
 > **No game files are included**, and the app contains nothing from the game. You need your own legally obtained
