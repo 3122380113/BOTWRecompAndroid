@@ -69,11 +69,18 @@ public class LASRecompActivity extends SDLActivity {
             // the quotes around spaces), e.g. LARECOMP_VK_DRIVER= is the system driver:
             // adb shell am start -n com.lasrecomp.android/com.lasrecomp.LASRecompActivity --es env LARECOMP_NO_LAUNCHER=1,LARECOMP_VK_DRIVER=
             String env = getIntent() != null ? getIntent().getStringExtra("env") : null;
-            if (env != null)
+            if (env != null) {  // (a piece without '=' continues the previous value: LARECOMP_GPUPROF_AT=1500,1750)
+                String name = null, value = null;
                 for (String kv : env.trim().split("[,\\s]+")) {
                     int eq = kv.indexOf('=');
-                    if (eq > 0) setenv(kv.substring(0, eq), kv.substring(eq + 1));
+                    if (eq > 0) {
+                        if (name != null) setenv(name, value);
+                        name = kv.substring(0, eq);
+                        value = kv.substring(eq + 1);
+                    } else if (name != null) value += "," + kv;
                 }
+                if (name != null) setenv(name, value);
+            }
         } catch (IOException | ErrnoException e) {
             Log.e(TAG, "setup: " + e);
         }

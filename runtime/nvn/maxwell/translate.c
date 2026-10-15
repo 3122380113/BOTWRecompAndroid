@@ -24,6 +24,7 @@
 
 uint64_t maxwell_gmem_base, maxwell_gmem_size;
 bool maxwell_gmem_map_all;
+bool maxwell_brx_window;
 const uint8_t *maxwell_dbg_code;
 uint32_t maxwell_dbg_pc;
 int maxwell_dbg_reg;
@@ -1972,7 +1973,21 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
         }
         if ((w & 0xfff0000000000000ull) == 0xe250000000000000ull) {  // BRX: any instruction may be a target
             any_branch = true;
-            memset(label, 1, end);
+            size_t hi = 0;
+            // (maxwell_brx_window) a jump table's targets lie between the BRX and the join of the PBK / SSY pushed
+            // before it - how the compiler emits switches. Labels everywhere else split the straight code that
+            // follows into blocks the GPU's compiler can't schedule (Adreno: an SSAO pass 20 ms instead of ~1)
+            if (maxwell_brx_window)
+                for (size_t k = i; k-- > 0;) {
+                    if (k % 4 == 0) continue;
+                    uint64_t wk = ((const uint64_t *)code)[k];
+                    if ((wk & 0xfff0000000000020ull) != 0xe2a0000000000000ull && (wk & 0xfff0000000000020ull) != 0xe290000000000000ull)
+                        continue;
+                    int64_t t = norm_target((int64_t)k * 8 + 8 + sbits(wk, 20, 24));
+                    if (t > (int64_t)pc && (size_t)(t / 8) < end) { hi = (size_t)(t / 8); break; }
+                }
+            if (hi) for (size_t k = i + 1; k <= hi; k++) label[k] = 1;
+            else memset(label, 1, end);
         }
         if ((w & 0xfff8000000000000ull) == 0xf0f8000000000000ull || (w & 0xfff0000000000000ull) == 0xe340000000000000ull ||
             (w & 0xfff0000000000000ull) == 0xe350000000000000ull)

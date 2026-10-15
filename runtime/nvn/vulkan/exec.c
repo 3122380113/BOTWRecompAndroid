@@ -1219,12 +1219,17 @@ static void compile_program(void *arg) {
     atomic_store(&p->state, p->vs && p->fs ? 1 : 2);
 }
 
+#ifdef __ANDROID__
+static uint64_t hmix(uint64_t h, const void *p, size_t n);  // (below; LARECOMP_DUMP_FS)
+#endif
+
 static void translate_program(void *arg) {
     Prog *p = arg;
     maxwell_gmem_base = HEAP_BASE;
     maxwell_gmem_size = HEAP_MAX;
 #ifdef __ANDROID__
     maxwell_gmem_map_all = gcopy_mode;
+    maxwell_brx_window = !getenv("LARECOMP_BRX_ALL_LABELS");
 #endif
     pthread_mutex_lock(&translate_lock);
     p->vi = maxwell_translate((const uint8_t *)(uintptr_t)p->code[0], p->cmax[0], STAGE_VERTEX, &p->vkey);
@@ -1243,6 +1248,24 @@ static void translate_program(void *arg) {
         atomic_store(&p->state, 2);
         return;
     }
+#ifdef __ANDROID__
+    {   // LARECOMP_DUMP_FS=<fs hash, as [gpuprof] / [fshash] print it>: that fragment shader's GLSL (and its vertex
+        // shader's) to cache/fs_<hash>.glsl, for looking at a slow one
+        const char *want = getenv("LARECOMP_DUMP_FS");
+        uint64_t h = hmix(1469598103934665603ull, (const void *)(uintptr_t)(p->code[1] + 0x30), 0x200);
+        if (want && strtoull(want, NULL, 16) == h) {
+            char path[96];
+            snprintf(path, sizeof path, "cache/fs_%016llx.glsl", (unsigned long long)h);
+            FILE *f = fopen(path, "wb");
+            if (f) {
+                fprintf(f, "// fragment shader %016llx (code %llx)\n%s\n// ---- vertex shader (code %llx)\n%s\n",
+                        (unsigned long long)h, (unsigned long long)p->code[1], p->fi->msl, (unsigned long long)p->code[0], p->vi->msl);
+                fclose(f);
+                LOG("[shader] dumped %s\n", path);
+            }
+        }
+    }
+#endif
     p->vs_uses_vid = strstr(p->vi->msl, "gl_VertexIndex") != NULL;
     save_glsl(p->vi->msl, p->code[0], "vs");
     save_glsl(p->fi->msl, p->code[1], "fs");
@@ -2632,6 +2655,7 @@ static CsProg *compute_program(NvnProgram *np) {
     maxwell_gmem_size = HEAP_MAX;
 #ifdef __ANDROID__
     maxwell_gmem_map_all = gcopy_mode;
+    maxwell_brx_window = !getenv("LARECOMP_BRX_ALL_LABELS");
 #endif
     ShaderKey k = {0};
     k.glsl = 1;

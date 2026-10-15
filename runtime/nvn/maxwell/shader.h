@@ -90,6 +90,9 @@ extern uint64_t maxwell_gmem_base, maxwell_gmem_size;
 // (GLSL) every stage's global memory through the GMap table, not only compute: set by a backend that can't wrap the
 // guest heap in a buffer (Android: no VK_EXT_external_memory_host; vulkan/exec.c copies the bound ranges instead)
 extern bool maxwell_gmem_map_all;
+// A BRX (jump table) labels only the instructions up to the join pushed before it, not the whole shader (set by the
+// Android backend: Adreno's compiler turns every label into a block boundary)
+extern bool maxwell_brx_window;
 // Debug: when translating the shader whose code starts at maxwell_dbg_code, output register
 // maxwell_dbg_reg as captured after the instruction at maxwell_dbg_pc (greyscale, all targets).
 extern const uint8_t *maxwell_dbg_code;
