@@ -41,6 +41,9 @@ struct KThread {
     jmp_buf unwind;
     bool started, finished;
     KThread *anext;        // every thread of this boot (g_klock)
+#ifdef __ANDROID__
+    void *dcache;          // dispatch.c: this thread's guest -> host function cache (TLS is slow in a dlopened library)
+#endif
 };
 
 typedef struct KSharedMem {

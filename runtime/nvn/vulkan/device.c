@@ -207,6 +207,9 @@ static void create_device(void) {
     b->fillModeNonSolid = h->fillModeNonSolid;
     b->samplerAnisotropy = h->samplerAnisotropy;
     b->textureCompressionBC = h->textureCompressionBC;
+#ifdef __ANDROID__
+    b->textureCompressionASTC_LDR = h->textureCompressionASTC_LDR;  // (Adreno: the game's ASTC textures as they are)
+#endif
     b->shaderInt64 = h->shaderInt64;
     b->depthBiasClamp = h->depthBiasClamp;
     b->depthClamp = h->depthClamp;
@@ -796,7 +799,19 @@ int ui_run(void) {
     for (;;) {
         if (rt_reboot_requested()) return rt_reboot_requested();  // (runtime/main.c tears the game down)
         SDL_Event e;
+#ifdef __ANDROID__
+        // (SDL's wait doesn't sleep on Android: it kept a core busy updating joysticks and reading the clock - 40% of
+        // the app's CPU in a profile. Poll what's there, then sleep: input at most 4 ms later.)
+        static bool polled;
+        if (polled) SDL_Delay(4);
+        polled = true;
+        while (SDL_PollEvent(&e)) {
+#else
         while (SDL_WaitEventTimeout(&e, 16)) {
+#endif
+#ifdef __ANDROID__
+            if (e.type == SDL_EVENT_WILL_ENTER_BACKGROUND && g_vk.dev) vk_pipeline_cache_save();  // (may not come back)
+#endif
             if (e.type == SDL_EVENT_QUIT) {
                 LOG("window closed\n");
                 exit(0);
@@ -807,5 +822,22 @@ int ui_run(void) {
             input_handle_event(&e);
         }
         menu_apply_window_requests(window);
+#ifdef __ANDROID__
+        {   // the pipeline cache to disk now and then while it grows: an app is killed rather than exited, so
+            // quick_exit_handler never saves it (every start compiled every shader again: missing objects at first)
+            static uint64_t last;
+            static size_t saved;
+            uint64_t now = SDL_GetTicks();
+            if (g_vk.dev && now - last > 30000) {
+                last = now;
+                size_t sz = 0;
+                if (vkGetPipelineCacheData(g_vk.dev, g_vk.pcache, &sz, NULL) == VK_SUCCESS && sz > saved + 65536) {
+                    vk_pipeline_cache_save();
+                    saved = sz;
+                    LOG("[vk] pipeline cache saved (%zu KB)\n", sz >> 10);
+                }
+            }
+        }
+#endif
     }
 }

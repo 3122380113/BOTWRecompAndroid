@@ -7,6 +7,9 @@
 
 #include "gamelib.h"
 #include "hle.h"
+#ifdef __ANDROID__
+#include "kernel.h"
+#endif
 
 typedef struct { const uint64_t *addrs; const GuestFn *fns; uint64_t count, lo, hi; } FnTable;
 static FnTable tables[2];
@@ -150,7 +153,19 @@ GuestFn dispatch_lookup(uint64_t addr) {
 
 // Small direct-mapped cache in front of the binary search
 #define DCACHE 4096
-static __thread struct { uint64_t addr; GuestFn fn; } dcache[DCACHE];
+typedef struct { uint64_t addr; GuestFn fn; } DcEnt;
+static __thread DcEnt dcache[DCACHE];
+#ifdef __ANDROID__
+// A guest thread's cache lives in its KThread (Cpu.thread): the runtime is a dlopened library on Android, where
+// every __thread access goes through the dynamic TLS resolver - with one per indirect call that was ~5% of the
+// game thread (simpleperf). Other threads (no KThread) keep the TLS one.
+static DcEnt *dc_of(Cpu *c) {
+    KThread *t = c->thread;
+    if (!t) return dcache;
+    if (!t->dcache) t->dcache = calloc(DCACHE, sizeof(DcEnt));
+    return t->dcache ? (DcEnt *)t->dcache : dcache;
+}
+#endif
 
 static GuestFn dispatch_slow(Cpu *c) {
     uint64_t pc = c->pc;
@@ -172,15 +187,27 @@ static GuestFn dispatch_slow(Cpu *c) {
         FATAL("no function at %llx (lr=%llx %s+%llx)\n", pc, c->x[30], s ? s : "?", off);
     }
     unsigned h = (unsigned)(pc >> 2) & (DCACHE - 1);
+#ifdef __ANDROID__
+    DcEnt *dc = dc_of(c);
+    dc[h].addr = pc;
+    dc[h].fn = f;
+#else
     dcache[h].addr = pc;
     dcache[h].fn = f;
+#endif
     return f;
 }
 
 // Always tail-calls, so chains of indirect jumps don't grow the host stack.
 void rt_dispatch(Cpu *c) {
     unsigned h = (unsigned)(c->pc >> 2) & (DCACHE - 1);
+#ifdef __ANDROID__
+    KThread *t = c->thread;
+    const DcEnt *dc = t && t->dcache ? (const DcEnt *)t->dcache : dcache;
+    GuestFn f = dc[h].addr == c->pc ? dc[h].fn : dispatch_slow(c);
+#else
     GuestFn f = dcache[h].addr == c->pc ? dcache[h].fn : dispatch_slow(c);
+#endif
     __attribute__((musttail)) return f(c);
 }
 
