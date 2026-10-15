@@ -206,6 +206,24 @@ adrenotools: tela inicial em tela cheia e paisagem, logs no logcat (tag `LASReco
 
 Pronto quando: a intro e a tela de título aparecem com som.
 
+**Estado (2026-10-15): o jogo inicializa.** No POCO F7 Ultra com Turnip:
+- módulos em `0x1_0000_0000` (`--dyn-base`), kernel, threads e serviços no ar, save montado;
+- os vídeos de abertura tocam pelo FFmpeg (`android/deps/build_ffmpeg.sh`, via WSL), com a saída de áudio aberta;
+- **a cerca de 12 fps**, com ~1,7 s de espera da GPU a cada 2 s e ~190 MB de upload de texturas a cada 2 s
+  (Fase 3).
+
+Fluxo de desenvolvimento (sem setup no aparelho ainda):
+1. `android/build_gamelib.sh <exefs>` gera e compila a `lasgame.so`.
+2. `android/push_game.sh <pasta com exefs/ e romfs/>` copia os arquivos e gera o `romfs.bin` no aparelho.
+3. Para entrar direto no jogo:
+   `adb shell am start -n com.lasrecomp.android/com.lasrecomp.LASRecompActivity --es env "LARECOMP_NO_LAUNCHER=1"`.
+
+A fonte do sistema do Switch é substituída pela DejaVu Sans que o app traz: a Roboto não tem o U+25A1, e o código de
+texto do jogo não trata glifo nulo.
+
+Falta para concluir a fase: confirmar o som no aparelho e passar da tela de título (entrada: controle físico via
+SDL, ou toque, da Fase 4).
+
 ### Fase 3: Vulkan no Adreno/Turnip
 
 Ordem definida pelos resultados da Fase 0:
