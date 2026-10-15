@@ -1,5 +1,77 @@
 # LAS Recomp
 
+## LAS Recomp para Android (este fork)
+
+Este repositório é um fork do [LAS Recomp](https://github.com/peiikai/LASRecomp), do peiikai, que leva a
+recompilação estática de *Link's Awakening* para o **Android**. Como no projeto original, não é emulação: o código
+do Switch vira código ARM64 nativo, e os gráficos (NVN) são traduzidos para Vulkan. O trabalho de porte foi feito
+com a ajuda do Claude (Opus 5.5), da Anthropic, pelo Claude Code.
+
+> [!WARNING]
+> **Experimental.** Ainda não existe APK pronto: o app e o código do jogo são compilados no PC a partir do seu
+> próprio dump, e os arquivos vão para o celular pelo `adb`. O plano completo, o estado de cada fase e as medições
+> estão em [docs/ANDROID-PORT.md](docs/ANDROID-PORT.md). O trabalho fica na branch `android-port`.
+
+### Estado
+
+Testado num **POCO F7 Ultra** (Snapdragon 8 Elite / Adreno 830, Android 16) com o driver **Turnip Gen8 V37**:
+
+- o jogo inicia, os vídeos tocam com som, e os menus, o save e o gameplay funcionam;
+- **30 fps estáveis no mundo aberto** e 60 fps em áreas mais leves. O próprio jogo escolhe entre os dois modos, como
+  no Switch, pelo tempo de GPU de cada frame;
+- controle Bluetooth (testado com um GameSir X4 Aileron), overlay de desempenho (fps, frametime, CPU, GPU,
+  temperatura, bateria) e volta do segundo plano sem tela preta.
+
+### Por que precisa do driver Turnip
+
+Os shaders do jogo leem e escrevem direto na memória dele, nos mesmos endereços que a CPU usa: por exemplo, a lista
+de luzes de cada frame é montada por um compute shader e lida em seguida pelos shaders de pixel. No PC, a memória
+do jogo é importada para a GPU com `VK_EXT_external_memory_host`. Nem o driver da Qualcomm nem o Turnip têm essa
+extensão.
+
+O **Turnip** (o driver Vulkan aberto do Mesa para Adreno) tem `VK_EXT_map_memory_placed`: a memória da GPU é
+alocada no endereço exato do heap do jogo, e CPU e GPU passam a dividir a mesma memória, sem cópias. No driver da
+Qualcomm, o app recorre a cópias pela CPU. O resultado é mais lento, e o que um compute shader escreve só volta à
+memória do jogo depois que a GPU termina, tarde demais para o mesmo frame. É por isso que a **iluminação quebra**
+nesse driver.
+
+### Limitações atuais
+
+- Só Snapdragon (GPU Adreno) com Turnip. O app carrega o driver por
+  [libadrenotools](https://github.com/bylaws/libadrenotools), e o driver não vem junto: você fornece o seu.
+- Precisa do seu próprio dump da v1.0.0. O código do jogo é gerado e compilado **no PC** a partir dele.
+- Sem controles de toque: é preciso um controle físico.
+- Trocar a resolução com o jogo rodando pode fechar o app. Mude na tela de título.
+- Sem randomizer no celular, por enquanto.
+- Nenhum arquivo da Nintendo está incluído, e o APK não traz nada do jogo.
+
+### Como compilar e instalar
+
+No Windows, com Git Bash, o Android SDK com **NDK 30.0.16248370** e **CMake 3.30.4**, um aparelho com depuração
+USB e Python 3.12. No Linux, com bash, os mesmos passos devem servir, mas não foram testados.
+
+1. Ambiente do gerador:
+   `python -m venv tools/venv` e depois `tools/venv/Scripts/pip install lz4 capstone unicorn`
+   (`tools/venv/bin/pip` no Linux).
+2. Dependências do app (SDL3, shaderc, Vulkan-Headers, VMA, volk e a fonte DejaVu):
+   `bash android/deps/build_deps.sh`.
+3. Opcional: FFmpeg, para os vídeos e o fundo da tela inicial. O `configure` dele pede um shell Unix, então no
+   Windows rode pelo WSL: `wsl -- bash android/deps/build_ffmpeg.sh`.
+4. O app: `cd android/lasrecomp && ./gradlew assembleDebug`, e depois
+   `adb install -r app/build/outputs/apk/debug/app-debug.apk`.
+5. O código do jogo, gerado a partir do **seu** `exefs`: `bash android/build_gamelib.sh <dump>/exefs`. Ele usa o
+   `libmain.so` do passo 4, então compile o app antes.
+6. Os arquivos do jogo e o código para o aparelho: `bash android/push_game.sh <pasta com exefs/ e romfs/>`.
+7. O driver: copie o Turnip (o `.zip` do adrenotools ou o `.so`) para
+   `Android/data/com.lasrecomp.android/files/drivers/` no aparelho. Sem ele, o app usa o driver do sistema, e a
+   iluminação quebra.
+8. Abra o app, conecte um controle e jogue. O menu do jogo abre com Minus + Plus.
+
+O app guarda tudo em `Android/data/com.lasrecomp.android/files/`: save, configurações, cache de pipelines e os
+arquivos do jogo.
+
+---
+
 > [!IMPORTANT]
 > **This project was made almost exclusively with AI.** Nearly all of the code, tooling, reverse engineering and
 > documentation in this repository was written by and will be maintained by an AI (Anthropic's Claude, through Claude Code),

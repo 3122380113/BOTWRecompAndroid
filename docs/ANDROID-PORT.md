@@ -246,6 +246,34 @@ Ordem definida pelos resultados da Fase 0:
 
 Pronto quando: overworld, uma casa e uma dungeon renderizam corretamente a 30 ou 60 fps num Snapdragon 8 Gen 2/3.
 
+**Estado (2026-10-15): o jogo roda a 30 fps estáveis no mundo aberto**, e a 60 em áreas leves (POCO F7 Ultra, Turnip
+Gen8 V37, resolução 50%). O que mudou desde os ~12 fps da Fase 2:
+- **Memória global:** com o Turnip, o heap do guest é memória da GPU mapeada no próprio endereço
+  (`VK_EXT_map_memory_placed`, `vk_heap_place`), sem cópias. No driver da Qualcomm, cópias pela CPU (`gcopy`). Os
+  dispatches de compute leem o heap por uma janela do descriptor (limite de 2 GB do Adreno) em vez de copiar faixas.
+- **Shaders:** a janela do `BRX` só rotula o próprio switch (SSAO de ~20 ms para menos de 1 ms). As pilhas
+  SSY/PBK/PCNT agora são resolvidas na tradução (`maxwell_static_stacks`): a GPU no mundo aberto caiu de ~18,5 para
+  ~14 ms por frame.
+- **CPU:** o runtime passou de `-O0` para `-O2` (o build Debug do Gradle não tinha otimização). Despacho de funções
+  sem stack frame e com cache maior (de 13% para 5% da thread do jogo). Hash do fragment shader e da chave de pipeline
+  memoizados. Laço da UI sem espera ativa.
+- **Sincronização:** as fences do jogo cobrem o trabalho dele, e não o present, que espera o compositor. O `SyncWait`
+  caiu de ~10 para ~1,4 ms por frame.
+- **Android:** cache de pipelines salvo durante o jogo, superfície recriada ao voltar do segundo plano, overlay de
+  desempenho, IME desligado com controle conectado.
+- **Diagnóstico:** `LARECOMP_GPUPROF_AT`, `LARECOMP_VK_PROF`, `LARECOMP_LOG_PACE`, `LARECOMP_LOG_SYNCSEQ`,
+  `LARECOMP_LOG_COUNTER`, `LARECOMP_SHADER_STATS`, `LARECOMP_SHADER_SUBST` e `LARECOMP_SAVE_MSL`, além do simpleperf.
+
+Para 60 fps no mundo aberto, faltam:
+- **GPU:** ~14 ms por frame, enquanto o jogo só escolhe o modo 60 abaixo do limite dele. Próximo passo: trocar a
+  máquina de estados dos shaders com desvios por `if`/laços (os vertex shaders pesados rodam com 48 registradores e
+  só 4 waves).
+- **CPU:** ~18 ms por frame na thread do jogo no modo 30, sendo ~10 de código do jogo e ~8 de gravação Vulkan e
+  driver. Opção: gravar os comandos numa thread própria.
+
+Problemas conhecidos: trocar a resolução com o jogo rodando pode fechar o app; sem pré-rotação do swapchain; heap
+acima de 2 GB contra o limite de descriptor fora dos dispatches de compute.
+
 ### Fase 4: Android de verdade (ciclo de vida e entrada)
 
 - **Ciclo de vida:**
@@ -310,5 +338,6 @@ exatamente igual).
 
 ## Próximo passo
 
-Fase 0, itens 1 e 2: concluídos (ver "Resultados"). Próximo: a Fase 1 (build do runtime com o NDK) e, em paralelo,
-a base dinâmica no gerador (`gen.py --dyn-base`). Opcional: o item 3 da Fase 0 (Linux aarch64 no Termux).
+Fase 3: os shaders traduzidos estruturados (`if`/laços em vez de `switch (pc)`), medidos antes com
+`LARECOMP_SHADER_SUBST` numa versão estruturada à mão do shader de iluminação do mundo aberto. Depois: toque e ciclo
+de vida (Fase 4) e o seletor de pasta (Fase 5), para instalar sem `adb`.

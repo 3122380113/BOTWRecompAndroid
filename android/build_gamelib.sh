@@ -31,4 +31,6 @@ fi
 "$CMAKE_DIR/cmake$EXE" --build "$W" -j"$(nproc 2>/dev/null || echo 8)"
 mkdir -p "$OUT"
 cp "$W/lasgame.so" "$W/lasgame.so.id" "$OUT/"
+# (debug info off: ~580 MB -> ~110 MB to push and load; the symbols stay, for simpleperf and crash reports)
+"$NDK/toolchains/llvm/prebuilt/$(ls "$NDK/toolchains/llvm/prebuilt" | head -1)/bin/llvm-strip$EXE" --strip-debug "$OUT/lasgame.so"
 ls -la "$OUT/lasgame.so" "$OUT/lasgame.so.id"
