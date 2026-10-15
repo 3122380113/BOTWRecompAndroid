@@ -74,6 +74,10 @@ extern "C" void menu_test_open(void) {
 }
 
 void menu_tabs_focus(bool first_tab);
+#ifdef __ANDROID__
+static void set_open(bool open);
+extern "C" void menu_request_close(void) { set_open(false); }  // (ui/touch_controls.mm: editing the layout)
+#endif
 static void set_open(bool open) {
     if (open == g_open.load()) return;
     g_open.store(open);
@@ -265,6 +269,10 @@ void menu_apply_window_requests(void *win) {
     // With a controller, the in-app keyboard only: Android's own keyboard would open over it, and while it is up it
     // takes the controller's stick and d-pad (after naming Link the stick no longer moved him; buttons still worked)
     if (want_text && SDL_HasGamepad()) want_text = false;
+    // ... and otherwise only while a text field is being typed in, without the in-app keyboard (the name entry has
+    // it): with the menu merely open, Android's keyboard came up over it every time
+    extern bool osk_is_open(void);
+    if (want_text && (!g_text_busy.load() || osk_is_open())) want_text = false;
 #endif
     if (want_text != text_input) {
         if (want_text) SDL_StartTextInput(w);
@@ -454,23 +462,38 @@ static void tab_display(void) {
     opt_choice("Aspect ratio", &g_settings.aspect, aspects, 2, ASPECT_UNLOCKED,
                "Unlocked: the view fills the window, so wider (or taller) windows show more of the island - up to "
                "ultrawide; houses and dungeons keep their framing. Original 16:9: the game's own framing, with bars.");
+#ifndef __ANDROID__  // (Android: always the whole screen)
     bool fs = g_settings.fullscreen;
     if (opt_toggle("Fullscreen", &fs, false, "Fills the screen. Also: F11, Alt+Enter or Cmd+Ctrl+F.")) {
         g_settings.fullscreen = fs;
         g_want_fullscreen_apply.store(true);
     }
+#endif
     opt_toggle("Show FPS", &g_settings.show_fps, false, "Shows the frame rate in the top right corner.");
 #ifdef __ANDROID__
     opt_toggle("Touch controls", &g_settings.touch_controls, false,
                "On-screen buttons and stick while no controller is connected. The back button opens this menu.");
+    {
+        static const char *fr[] = {"Auto (30 / 60)", "30 fps", "60 fps"};
+        opt_choice("Frame rate", &g_settings.fps_mode, fr, 3, 0,
+                   "The game runs in steps of a 60 Hz clock: at 60 fps one step per frame, at 30 fps two. Auto: the "
+                   "game picks, as on the Switch, and drops to 30 where 60 doesn't fit. 30 fps: always 30, steady. "
+                   "60 fps: always 60 - where a frame takes longer, the game runs in slow motion (it can't run above "
+                   "60: it would speed up).");
+    }
 #endif
 
     opt_section("Rendering");
     // display order -> RES_* (the ini / enum order predates the menu order)
     // (up to 4x: 7680 x 4320, 8K - more only ran out of GPU memory, and sat next to 75% in the list)
     // (Match display in the middle: left from it 75% / 50% / 25%, right Dynamic then 1x-4x; user 2026-10-11)
+#ifdef __ANDROID__  // (3x / 4x: 4K / 8K, beyond a phone)
+    static const char *res[] = {"25%", "50%", "75%", "Match display", "Dynamic", "1x", "2x"};
+    static const int res_mode[] = {RES_Q25, RES_Q50, RES_Q75, RES_MATCH, RES_DYNAMIC, 1, 2};
+#else
     static const char *res[] = {"25%", "50%", "75%", "Match display", "Dynamic", "1x", "2x", "3x", "4x"};
     static const int res_mode[] = {RES_Q25, RES_Q50, RES_Q75, RES_MATCH, RES_DYNAMIC, 1, 2, 3, 4};
+#endif
     enum { RES_MATCH_AT = 3 };
     enum { NRES = sizeof res_mode / sizeof res_mode[0] };
     {
@@ -559,14 +582,19 @@ static void tab_quit(float scale, bool in_game) {
     char d1[200], d2[200];
     snprintf(d1, sizeof d1, "Leaves the game and goes back to the LAS Recomp start screen.%s", lost);
     snprintf(d2, sizeof d2, "Closes LAS Recomp.%s", lost);
+#ifdef __ANDROID__
+    const char *quit_app = "Close the App", *quit_app_yes = "Yes, close the App";
+#else
+    const char *quit_app = "Quit to Desktop", *quit_app_yes = "Yes, quit to Desktop";
+#endif
     opt_begin("##quit", scale);
     opt_section("Quit");
     if (!ask) {
         if (!in_game) opt_disable_next();  // (already on it)
         if (opt_action("Quit to Start Screen", "", in_game ? d1 : "You're on the start screen.")) ask = 1;
-        if (opt_action("Quit to Desktop", "", d2)) ask = 2;
+        if (opt_action(quit_app, "", d2)) ask = 2;
     } else {
-        if (opt_action(ask == 1 ? "Yes, quit to Start Screen" : "Yes, quit to Desktop", "", ask == 1 ? d1 : d2)) {
+        if (opt_action(ask == 1 ? "Yes, quit to Start Screen" : quit_app_yes, "", ask == 1 ? d1 : d2)) {
             settings_save();
             if (ask == 1) {
                 rt_request_reboot(2);
@@ -615,9 +643,15 @@ static void tab_about(void) {
     controls_bindings_draw(ImGui::GetFontSize() / 34);
     ImGui::Spacing();
     header("Menu");
+#ifdef __ANDROID__
+    ImGui::TextUnformatted("Open / close this menu:  the menu button on the screen, the back button, or the controller's "
+                           "Home / Xbox / PlayStation button, or Back + Start");
+    ImGui::TextUnformatted("Switch tabs:  L / R        Back:  B");
+#else
     ImGui::TextUnformatted("Open / close this menu:  F1, Esc, the controller's Home / Xbox / PlayStation button, or Back + Start");
     ImGui::TextUnformatted("Switch tabs:  L / R  (Q / E)        Back:  B  (Esc)");
     ImGui::TextUnformatted("Fullscreen:  F11 / Alt+Enter");
+#endif
 }
 
 extern "C" bool inventory_overlay_wanted(void);
@@ -704,8 +738,12 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
                                   "Cosmetics", "Controls", "Quit"};
     static const int order[] = {8, 0, 1, 6, 7, 3, 5, 4, 2, 9};  // Controls, Video, Audio, Gameplay, Cosmetics, Randomizer,
                                                                 // Cheats, Warp, Save Editor, Quit (ids stay: test hooks)
-    for (int i : order)  // (Quit: in game only - the start screen has its own QUIT, and an eleventh tab cut names short)
+    for (int i : order) {  // (Quit: in game only - the start screen has its own QUIT, and an eleventh tab cut names short)
+#ifdef __ANDROID__
+        if (i == 3) continue;  // (no randomizer: its seed generator is a desktop program)
+#endif
         if (i != 9 || !prelaunch) tabs[ntabs++] = {names[i], i, in_game || (i != 2 && i != 4 && i != 5)};
+    }
     int cur = 0;  // g_tab / g_tab_request hold ids
     for (int i = 0; i < ntabs; i++) if (tabs[i].id == g_tab) cur = i;
     if (!tabs[cur].on) cur = 0;

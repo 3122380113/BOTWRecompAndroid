@@ -33,6 +33,10 @@ typedef struct {
     bool show_fps;
 #ifdef __ANDROID__
     bool touch_controls;  // on-screen controls while no controller is connected (ui/touch_controls.mm)
+    int fps_mode;         // 0: the game's own choice (30 / 60, the frame pacer), 1: 30 fps, 2: 60 fps
+#define TOUCH_NCTL 12
+    float touch_pos[TOUCH_NCTL][2];  // each on-screen control's place, a share of the screen (negative: default)
+    float touch_scale, touch_opacity;
 #endif
     bool dpad_move;      // the d-pad (and arrow keys) move Link like the stick
     bool move_360;       // analog movement in any direction (the game snaps the stick to 8): runtime/hle/qol.c

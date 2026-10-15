@@ -583,7 +583,12 @@ static bool menu_tip(float s) {
         ImGui::TextUnformatted("LAS Recomp has its own menu for settings, the randomizer, cosmetics and more.");
         ImGui::Spacing();
         int fam = bind_label_family() % 3;
+#ifdef __ANDROID__
+        ImGui::Text("Open it in game with the menu button on the screen or the back button, or on a controller with the "
+                    "%s (or %s together).", home[fam], pad[fam]);
+#else
         ImGui::Text("Open it in game with F1 or Esc, or on a controller with the %s (or %s together).", home[fam], pad[fam]);
+#endif
         ImGui::PopTextWrapPos();
         ImGui::Dummy(ImVec2(0, 14 * s));
         ImGui::SetCursorPosX((ImGui::GetWindowWidth() - 180 * s) * 0.5f);

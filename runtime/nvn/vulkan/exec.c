@@ -185,6 +185,14 @@ void vk_pace_frame(void) {
     idx = (idx + 1) % 60;
     if (!pace_on) return;  // (measured and counted all the same: LARECOMP_LOG_PACE, the stats)
 #ifdef __ANDROID__
+    if (g_settings.fps_mode) {  // (Video: Frame rate 30 / 60) fixed: no measuring, no trials
+        bool slow = g_settings.fps_mode == 1;
+        if (slow != pace_slow) LOG("[pace] frame rate set to %d fps\n", slow ? 30 : 60);
+        pace_slow = slow;
+        return;
+    }
+#endif
+#ifdef __ANDROID__
     // Trials: a 30 fps frame carries more of the game's CPU work than a 60 fps one, so the headroom test below rarely
     // passes there - one hitch (a pipeline compile) kept the overworld at 30 for good. Every probe_wait seconds at
     // 30 the game's own choice comes back for a trial; frames that don't fit within 3 s bring the 30 back (each
@@ -235,7 +243,7 @@ static uint64_t pace_end_counter(const uint64_t *start_entry, const uint64_t *en
 #ifdef __ANDROID__
     static int fast = -1;
     if (fast < 0) fast = getenv("LARECOMP_FAST_COUNTERS") != NULL;
-    if (!pace_slow && pace_on > 0 && fast) {
+    if (!pace_slow && pace_on > 0 && (fast || g_settings.fps_mode == 2)) {
         uint64_t max = start_entry[1] + ns_to_gpu_ticks(PACE_FAST_NS);
         return value > max ? max : value;
     }

@@ -24,6 +24,10 @@ Settings g_settings = {
 #ifdef __ANDROID__
     .show_fps = true,  // (the performance overlay, ui/perf_overlay.mm: on until turned off in the menu)
     .touch_controls = true,
+    .touch_pos = {{-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1},
+                  {-1, -1}, {-1, -1}},
+    .touch_scale = 1.0f,
+    .touch_opacity = 1.0f,
 #else
     .show_fps = false,
 #endif
@@ -82,12 +86,21 @@ void settings_load(void) {
     loaded = true;
     FILE *f = fopen(SETTINGS_FILE, "r");
     if (!f) return;
+#ifdef __ANDROID__
+    char line[640];  // (touch_layout: 24 numbers)
+#else
     char line[256];
+#endif
     bool tip_key = false, aspect_key = false;
     while (fgets(line, sizeof line, f)) {
         char key[64];
+#ifdef __ANDROID__
+        char val[512];
+        if (sscanf(line, " %63[^= ] = %511[^\n]", key, val) < 1) continue;
+#else
         char val[128];
         if (sscanf(line, " %63[^= ] = %127[^\n]", key, val) < 1) continue;
+#endif
         if (!strcmp(key, "rando_seed")) {
             if (sscanf(line, " %63[^= ] = %127[^\n]", key, val) != 2) val[0] = 0;
             strlcpy(g_settings.rando_seed, val, sizeof g_settings.rando_seed);
@@ -101,6 +114,16 @@ void settings_load(void) {
         else if (!strcmp(key, "show_fps")) g_settings.show_fps = atoi(val) != 0;
 #ifdef __ANDROID__
         else if (!strcmp(key, "touch_controls")) g_settings.touch_controls = atoi(val) != 0;
+        else if (!strcmp(key, "frame_rate")) g_settings.fps_mode = !strcmp(val, "30") ? 1 : !strcmp(val, "60") ? 2 : 0;
+        else if (!strcmp(key, "touch_scale")) g_settings.touch_scale = (float)atof(val);
+        else if (!strcmp(key, "touch_opacity")) g_settings.touch_opacity = (float)atof(val);
+        else if (!strcmp(key, "touch_layout")) {  // x,y per control (a share of the screen; negative: default)
+            char *q = val;
+            for (int i = 0; i < TOUCH_NCTL * 2 && *q; i++) {
+                g_settings.touch_pos[i / 2][i % 2] = strtof(q, &q);
+                while (*q == ',' || *q == ' ') q++;
+            }
+        }
 #endif
         else if (!strcmp(key, "resolution")) {
             int n = atoi(val);
@@ -160,6 +183,11 @@ void settings_save(void) {
     fprintf(f, "show_fps = %d\n", g_settings.show_fps);
 #ifdef __ANDROID__
     fprintf(f, "touch_controls = %d\n", g_settings.touch_controls);
+    fprintf(f, "frame_rate = %s\n", g_settings.fps_mode == 1 ? "30" : g_settings.fps_mode == 2 ? "60" : "auto");
+    fprintf(f, "touch_scale = %.2f\ntouch_opacity = %.2f\ntouch_layout = ", g_settings.touch_scale, g_settings.touch_opacity);
+    for (int i = 0; i < TOUCH_NCTL; i++)
+        fprintf(f, "%s%.4f,%.4f", i ? "," : "", g_settings.touch_pos[i][0], g_settings.touch_pos[i][1]);
+    fprintf(f, "\n");
 #endif
     fprintf(f, "upscaler = %s\n", g_settings.upscaler == UPSCALE_METALFX ? "metalfx" : g_settings.upscaler == UPSCALE_FSR1 ? "fsr1" : "bilinear");
     fprintf(f, "antialias = %s\n", g_settings.antialias == AA_SMAA ? "smaa" : "off");
