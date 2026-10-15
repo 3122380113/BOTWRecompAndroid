@@ -334,8 +334,8 @@ static void create_swapchain(void) {
     // size, turned by the compositor (pre-rotation in the app would spare it that: docs/ANDROID-PORT.md, Fase 3)
     VkExtent2D ext = {(uint32_t)w, (uint32_t)h};
     VkSurfaceTransformFlagBitsKHR transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
-    LOG("[vk] swapchain: surface %ux%u transform %#x, window %dx%d\n", caps.currentExtent.width, caps.currentExtent.height,
-        caps.currentTransform, w, h);
+    LOG("[vk] swapchain: surface %ux%u transform %#x, window %dx%d, present mode %d, images %u-%u\n", caps.currentExtent.width,
+        caps.currentExtent.height, caps.currentTransform, w, h, present_mode(), caps.minImageCount, caps.maxImageCount);
 #else
     VkExtent2D ext = caps.currentExtent.width != UINT32_MAX ? caps.currentExtent : (VkExtent2D){(uint32_t)w, (uint32_t)h};
     VkSurfaceTransformFlagBitsKHR transform = caps.currentTransform;

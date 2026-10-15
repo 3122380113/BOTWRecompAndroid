@@ -52,6 +52,14 @@ static Sub subs[SUBS];
 static int cur_sub;
 static void ss_forget(void);
 static uint64_t submit_seq;  // last submitted
+#ifdef __ANDROID__
+// The last submission with the game's commands in it (backend_execute's), and whether some are not submitted yet.
+// The game's fences (nvnQueueFenceSync) right after its submission went to the next one - the window's present,
+// which waits for a window image: its waits followed the compositor (SyncWait 8-17 ms a frame) rather than its own
+// GPU work, all of which is ahead of the present in the queue. LARECOMP_FENCE_PRESENT=1: as before.
+static uint64_t work_seq;
+static bool game_pending;
+#endif
 static pthread_mutex_t seq_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool in_pass;
 
@@ -402,7 +410,15 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
     }
     pthread_mutex_lock(&seq_lock);
     submit_seq++;
+#ifdef __ANDROID__
+    if (game_pending) work_seq = submit_seq;  // (cleared when backend_execute is done: flushes inside it come first)
+#endif
     pthread_mutex_unlock(&seq_lock);
+    {
+        static int log = -1;  // (LARECOMP_LOG_SYNCSEQ, renderer_wait_seq)
+        if (log < 0) log = getenv("LARECOMP_LOG_SYNCSEQ") != NULL;
+        if (log) LOG("[syncseq] t %.2f submitted seq %llu%s\n", SDL_GetTicksNS() / 1e6, (unsigned long long)submit_seq, signal ? " (present)" : "");
+    }
     cur_sub = (cur_sub + 1) % SUBS;
     stat_flushes++;
     cum_submits++;
@@ -429,6 +445,16 @@ void renderer_sync(void) {
 uint64_t renderer_fence_seq(void) {
     pthread_mutex_lock(&seq_lock);
     uint64_t q = submit_seq + (subs[cur_sub].main_begun || subs[cur_sub].upload_begun ? 1 : 0);
+#ifdef __ANDROID__
+    static int fence_present = -1;
+    if (fence_present < 0) fence_present = getenv("LARECOMP_FENCE_PRESENT") != NULL;
+    if (!game_pending && work_seq && !fence_present) q = work_seq;
+    static int log = -1;
+    if (log < 0) log = getenv("LARECOMP_LOG_SYNCSEQ") != NULL;
+    if (log) LOG("[syncseq] t %.2f fence -> seq %llu (submitted %llu, work %llu, begun %d/%d, tid %d)\n", SDL_GetTicksNS() / 1e6,
+                 (unsigned long long)q, (unsigned long long)submit_seq, (unsigned long long)work_seq, subs[cur_sub].main_begun,
+                 subs[cur_sub].upload_begun, (int)pthread_gettid_np(pthread_self()));
+#endif
     pthread_mutex_unlock(&seq_lock);
     return q;
 }
@@ -439,7 +465,12 @@ void renderer_wait_seq(uint64_t seq) {
     uint64_t s = submit_seq;
     pthread_mutex_unlock(&seq_lock);
     wait_why = seq > s ? "SyncWait (fence not submitted yet)" : "SyncWait";
+    static int log = -1;  // LARECOMP_LOG_SYNCSEQ=1: which submission each SyncWait waits for (vs the last one) and how long
+    if (log < 0) log = getenv("LARECOMP_LOG_SYNCSEQ") != NULL;
+    uint64_t t0 = log ? SDL_GetTicksNS() : 0;
     vk_wait_seq(seq > s ? s : seq);  // not submitted yet (other thread): everything submitted so far
+    if (log) LOG("[syncseq] t %.2f wait seq %llu (submitted %llu): %.2f ms, frame %llu\n", t0 / 1e6, (unsigned long long)seq,
+                 (unsigned long long)s, (SDL_GetTicksNS() - t0) / 1e6, (unsigned long long)vk_frame_counter());
 }
 
 VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout layout) {
@@ -4064,6 +4095,9 @@ static void exec_list(uint64_t handle, int depth) {
 
 void backend_execute(uint64_t handle) {
     PROF_T0();
+#ifdef __ANDROID__
+    game_pending = true;  // (renderer_fence_seq)
+#endif
     exec_list(handle, 0);
     PROF_ADD(prof_exec);
     if (prof) cum_exec += SDL_GetTicksNS() - prof_t0_;
@@ -4071,4 +4105,7 @@ void backend_execute(uint64_t handle) {
     if (sync_submit < 0) sync_submit = getenv("LARECOMP_SYNC_SUBMIT") ? 1 : 0;
     if (sync_submit) renderer_flush();
     else renderer_submit();
+#ifdef __ANDROID__
+    game_pending = false;
+#endif
 }
