@@ -38,8 +38,12 @@ const char *const g_language_names[N_LANGUAGES] = {"Auto", "Japanese", "English"
                                                    "Italian", "Dutch", "Russian", "Korean", "Chinese (Simplified)",
                                                    "Chinese (Traditional)"};
 
-// LANG_AUTO: the host's own language (LANG=es_ES.UTF-8 -> es), en-US when it is none of the game's
+// LANG_AUTO: the host's own language (LANG=es_ES.UTF-8 -> es), en-US when it is none of the game's. Linux only:
+// macOS / Windows apps get no locale variables from the system, so Auto is English there (pick one in settings).
 static const char *host_language(void) {
+#ifndef __linux__
+    return "en-US";
+#endif
     const char *e = getenv("LC_ALL");
     if (!e || !*e) e = getenv("LC_MESSAGES");
     if (!e || !*e) e = getenv("LANG");
