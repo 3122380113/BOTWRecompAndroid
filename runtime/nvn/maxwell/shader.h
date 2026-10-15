@@ -97,6 +97,9 @@ extern bool maxwell_brx_window;
 // machine has no stack arrays (48 dynamically indexed words: registers or scratch memory on a mobile GPU). Shaders
 // where a target isn't the same on every path keep the stacks. Set by the Android backend.
 extern bool maxwell_static_stacks;
+// (GLSL, with maxwell_static_stacks) shaders with branches as if / else / for instead of the `switch (pc)` state
+// machine when their control flow allows it (translate.c structure()). Set by the Android backend.
+extern bool maxwell_structured;
 // Debug: when translating the shader whose code starts at maxwell_dbg_code, output register
 // maxwell_dbg_reg as captured after the instruction at maxwell_dbg_pc (greyscale, all targets).
 extern const uint8_t *maxwell_dbg_code;

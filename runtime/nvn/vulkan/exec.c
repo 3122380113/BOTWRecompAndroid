@@ -1286,6 +1286,7 @@ static void translate_program(void *arg) {
     maxwell_gmem_map_all = gcopy_mode;
     maxwell_brx_window = !getenv("LARECOMP_BRX_ALL_LABELS");
     maxwell_static_stacks = !getenv("LARECOMP_DYN_STACKS");
+    maxwell_structured = !getenv("LARECOMP_NO_STRUCTURE");
 #endif
     pthread_mutex_lock(&translate_lock);
     p->vi = maxwell_translate((const uint8_t *)(uintptr_t)p->code[0], p->cmax[0], STAGE_VERTEX, &p->vkey);
@@ -2779,6 +2780,7 @@ static CsProg *compute_program(NvnProgram *np) {
     maxwell_gmem_map_all = gcopy_mode;
     maxwell_brx_window = !getenv("LARECOMP_BRX_ALL_LABELS");
     maxwell_static_stacks = !getenv("LARECOMP_DYN_STACKS");
+    maxwell_structured = !getenv("LARECOMP_NO_STRUCTURE");
 #endif
     ShaderKey k = {0};
     k.glsl = 1;
