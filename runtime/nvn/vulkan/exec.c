@@ -184,9 +184,24 @@ void vk_pace_frame(void) {
     over[idx] = (uint8_t)o;
     idx = (idx + 1) % 60;
     if (!on) return;  // (measured and counted all the same: LARECOMP_LOG_PACE, the stats)
+#ifdef __ANDROID__
+    // Trials: a 30 fps frame carries more of the game's CPU work than a 60 fps one, so the headroom test below rarely
+    // passes there - one hitch (a pipeline compile) kept the overworld at 30 for good. Every probe_wait seconds at
+    // 30 the game's own choice comes back for a trial; frames that don't fit within 3 s bring the 30 back (each
+    // failed trial doubles the wait, up to 80 s; a trial that holds resets it).
+    static uint64_t slow_since, probe_at, probe_wait = 10000000000ull;
+    if (pace_slow && !slow_since) slow_since = now;
+    if (probe_at && now - probe_at < 1000000000ull) nover = 0, memset(over, 0, sizeof over);  // (the game switching)
+    if (probe_at && !pace_slow && now - probe_at >= 3000000000ull) probe_at = 0, probe_wait = 10000000000ull;
+#endif
     if (!pace_slow && nover >= 12) {
         pace_slow = true, calm = 0;
         LOG("[pace] frames don't fit 60 fps (%d of the last 60 over 16.2 ms busy): the game's 30 fps mode\n", nover);
+#ifdef __ANDROID__
+        if (probe_at && now - probe_at < 3000000000ull && probe_wait < 80000000000ull) probe_wait *= 2;
+        probe_at = 0;
+        slow_since = now;
+#endif
     } else if (pace_slow) {
         // headroom: busy well under a 60 fps frame on average, hardly a frame over (single spikes are normal play)
         calm = avg < 13.0 && nover <= 2 ? calm + 1 : 0;
@@ -195,6 +210,15 @@ void vk_pace_frame(void) {
             memset(over, 0, sizeof over);
             LOG("[pace] 2 s with headroom: back to the game's own choice\n");
         }
+#ifdef __ANDROID__
+        else if (now - slow_since >= probe_wait) {
+            pace_slow = false, nover = 0;
+            memset(over, 0, sizeof over);
+            probe_at = now;
+            LOG("[pace] trial: the game's own choice for a while (after %.0f s at 30 fps)\n", probe_wait / 1e9);
+        }
+        if (!pace_slow) slow_since = 0;
+#endif
     }
 }
 
