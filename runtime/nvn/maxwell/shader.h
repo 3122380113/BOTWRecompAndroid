@@ -93,6 +93,10 @@ extern bool maxwell_gmem_map_all;
 // A BRX (jump table) labels only the instructions up to the join pushed before it, not the whole shader (set by the
 // Android backend: Adreno's compiler turns every label into a block boundary)
 extern bool maxwell_brx_window;
+// (GLSL) SSY / PBK / PCNT targets resolved while translating: SYNC / BRK / CONT jump to constants, and the state
+// machine has no stack arrays (48 dynamically indexed words: registers or scratch memory on a mobile GPU). Shaders
+// where a target isn't the same on every path keep the stacks. Set by the Android backend.
+extern bool maxwell_static_stacks;
 // Debug: when translating the shader whose code starts at maxwell_dbg_code, output register
 // maxwell_dbg_reg as captured after the instruction at maxwell_dbg_pc (greyscale, all targets).
 extern const uint8_t *maxwell_dbg_code;

@@ -25,6 +25,7 @@
 uint64_t maxwell_gmem_base, maxwell_gmem_size;
 bool maxwell_gmem_map_all;
 bool maxwell_brx_window;
+bool maxwell_static_stacks;
 const uint8_t *maxwell_dbg_code;
 uint32_t maxwell_dbg_pc;
 int maxwell_dbg_reg;
@@ -80,6 +81,8 @@ typedef struct {
     bool glsl;               // emit Vulkan GLSL: dialect-specific constructs here, the rest via glsl_rewrite()
     bool uses_gmem_store;    // STG present: the gmem buffer is not readonly
     uint32_t cbuf_need[18];  // highest constant vec4 index + 1 per cbuf (array size of the GLSL block)
+    bool static_stacks;      // (maxwell_static_stacks) flow_to holds every SYNC / BRK / CONT target
+    int32_t *flow_to;        // per instruction index: its resolved target pc (-1: never reached)
 } Ctx;
 
 static uint64_t bits(uint64_t w, int lo, int n) { return (w >> lo) & ((n == 64) ? ~0ull : ((1ull << n) - 1)); }
@@ -854,6 +857,14 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         uint32_t target = norm_target((int64_t)pc + 8 + sbits(w, 20, 24));
         c->uses_branches = true;
         sp(&c->body, "    pc = %uu; continue;\n", target);
+    } else if (c->static_stacks && (OPM(0xe290000000000000ull, 0xfff0000000000020ull) || OPM(0xe2a0000000000000ull, 0xfff0000000000020ull) ||
+                                    OPM(0xe2b0000000000000ull, 0xfff0000000000020ull))) {  // SSY / PBK / PCNT, resolved
+        c->uses_branches = true;
+    } else if (c->static_stacks && (OPM(0xf0f8000000000000ull, 0xfff8000000000000ull) || OPM(0xe340000000000000ull, 0xfff0000000000000ull) ||
+                                    OPM(0xe350000000000000ull, 0xfff0000000000000ull))) {  // SYNC / BRK / CONT, resolved
+        int32_t t = c->flow_to[pc / 8];
+        if (t >= 0) sp(&c->body, "    pc = %uu; continue;\n", (uint32_t)t);
+        else sp(&c->body, "    exit_now = true; break;\n");  // (never reached)
     } else if (OPM(0xe290000000000000ull, 0xfff0000000000020ull)) {  // SSY
         c->uses_branches = true;
         sp(&c->body, "    ssy[ssy_n++] = %uu;\n", norm_target((int64_t)pc + 8 + sbits(w, 20, 24)));
@@ -1779,6 +1790,68 @@ static const char *glsl_sampler_type(const ShaderTexture *t) {
 }
 
 // Declarations + entry point around the (rewritten) body; mirrors the MSL assembly in maxwell_translate.
+// (maxwell_static_stacks) Follows every path from the entry with the SSY / PBK / PCNT stacks' contents, as the state
+// machine runs them per invocation: a SYNC / BRK goes to the target it pops, a CONT to its top (kept), and their
+// guarded forms may also fall through with the stack as it was. flow_to[i]: the target of the SYNC / BRK / CONT at i.
+// False (keep the stacks) when an instruction is reached with two different stacks, a stack under- or overflows, or
+// the program has a jump table or call / return.
+typedef struct { uint8_t n[3], seen; uint32_t v[3][16]; } FlowSt;
+static bool resolve_stacks(const uint64_t *code, size_t end, int32_t *flow_to) {
+    FlowSt *st = calloc(end, sizeof *st);
+    uint32_t *work = malloc(end * 2 * sizeof *work + 16);
+    size_t nwork = 0;
+    bool ok = true;
+    for (size_t i = 0; i < end; i++) flow_to[i] = -1;
+#define FLOW_NEXT(i) ((i) + 1 + (((i) + 1) % 4 == 0))
+#define FLOW_GO(j, S) do { size_t j_ = (j); if (j_ >= end) break; \
+        if (!st[j_].seen) { st[j_] = (S); st[j_].seen = 1; work[nwork++] = (uint32_t)j_; } \
+        else if (memcmp(st[j_].n, (S).n, 3) || memcmp(st[j_].v, (S).v, sizeof (S).v)) ok = false; } while (0)
+    if (end > 1) { FlowSt e = {{0}}; FLOW_GO(1, e); }
+    while (nwork && ok) {
+        size_t i = work[--nwork];
+        FlowSt S = st[i];
+        uint64_t w = code[i];
+        uint32_t pc = (uint32_t)(i * 8);
+        uint32_t top = (uint32_t)(w >> 52);
+        int pr = (int)bits(w, 16, 3);
+        bool prn = bits(w, 19, 1);
+        bool push = (w & 0xfff0000000000020ull) == 0xe290000000000000ull || (w & 0xfff0000000000020ull) == 0xe2a0000000000000ull ||
+                    (w & 0xfff0000000000020ull) == 0xe2b0000000000000ull;
+        if (push || (w & 0xfff0000000000000ull) == 0xe270000000000000ull) pr = PT, prn = false;  // (as emit_insn)
+        if (pr == PT && prn) { FLOW_GO(FLOW_NEXT(i), S); continue; }  // (never executes)
+        bool cond = !(pr == PT && !prn);
+        int64_t t = norm_target((int64_t)pc + 8 + sbits(w, 20, 24));
+        if ((w & 0xfff0000000000020ull) == 0xe240000000000000ull) {  // BRA
+            if (t >= 0) FLOW_GO((size_t)t / 8, S);
+            if (cond) FLOW_GO(FLOW_NEXT(i), S);
+        } else if (push) {  // SSY / PBK / PCNT
+            int k = top == 0xe29 ? 0 : top == 0xe2a ? 1 : 2;
+            if (S.n[k] == 16 || t < 0) { ok = false; break; }
+            S.v[k][S.n[k]++] = (uint32_t)t;
+            FLOW_GO(FLOW_NEXT(i), S);
+        } else if ((w & 0xfff8000000000000ull) == 0xf0f8000000000000ull || top == 0xe34 || top == 0xe35) {  // SYNC BRK CONT
+            int k = top == 0xe34 ? 1 : top == 0xe35 ? 2 : 0;
+            if (!S.n[k]) { ok = false; break; }
+            uint32_t to = S.v[k][S.n[k] - 1];
+            flow_to[i] = (int32_t)to;
+            if (cond) FLOW_GO(FLOW_NEXT(i), S);
+            if (k != 2) S.n[k]--;
+            FLOW_GO(to / 8, S);
+        } else if (top == 0xe30) {  // EXIT
+            if (cond) FLOW_GO(FLOW_NEXT(i), S);
+        } else if (top >= 0xe20 && top <= 0xe3f && top != 0xe33) {  // BRX, CAL, RET, PRET, ... (KIL: 0xe33)
+            ok = false;
+        } else {
+            FLOW_GO(FLOW_NEXT(i), S);
+        }
+    }
+#undef FLOW_GO
+#undef FLOW_NEXT
+    free(work);
+    free(st);
+    return ok;
+}
+
 static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     ShaderInfo *info = c->info;
     const ShaderKey *key = c->key;
@@ -1875,7 +1948,8 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     if (c->uses_local) sp(&s, "  uint lmem[%d]; for (int li_ = 0; li_ < %d; li_++) lmem[li_] = 0u;\n", LMEM_WORDS, LMEM_WORDS);
     if (dbg) sp(&s, maxwell_dbg_pc == 0xffffffffu ? "  float dbgv = 1.0f;\n" : "  float dbgv = -1.0f;\n");
     if (any_branch) {
-        sp(&s, "  uint pc = 8u; uint ssy[16]; uint ssy_n = 0u; uint pbk[16]; uint pbk_n = 0u; uint pcnt[16]; uint pcnt_n = 0u;\n");
+        if (c->static_stacks) sp(&s, "  uint pc = 8u;\n");
+        else sp(&s, "  uint pc = 8u; uint ssy[16]; uint ssy_n = 0u; uint pbk[16]; uint pbk_n = 0u; uint pcnt[16]; uint pcnt_n = 0u;\n");
         sp(&s, "  bool exit_now = false;\n");
         sp(&s, "  for (uint guard = 0u; guard < 100000u; guard++) {\n  switch (pc) {\n");
         sp(&s, "%s", body.buf ? body.buf : "");
@@ -1999,6 +2073,10 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
     static int annotate = -1;
     if (annotate < 0) annotate = getenv("LARECOMP_SAVE_MSL") != NULL;
     c->branchy = any_branch;
+    if (c->glsl && any_branch && maxwell_static_stacks) {
+        c->flow_to = malloc(end * sizeof *c->flow_to + 4);
+        c->static_stacks = c->flow_to && resolve_stacks((const uint64_t *)code, end, c->flow_to);
+    }
     for (size_t i = 0; i < end && !c->fail; i++) {
         if (i % 4 == 0) continue;
         uint32_t pc = (uint32_t)(i * 8);
@@ -2014,6 +2092,8 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
         info->num_insts++;
     }
     free(label);
+    free(c->flow_to);
+    c->flow_to = NULL;
     if (c->fail) { free(c->body.buf); free(c); return info; }
     if (c->glsl) return glsl_finish(c, any_branch, dbg);
 
