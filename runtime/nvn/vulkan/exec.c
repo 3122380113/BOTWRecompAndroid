@@ -2089,9 +2089,14 @@ static uint32_t gmap_tab[(GMAP_MAX + 1) * 4];  // this dispatch's table (stage_s
 static VkBufferCopy gfast_cp[GMAP_MAX];       // its copies heap -> gfast_buf (reversed after a storing dispatch)
 static int gfast_n;
 
+#ifdef __ANDROID__
+static VkDescriptorBufferInfo gfast_win;  // (gfast_prepare, heap placed: a window of the heap instead of a copy)
+#endif
+
 static VkDescriptorBufferInfo gfast_info(void) {
 #ifdef __ANDROID__
     if (gcopy_mode && gc_size) return (VkDescriptorBufferInfo){gc_span.buf, gc_span.off, gc_size};
+    if (gfast_win.buffer) return gfast_win;
 #endif
     if (!gfast_buf) {
         VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = GFAST_SIZE,
@@ -2108,6 +2113,9 @@ static void gfast_prepare(VkCommandBuffer cb) {
     if (on < 0) { const char *e = getenv("LARECOMP_VK_GMEM_FAST"); on = !e || atoi(e) != 0; }
     memset(gmap_tab, 0, sizeof gmap_tab);
     gfast_n = 0;
+#ifdef __ANDROID__
+    gfast_win = (VkDescriptorBufferInfo){0};
+#endif
     gmem_info();  // (the heap import, made on first use)
     gfast_info();
     if (!on || !gmem_buf) return;
@@ -2127,6 +2135,28 @@ static void gfast_prepare(VkCommandBuffer cb) {
         if (m && r[i].lo <= r[m - 1].hi + 4096) { if (r[i].hi > r[m - 1].hi) r[m - 1].hi = r[i].hi; }
         else r[m++] = r[i];
     }
+#ifdef __ANDROID__
+    // The heap placed in GPU memory (vk_heap_place) is already where the GPU works best (one memory, no bus): a
+    // copy of the ranges and back, with full barriers around each dispatch, only cost time (~3 ms a frame of the
+    // overworld's light lists). Only its descriptor's reach is limited (maxStorageBufferRange, 2 GB on Adreno, the
+    // heap is larger): the table points into a window of the heap that starts at the first range instead.
+    if (gmem_buf && !g_vk.host_import && m && m <= GMAP_MAX) {
+        uint64_t al = g_vk.props.limits.minStorageBufferOffsetAlignment ? g_vk.props.limits.minStorageBufferOffsetAlignment : 256;
+        uint64_t base = r[0].lo / al * al;
+        uint64_t reach = g_vk.props.limits.maxStorageBufferRange & ~3ull;
+        if (reach > gmem_size - base) reach = gmem_size - base;
+        if (r[m - 1].hi - base <= reach) {
+            for (int i = 0; i < m; i++) {
+                gmap_tab[i * 4 + 0] = (uint32_t)r[i].lo;
+                gmap_tab[i * 4 + 1] = (uint32_t)(r[i].hi - r[i].lo);
+                gmap_tab[i * 4 + 2] = (uint32_t)((r[i].lo - base) >> 2);
+            }
+            gmap_tab[GMAP_MAX * 4] = (uint32_t)m;
+            gfast_win = (VkDescriptorBufferInfo){gmem_buf, base, reach};
+            return;  // (gfast_n 0: nothing to copy back)
+        }
+    }
+#endif
     VkBufferCopy cp[16];
     uint64_t off = 0;
     for (int i = 0; i < m; i++) {
@@ -2156,6 +2186,9 @@ static void gfast_prepare(VkCommandBuffer cb) {
 
 // After a storing dispatch: its ranges back to the heap (before anything else reads them: draws, the CPU after the fence).
 static void gfast_finish(VkCommandBuffer cb) {
+#ifdef __ANDROID__
+    if (gfast_win.buffer) { vk_full_barrier(cb); return; }  // (stored into the heap itself: visible to what follows)
+#endif
     if (!gfast_n) return;
     VkBufferCopy back[GMAP_MAX];
     for (int i = 0; i < gfast_n; i++) back[i] = (VkBufferCopy){gfast_cp[i].dstOffset, gfast_cp[i].srcOffset, gfast_cp[i].size};
