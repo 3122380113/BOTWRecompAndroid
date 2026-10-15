@@ -1,328 +1,108 @@
-# LAS Recomp
+# LAS Recomp for Android
 
-## LAS Recomp para Android (este fork)
-
-Este repositório é um fork do [LAS Recomp](https://github.com/peiikai/LASRecomp), do peiikai, que leva a
-recompilação estática de *Link's Awakening* para o **Android**. Como no projeto original, não é emulação: o código
-do Switch vira código ARM64 nativo, e os gráficos (NVN) são traduzidos para Vulkan. O trabalho de porte foi feito
-com a ajuda do Claude (Opus 5.5), da Anthropic, pelo Claude Code.
-
-> [!WARNING]
-> **Experimental.** Ainda não existe APK pronto: o app e o código do jogo são compilados no PC a partir do seu
-> próprio dump, e os arquivos vão para o celular pelo `adb`. O plano completo, o estado de cada fase e as medições
-> estão em [docs/ANDROID-PORT.md](docs/ANDROID-PORT.md). O trabalho fica na branch `android-port`.
-
-### Estado
-
-Testado num **POCO F7 Ultra** (Snapdragon 8 Elite / Adreno 830, Android 16) com o driver **Turnip Gen8 V37**:
-
-- o jogo inicia, os vídeos tocam com som, e os menus, o save e o gameplay funcionam;
-- **30 fps estáveis no mundo aberto** e 60 fps em áreas mais leves. O próprio jogo escolhe entre os dois modos, como
-  no Switch, pelo tempo de GPU de cada frame;
-- controle Bluetooth (testado com um GameSir X4 Aileron), overlay de desempenho (fps, frametime, CPU, GPU,
-  temperatura, bateria) e volta do segundo plano sem tela preta.
-
-### Por que precisa do driver Turnip
-
-Os shaders do jogo leem e escrevem direto na memória dele, nos mesmos endereços que a CPU usa: por exemplo, a lista
-de luzes de cada frame é montada por um compute shader e lida em seguida pelos shaders de pixel. No PC, a memória
-do jogo é importada para a GPU com `VK_EXT_external_memory_host`. Nem o driver da Qualcomm nem o Turnip têm essa
-extensão.
-
-O **Turnip** (o driver Vulkan aberto do Mesa para Adreno) tem `VK_EXT_map_memory_placed`: a memória da GPU é
-alocada no endereço exato do heap do jogo, e CPU e GPU passam a dividir a mesma memória, sem cópias. No driver da
-Qualcomm, o app recorre a cópias pela CPU. O resultado é mais lento, e o que um compute shader escreve só volta à
-memória do jogo depois que a GPU termina, tarde demais para o mesmo frame. É por isso que a **iluminação quebra**
-nesse driver.
-
-### Limitações atuais
-
-- Só Snapdragon (GPU Adreno) com Turnip. O app carrega o driver por
-  [libadrenotools](https://github.com/bylaws/libadrenotools), e o driver não vem junto: você fornece o seu.
-- Precisa do seu próprio dump da v1.0.0. O código do jogo é gerado e compilado **no PC** a partir dele.
-- Sem controles de toque: é preciso um controle físico.
-- Trocar a resolução com o jogo rodando pode fechar o app. Mude na tela de título.
-- Sem randomizer no celular, por enquanto.
-- Nenhum arquivo da Nintendo está incluído, e o APK não traz nada do jogo.
-
-### Como compilar e instalar
-
-No Windows, com Git Bash, o Android SDK com **NDK 30.0.16248370** e **CMake 3.30.4**, um aparelho com depuração
-USB e Python 3.12. No Linux, com bash, os mesmos passos devem servir, mas não foram testados.
-
-1. Ambiente do gerador:
-   `python -m venv tools/venv` e depois `tools/venv/Scripts/pip install lz4 capstone unicorn`
-   (`tools/venv/bin/pip` no Linux).
-2. Dependências do app (SDL3, shaderc, Vulkan-Headers, VMA, volk e a fonte DejaVu):
-   `bash android/deps/build_deps.sh`.
-3. Opcional: FFmpeg, para os vídeos e o fundo da tela inicial. O `configure` dele pede um shell Unix, então no
-   Windows rode pelo WSL: `wsl -- bash android/deps/build_ffmpeg.sh`.
-4. O app: `cd android/lasrecomp && ./gradlew assembleDebug`, e depois
-   `adb install -r app/build/outputs/apk/debug/app-debug.apk`.
-5. O código do jogo, gerado a partir do **seu** `exefs`: `bash android/build_gamelib.sh <dump>/exefs`. Ele usa o
-   `libmain.so` do passo 4, então compile o app antes.
-6. Os arquivos do jogo e o código para o aparelho: `bash android/push_game.sh <pasta com exefs/ e romfs/>`.
-7. O driver: copie o Turnip (o `.zip` do adrenotools ou o `.so`) para
-   `Android/data/com.lasrecomp.android/files/drivers/` no aparelho. Sem ele, o app usa o driver do sistema, e a
-   iluminação quebra.
-8. Abra o app, conecte um controle e jogue. O menu do jogo abre com Minus + Plus.
-
-O app guarda tudo em `Android/data/com.lasrecomp.android/files/`: save, configurações, cache de pipelines e os
-arquivos do jogo.
-
----
+An Android port of **[LAS Recomp](https://github.com/peiikai/LASRecomp)** by peiikai: a static recompilation of
+*The Legend of Zelda: Link's Awakening* (Nintendo Switch, 2019). As in the original project, this is **not
+emulation**: the Switch code becomes native ARM64 code, and the game's graphics (NVN) are translated to Vulkan.
+For the PC versions (Windows, macOS, Linux), features and the randomizer, see the
+[original repository](https://github.com/peiikai/LASRecomp).
 
 > [!IMPORTANT]
-> **This project was made almost exclusively with AI.** Nearly all of the code, tooling, reverse engineering and
-> documentation in this repository was written by and will be maintained by an AI (Anthropic's Claude, through Claude Code),
-> directed, tested and reviewed by a human. As a huge fan of this game, I made this for myself. Sharing it is a courtesy.
-> If you don't agree with the use of AI or don't trust code written by AI, that is your right, but I'm not interested
-> in the controversy in relation to this project. You may simply ignore this project and its code.
-> As with anything on the internet, you run the code at your own discretion.
+> Like the original, this port was made almost entirely with AI: the porting work was written by Claude (Opus 5.5,
+> by Anthropic, through Claude Code), directed, tested and reviewed by a human. You run the code at your own
+> discretion.
 
-**LAS Recomp** is a static recompilation of *The Legend of Zelda: Link's Awakening* (Nintendo Switch, 2019) into a
-native Windows, macOS and Linux application.
-
-> [!NOTE]
-> Currently supported platforms:
-> - macOS - Apple Silicon only, Metal graphics backend + MetalFX
-> - Windows - x86-64 only, Vulkan graphics backend
-> - Linux - x86-64, Vulkan graphics backend (AppImage)
-> - Linux aarch64 (ARM) - **experimental**: built but untested on real hardware; reports welcome
->   ([docs/linux.md](docs/linux.md) lists what to include)
-
-![Mabe Village in a 21:9 window: the unlocked aspect ratio shows more of the island](docs/ultrawide.jpg)
+> [!WARNING]
+> **Experimental.** There is no ready-made APK yet: the app and the game code are built on a PC from your own game
+> files, and copied to the phone with `adb`. The full plan, the state of each phase and the measurements are in
+> [docs/ANDROID-PORT.md](docs/ANDROID-PORT.md) (in Portuguese). The work lives on the `android-port` branch.
 
 > [!NOTE]
-> **No game files are included.** LAS Recomp needs your own legally obtained copy of the extracted game files of
-> *Link's Awakening* **v1.0.0**. Instructions on how to obtain these files will **NOT** be provided.
-> On first launch the app sets up what it needs, including the actual recompilation locally. No game files, assets or fonts are included.
-> The screenshot shows the start screen after setup; no Nintendo artwork is included until provided by the user.
-
-![The start screen: choose vanilla or a randomizer seed, set up your game files, settings](docs/start_screen.jpg)
-
-## Project Discord
-https://discord.gg/DhrgdYqdcY
+> **No game files are included**, and the app contains nothing from the game. You need your own legally obtained
+> copy of the extracted game files of *Link's Awakening* **v1.0.0**. Instructions on how to obtain them will not be
+> provided.
 
 ## Status
 
-This is a beta release. That means bugs are likely, crashes could occur, randomizer seeds could possibly be unsolvable (dungeon room shuffle modes are especially experimental at this point) and some graphics issues remain (especially in wide and ultrawide aspect ratios). This is a work in progress, hence the beta designation. To report a bug or a possible randomizer logic issue, use either the [Discord](https://discord.gg/DhrgdYqdcY) or a [GitHub issue](https://github.com/peiikai/LASRecomp/issues) - see [CONTRIBUTING.md](CONTRIBUTING.md#reporting-bugs) for what to include.
+Tested on a **POCO F7 Ultra** (Snapdragon 8 Elite / Adreno 830, Android 16) with the **Turnip Gen8 V37** driver:
 
-### Known issues
+- the game boots, the movies play with sound, and the menus, saves and gameplay work;
+- **a steady 30 fps in the overworld** and 60 fps in lighter areas. The game itself picks between the two modes,
+  as it does on the Switch, from each frame's GPU time;
+- Bluetooth controllers (tested with a GameSir X4 Aileron), a performance overlay (fps, frame time, CPU, GPU,
+  temperature, battery), and no black screen after the app comes back from the background.
 
-- The Mysterious Woods look wrong when viewed from outside the woods.
-- Some lighting effects show horizontal or vertical lines in dungeons, caves and houses.
-- Controller doesn’t work on the start screen.
-- Shadow bugs in big dungeon rooms at ultrawide
-- Black boxes sometimes appear in dungeon rooms.
-- Checking the dresser in BowWow's mom's room causes the game to crash.
-- Clicking Title Screen in LAS Recomp's custom settings crashes.
+## Why it needs the Turnip driver
 
-## Features
+The game's shaders read and write the game's memory directly, at the same addresses the CPU uses: for example, each
+frame's light list is built by a compute shader and then read by the pixel shaders. On PC, the game's memory is
+imported into the GPU with `VK_EXT_external_memory_host`. Neither Qualcomm's driver nor Turnip has that extension.
 
-**Runs natively**
-- **This is not emulation.** Runs natively on Windows, macOS and Linux using static recompilation of the Switch code.
-- Unlocked aspect ratio: wider (or taller) windows show more of the island, up to ultrawide; houses and dungeons
-  keep their framing. The original 16:9 framing is one option away.
-- Start screen: play vanilla or any randomizer seed, set up game files from your own dump, import fonts.
-  - Switch games use fonts built into the Switch operating system for some text. Sensible replacements are used by default, but you may optionally set up the Switch fonts for an authentic look. Switch fonts are Nintendo IP; you must provide them from your own hardware.
-- In-game overlay menu (F1, or Minus + Plus on a controller).
-- Switch between vanilla and any randomizer seed without restarting the app.
-- Keyboard and controller support, with every button and key remappable (Controls tab / start screen Settings >
-  Controls; menus keep a fixed layout, so a remap can never lock you out).
-- Button prompts for your controller: Xbox or PlayStation icons in the game's own UI and text when SDL reports
-  that controller (or pick Nintendo / Xbox / PlayStation yourself); the icons follow your controller remapping.
-- Optional 360-degree movement, blur removal and a hidden Hero Mode icon.
-- Apple MetalFX upscaler on macOS (the default there).
-- Internal resolution adjustments: raise or lower the resolution in steps, match the display, or use dynamic resolution. Combined with the MetalFX upscaler, even a MacBook Air should handle this easily with the right settings. Bilinear upscaling is the only option on Windows currently.
+**Turnip** (Mesa's open-source Vulkan driver for Adreno) has `VK_EXT_map_memory_placed`: GPU memory is allocated at
+the exact address of the game's heap, so the CPU and the GPU share the same memory, with no copies. With Qualcomm's
+driver, the app falls back to copies through the CPU. That is slower, and whatever a compute shader writes only gets
+back to the game's memory after the GPU finishes, too late for the same frame. That is why **the lighting is broken**
+with that driver.
 
-**Randomizer**
-- In-game seed generator.
-- Seed IDs for sharing or reproducing exact seeds.
-- Per-seed save games.
-- Full item shuffle.
-- Trade Quest shuffle.
-- Disable Acorn / Piece of Power drops.
-- Bombs / Magic Powder shuffle.
-- Hookshot anything - the hookshot latches onto any wall or object, not just hookshot targets (in logic where enabled).
-- Environment Randomizer - randomizes in-game environmental effects.
-- Enemy Randomizer - shuffles overworld enemies, optionally including mini-bosses. Not all mini-bosses are included
-  yet; more will be added as they're made to work outside their dungeons.
-- Music Randomizer.
-- Escape Bottle - every seed gives you this gold bottle from the start (it replaces one bottle in the pool). Use it to
-  warp to the dungeon entrance when in a dungeon, or to Marin and Tarin's house anywhere else. Never required by the logic.
-- Pickup text in the game's own message box: dungeon items name the dungeon they belong to ("You got a small key for
-  Tail Cave!").
-- Potsanity - every pot is a check. Pots are golden until checked, so you can see at a glance which pots you've checked.
-- Bushsanity - every cuttable bush (not the grass) is a check. Like pots, bushes are golden until checked for the first
-  time. Bushes over a hole or staircase stay normal, so items can't fall in.
-- Digsanity - a truly insane setting that makes every diggable tile on the overworld a check (about 5,000). Holes stay
-  dug permanently so you know where you've dug. Made for shovel enthusiasts.
-- Keysanity - keys can be found anywhere for any dungeon.
-- Shopsanity - the shop's 6 items are checks, at vanilla or random prices, or just steal them. A bought or stolen slot
-  shows a sold-out sign.
-- Trendsanity - full Trendy Game randomization: every prize, including the figures, is a check.
-- Pets - companions as items in the pool:
-  - Rooster - in logic for Feather checks (including in dungeons if companions are allowed there).
-  - Marin - you need to find Marin to get into the desert; choosing open desert removes Marin from the item pool.
-  - Ghost - find the Ghost to unlock his grave check.
-  - Switch companions from the pause menu, or send yours away.
-- Boss souls - a boss doesn't appear, can't be beaten and its reward stays locked until you find its soul.
-- Mini-boss souls - the same for dungeon mini-bosses (a separate option).
-- Entrance Randomizer - shuffles dungeon entrances, houses and caves, and connector caves. Includes a decoupled option.
-- Dungeon Room Shuffler - shuffles all dungeon rooms, creating unique custom dungeons every seed. Three modes:
-  - Coherent: dungeon rooms are shuffled but connecting rooms are lined up. To keep this workable in logic, dungeons
-    sometimes use duplicate rooms (as few as possible).
-  - Chaos: dungeon rooms are shuffled but don't need to make sense. Walking north may lead you to a door from another
-    direction.
-  - Madness: dungeon rooms are shuffled in a way that doesn't need to make sense AND the doors are decoupled, creating
-    nightmares to navigate.
-  - Labyrinth (planned): an option for all dungeon room shuffles where doors in dungeons can lead into other dungeons,
-    essentially making one giant dungeon with numerous wings.
-  - Optionally the map shows what's connected to what as you explore, or in full once you find the dungeon's map.
-- The inventory screen tracks keys, dungeon items, trade items and souls for each dungeon, so you can see at a glance
-  what you have keys for and which trade items you still hold.
-- Built-in check tracker on the overworld map (optional).
+## Current limitations
 
-## Building from source
+- Snapdragon (Adreno GPU) with Turnip only. The app loads the driver with
+  [libadrenotools](https://github.com/bylaws/libadrenotools); the driver is not included, you provide your own.
+- You need your own v1.0.0 dump. The game code is generated and compiled **on a PC** from it.
+- No touch controls: a physical controller is required.
+- Changing the resolution while the game is running can close the app. Change it on the title screen.
+- No randomizer on the phone yet.
 
-Every platform needs your own v1.0.0 game files: build first, then use the start screen's game-file setup.
-`make gen` then recompiles the game code from your own game files into `generated/`, and `make` builds it into its own
-library next to the app (`build/lasgame.*`); without it the start screen builds that library itself, as it does for
-players. Release builds hold none of the game's code: the start screen builds it on each player's machine from their
-own game files, with the bundled generator (`make gen-helper`) and compiler (`tools/fetch_zig.sh`).
+## Building and installing
 
-### macOS
+On Windows with Git Bash, the Android SDK with **NDK 30.0.16248370** and **CMake 3.30.4**, a phone with USB
+debugging, and Python 3.12. On Linux the same steps should work with bash, but they are untested there.
 
-Requirements: Apple Silicon, Xcode command line tools (clang), [Homebrew](https://brew.sh) `sdl3` and `ffmpeg`,
-Python 3.12.
+1. The generator's environment: `python -m venv tools/venv`, then
+   `tools/venv/Scripts/pip install lz4 capstone unicorn` (`tools/venv/bin/pip` on Linux).
+2. The app's dependencies (SDL3, shaderc, Vulkan-Headers, VMA, volk and the DejaVu font):
+   `bash android/deps/build_deps.sh`.
+3. Optional: FFmpeg, for the movies and the start screen's background. Its `configure` wants a Unix shell, so on
+   Windows run it in WSL: `wsl -- bash android/deps/build_ffmpeg.sh`.
+4. The app: `cd android/lasrecomp && ./gradlew assembleDebug`, then
+   `adb install -r app/build/outputs/apk/debug/app-debug.apk`.
+5. The game code, generated from **your** `exefs`: `bash android/build_gamelib.sh <dump>/exefs`. It links against
+   the `libmain.so` from step 4, so build the app first.
+6. The game files and the game code onto the phone: `bash android/push_game.sh <folder with exefs/ and romfs/>`.
+7. The driver: copy Turnip (the adrenotools `.zip` or the `.so`) to
+   `Android/data/com.lasrecomp.android/files/drivers/` on the phone. Without it the app uses the system driver, and
+   the lighting is broken.
+8. Open the app, connect a controller and play. Minus + Plus opens the in-game menu.
 
-1. Build: `make -j10` -> `build/lasrecomp`. Set up your game files (above), then `make gen` and `make -j10` again.
-2. Randomizer: create the Python environment for LAS-Randomizer, from `third_party/LAS-Randomizer`:
-   `python3.12 -m venv venv && venv/bin/pip install -r requirements.txt`.
-3. Run: `./build/lasrecomp extracted` (start screen) or `./build/lasrecomp extracted --play` (straight into the game).
-4. Package: `make deps` (once: SDL3, FFmpeg, keystone and Python from pinned sources, built for macOS 15),
-   `make rando-helper` (the seed generator as a standalone helper, so players need no Python), `make gen-helper` and
-   `tools/fetch_zig.sh` (what the start screen builds the game code with), then `make app` ->
-   `build/LAS Recomp.app` (macOS 15+, Apple Silicon) and `make dmg` -> `build/dist/LAS Recomp-<version>-macOS.dmg`.
-
-### Windows
-
-Requirements: Windows 10+ x86-64, a CPU with AVX2 and a GPU with Vulkan 1.3. More detail in
-[docs/BUILD-windows.md](docs/BUILD-windows.md).
-
-1. One-time setup, in PowerShell from the repo root: `powershell -ExecutionPolicy Bypass -File tools\setup_windows.ps1`.
-   It installs MSYS2 (UCRT64: clang, make, SDL3, FFmpeg, Vulkan, shaderc), Python 3.12 for the tools and the
-   randomizer (`third_party\LAS-Randomizer\venv`) and switches the clone to LF line endings.
-2. Build, from an MSYS2 UCRT64 shell (or Git Bash with `export PATH="/c/msys64/ucrt64/bin:/c/msys64/usr/bin:$PATH"`):
-   `make -j` -> `build/lasrecomp.exe`. Set up your game files (above), then `make gen` and `make -j` again.
-3. Run: `./build/lasrecomp.exe extracted`, from a shell with `C:\msys64\ucrt64\bin` on PATH (for the DLLs).
-4. Package: `make deps-windows` (once: LGPL FFmpeg), `make rando-helper RANDO_PY="<path to python.org Python 3.12>"`
-   (MSYS2's Python has no oead wheel), then `make dist` -> `build/dist/LAS Recomp-<version>-windows.zip`.
-
-### Linux
-
-Requirements: x86-64 with AVX2 (or aarch64, experimental), a GPU with Vulkan 1.3, clang, SDL 3, FFmpeg, shaderc and
-Vulkan Memory Allocator from your distribution, Python 3.12. Packages, cross builds and details in
-[docs/linux.md](docs/linux.md).
-
-1. Build: `make -j` -> `build/lasrecomp`. Set up your game files (above), then `make gen` and `make -j` again.
-2. Run: `./build/lasrecomp extracted`.
-3. Package: `make appimage` (this machine's arch; `ARCH=aarch64` cross-compiles) or `make appimages` (both) ->
-   `build/dist/LAS Recomp-<version>-linux-<arch>.AppImage`, built in Ubuntu 22.04 containers (podman). `make smoketest`
-   checks the x86-64 AppImage before a release.
-
-Where files live (game files, saves, seeds, settings, caches, imported fonts):
-- macOS app: `~/Library/Application Support/com.peiikai.lasrecomp/` (the app itself is never written to).
-- Windows: next to `lasrecomp.exe`, so put the `LAS Recomp` folder somewhere writable (not Program Files).
-- Linux: `~/.local/share/lasrecomp/` (`$XDG_DATA_HOME/lasrecomp`); the log is `lasrecomp.log` there when started
-  without a terminal.
-- Dev / portable mode: if the folder you start from has `extracted/` (a source checkout), that folder is used, as above.
-- `LARECOMP_DATA_ROOT=<dir>` overrides all of these.
+The app keeps everything in `Android/data/com.lasrecomp.android/files/`: saves, settings, the pipeline cache and the
+game files.
 
 ## Credits
 
-**LAS-Randomizer** - the randomizer at the heart of this project's randomizer features, vendored (with local
-changes) in `third_party/LAS-Randomizer` under the MIT license. Huge thanks to its authors and community:
-- **Owen_Splat** - LAS-Randomizer (https://github.com/Owen-Splat/LAS-Randomizer)
-- **Glan** - created the original early builds of the randomizer (https://github.com/la-switch/LAS-Randomizer)
-- **ProfessorLaw** - additional programming
-- and everyone who has reported bugs, given feedback or contributed to LAS-Randomizer
-
-**Community mods** - some options re-implement ideas from these GameBanana mods (re-implemented in the recomp;
-none of their files are used):
-- **360 Controls (And More!)** by Owen_Splat - 360-degree movement, blur removal (blur removal patch by theboy181)
-  (https://gamebanana.com/mods/659802)
-- **XBOX UI** by fellow_demo - Xbox button prompts (https://gamebanana.com/mods/540069)
-- **PS4 UI Buttons** by messiahgov - PlayStation button prompts (https://gamebanana.com/mods/324458)
-- **No Hero Mode Indicator** by Boo/Calla - hide the Hero Mode icon (https://gamebanana.com/mods/441172)
-
-**Libraries and tools**
-- [SDL 3](https://libsdl.org) - windowing, input, audio (zlib license)
-- [FFmpeg](https://ffmpeg.org) - movie playback (LGPL)
-- [Dear ImGui](https://github.com/ocornut/imgui) - overlay menu and start screen (MIT)
-- [Baloo 2](https://github.com/EkType/Baloo2) by Ek Type - the start screen's font (SIL Open Font License 1.1, `third_party/fonts/Baloo2/OFL.txt`)
-- [Vulkan Memory Allocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator) - Windows and Linux renderer (MIT)
-- [SMAA](https://github.com/iryoku/smaa) by Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro and Diego
-  Gutierrez - the anti-aliasing option (MIT, `third_party/smaa/LICENSE.txt`)
-- [AMD FidelityFX Super Resolution 1](https://github.com/GPUOpen-Effects/FidelityFX-FSR) - the Windows and Linux upscaler
-  option, ported to GLSL (MIT)
-- [oead](https://github.com/zeldamods/oead) and [evfl](https://github.com/zeldamods/evfl) - Nintendo file formats, used by LAS-Randomizer
-- [PyInstaller](https://pyinstaller.org) - packs the seed generator into a standalone helper (GPL 2.0+ with the
-  bootloader exception, which allows distributing the packed program). The helper bundles CPython (PSF License),
-  oead / evfl (GPL 2.0+), [Keystone](https://www.keystone-engine.org) (GPL 2.0; Python bindings BSD), quicktex
-  (LGPL 3), Pillow (MIT-CMU), PyYAML (MIT) and appdirs (MIT)
-- [Zig](https://ziglang.org) - its C compiler (`zig cc`: Clang and LLD) builds the game code on the player's
-  machine during setup (MIT; LLVM, Clang, LLD: Apache 2.0 with LLVM exceptions)
-- The game code generator (`tools/gen.py`) is packed by PyInstaller into a standalone helper too. It bundles CPython,
-  [Capstone](https://www.capstone-engine.org) (BSD 3-clause; disassembly), [Unicorn](https://www.unicorn-engine.org)
-  (GPL 2.0; Python bindings BSD; runs small pieces of code to resolve jump tables) and
-  [python-lz4](https://github.com/python-lz4/python-lz4) (BSD 3-clause, with the LZ4 library: BSD 2-clause)
-- [envytools](https://github.com/envytools/envytools) - NVIDIA GPU documentation used for the shader translator
-- The Switch homebrew community's documentation ([Switchbrew](https://switchbrew.org))
+- **[LAS Recomp](https://github.com/peiikai/LASRecomp)** by peiikai: the recompiler, the runtime, the Vulkan renderer
+  and the shader translator this port builds on. Its README credits everyone behind it, including LAS-Randomizer and
+  the community mods its options re-implement.
+- [SDL 3](https://libsdl.org) (zlib): window, input, audio and the Android activity.
+- [libadrenotools](https://github.com/bylaws/libadrenotools) by bylaws (BSD 2-Clause): loads a custom Vulkan
+  driver.
+- [Mesa Turnip](https://docs.mesa3d.org/drivers/freedreno.html) (MIT): the Vulkan driver it is meant for (not
+  included).
+- [shaderc](https://github.com/google/shaderc) (Apache 2.0), [Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers)
+  (Apache 2.0 / MIT), [volk](https://github.com/zeux/volk) (MIT) and
+  [Vulkan Memory Allocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator) (MIT).
+- [FFmpeg](https://ffmpeg.org) (LGPL 2.1+, optional, linked dynamically): movie playback.
+- [Dear ImGui](https://github.com/ocornut/imgui) (MIT): the overlay menu and the start screen.
+- [SMAA](https://github.com/iryoku/smaa) and [AMD FidelityFX Super Resolution 1](https://github.com/GPUOpen-Effects/FidelityFX-FSR)
+  (MIT): the anti-aliasing and upscaler options, built into the renderer.
+- [DejaVu fonts](https://dejavu-fonts.github.io) (Bitstream Vera license): stand-in for the Switch's system font.
 
 ## Legal
 
-LAS Recomp is a fan project. It is not affiliated with, endorsed by or sponsored by Nintendo. *The Legend of Zelda*
-and *Link's Awakening* are trademarks of Nintendo. No game files, game code, assets or fonts are included - not in
-this repository and not in release builds. You must provide your own legally obtained copy of the game files to play.
+This is a fan project. It is not affiliated with, endorsed by or sponsored by Nintendo. *The Legend of Zelda* and
+*Link's Awakening* are trademarks of Nintendo. No game files, game code, assets or fonts are included, in this
+repository or in any build. You must provide your own legally obtained copy of the game files to play.
 
 ## License
 
-LAS Recomp's own code (the recompiler tools, the runtime, the randomizer additions) is open source under the
-[MIT License](LICENSE). Third-party components keep their own licenses: LAS-Randomizer (MIT), Dear ImGui (MIT),
-Vulkan Memory Allocator (MIT), SMAA (MIT), AMD FSR 1 (MIT), the Baloo 2 font (SIL OFL 1.1), SDL 3 (zlib), FFmpeg (LGPL 2.1+, linked dynamically), the
-Zig compiler (MIT; its LLVM / Clang / LLD: Apache 2.0 with LLVM exceptions; its C library headers keep their own
-licenses), and the generator helpers' bundled libraries listed under Credits (oead / evfl / Keystone in the seed
-generator and Unicorn in the game code generator are under the GPL, versions in the table below: each helper is a separate program the game runs, and its
-sources are this repository plus those projects' published sources). The license covers LAS Recomp's code only - it grants
-nothing for Nintendo's game, which you must supply yourself.
-
-### Source code of bundled third-party components
-
-Release builds include these components; their source code for the exact versions shipped is available here:
-
-| Component | Version | License | Source |
-|---|---|---|---|
-| Keystone (seed generator) | 0.9.2 | GPL 2.0 | https://github.com/keystone-engine/keystone/releases/tag/0.9.2 |
-| oead (seed generator) | 1.3.0 | GPL 2.0+ | https://github.com/zeldamods/oead/releases/tag/v1.3.0 |
-| evfl (seed generator) | 1.2.0 | GPL 2.0+ | https://github.com/zeldamods/evfl/releases/tag/v1.2.0 |
-| quicktex (seed generator) | 0.2.1 | LGPL 3.0 | https://github.com/drewcassidy/quicktex/releases/tag/v0.2.1 |
-| PyInstaller (packs the seed and game code generators) | 6.22.3 | GPL 2.0+ with bootloader exception | https://github.com/pyinstaller/pyinstaller/releases/tag/v6.22.3 |
-| CPython (seed and game code generators) | 3.12.14 (macOS), 3.12.10 (Windows), 3.12.15 (Linux) | PSF | https://github.com/python/cpython/releases/tag/v3.12.14, https://github.com/python/cpython/releases/tag/v3.12.10, https://github.com/python/cpython/releases/tag/v3.12.15 |
-| Zig (builds the game code during setup; includes LLVM, Clang, LLD) | 0.17.0 | MIT; LLVM: Apache 2.0 with LLVM exceptions | https://ziglang.org/download/0.17.0/zig-0.17.0.tar.xz |
-| Capstone (game code generator) | 5.0.9 | BSD 3-clause | https://pypi.org/project/capstone/5.0.9/ |
-| Unicorn (game code generator) | 2.1.4 | GPL 2.0 (Python bindings: BSD) | https://pypi.org/project/unicorn/2.1.4/, https://github.com/unicorn-engine/unicorn |
-| python-lz4 (game code generator; includes LZ4) | 4.4.5 | BSD 3-clause; LZ4: BSD 2-clause | https://pypi.org/project/lz4/4.4.5/ |
-| FFmpeg (LGPL configuration, macOS, Windows and Linux builds) | 9.0.2 | LGPL 2.1+ | https://ffmpeg.org/releases/ |
-| SDL 3 | 3.4.18 (macOS, Windows), 3.4.16 (Linux) | zlib | https://github.com/libsdl-org/SDL/releases/tag/release-3.4.18, https://github.com/libsdl-org/SDL/releases/tag/release-3.4.16 |
-| shaderc (Windows, Linux: GLSL to SPIR-V; Linux: with glslang, SPIRV-Tools inside) | 2026.4 (Windows), 2026.3 (Linux) | Apache 2.0 | https://github.com/google/shaderc |
-| libiconv (Windows: used by SDL 3) | 1.19 | LGPL 2.1+ | https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.19.tar.gz |
-| GCC runtime: libgcc, libstdc++ (Windows) | 16.2.0 | GPL 3.0 with the GCC Runtime Library Exception | https://gcc.gnu.org/ |
-| winpthreads (Windows, mingw-w64) | 14.0.0 | MIT / BSD | https://www.mingw-w64.org/ |
-| Baloo 2 font (SemiBold) | 1.640 | SIL OFL 1.1 | https://github.com/EkType/Baloo2 |
-| SMAA (shader and lookup textures, built in) | 2013 (repository master) | MIT | https://github.com/iryoku/smaa |
-
-The exact build scripts that fetch and build these (with checksums) are in this repository: `tools/build_deps_macos.sh`,
-`tools/build_deps_windows.sh`, `tools/linux/build_deps.sh` and `tools/rando/rando_gen.spec`. The Windows build takes SDL 3, shaderc, libiconv and the
-compiler runtime from MSYS2's UCRT64 packages (https://packages.msys2.org, which links each package's source).
+The code is open source under the [MIT License](LICENSE), as in the original project. Third-party components keep
+their own licenses (above, and in the [original README](https://github.com/peiikai/LASRecomp#license)). The license
+covers this project's code only: it grants nothing for Nintendo's game, which you must supply yourself.
