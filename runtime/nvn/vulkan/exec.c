@@ -71,6 +71,8 @@ static void wait_account(uint64_t ns) {
     pthread_mutex_unlock(&wait_tab_lock);
 }
 
+static void cq_resolve_done(uint64_t done);
+
 void vk_wait_seq(uint64_t seq) {
     if (!seq) { wait_why = NULL; return; }
     VkSemaphoreWaitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &g_vk.timeline,
@@ -81,7 +83,8 @@ void vk_wait_seq(uint64_t seq) {
     cum_wait += SDL_GetTicksNS() - t0;
     wait_account(SDL_GetTicksNS() - t0);
     if (r == VK_TIMEOUT) LOG("[vk] GPU did not finish submission %llu within 10 s (device lost?)\n", (unsigned long long)seq);
-    else if (r != VK_SUCCESS) {
+    else if (r == VK_SUCCESS) cq_resolve_done(seq);  // (the game reads its timing counters after waiting)
+    else {
         extern void vk_devlost_dump(void);
         vk_devlost_dump();
         vk_device_fault_report();
@@ -91,11 +94,69 @@ void vk_wait_seq(uint64_t seq) {
 
 uint64_t vk_pending_seq(void) { return submit_seq + 1; }
 
+// ---- the game's GPU timing counters (nvnCommandBufferReportCounter, two per frame)
+// The game times its GPU work with these and drops to 30 fps when frames look slow. They used to get the host clock
+// at translation time, so our command translation counted as GPU time: busy scenes (outdoors, ~400 draws) looked slow
+// and the game locked itself at 30 even on fast GPUs, at any resolution. Now each counter also records a GPU
+// timestamp at its place in the command stream; once that submission is done (the game waits on its fence before
+// reading - on the Switch the GPU writes them too) the GPU time replaces the provisional host value, in the host
+// clock's terms (offset calibrated at each resolve: a timestamp can't be later than the moment its submission is seen
+// done). LARECOMP_VK_COUNTER=cpu: host clock only; =frozen: one value per presented frame (test); =legacy: the host
+// clock in ns instead of GPU ticks, as before (test: reproduces the locked 30).
+#define CQ_MAX 64
+typedef struct { VkQueryPool pool; uint32_t n; uint64_t seq; uint64_t *out[CQ_MAX]; } CounterQ;
+static CounterQ cq[SUBS];
+static pthread_mutex_t cq_lock = PTHREAD_MUTEX_INITIALIZER;
+static int64_t cq_offset;  // host ns - GPU ns (the smallest seen)
+// Counter timestamps are in the Switch GPU's ticks (614.4 MHz): the game converts the difference to ns itself
+// (x 625 / 384). Writing ns made every GPU time look 1.63x as long.
+static uint64_t ns_to_gpu_ticks(uint64_t ns) { return (uint64_t)((unsigned __int128)ns * 384 / 625); }
+static bool cq_calibrated;
+static int counter_mode = -1;  // 0 cpu, 1 frozen, 2 gpu
+static uint64_t stat_counters_gpu;
+
+static int vk_counter_mode(void) {
+    if (counter_mode < 0) {
+        const char *e = getenv("LARECOMP_VK_COUNTER");
+        counter_mode = e && !strcmp(e, "cpu") ? 0 : e && !strcmp(e, "frozen") ? 1 : e && !strcmp(e, "legacy") ? 3 : 2;
+        if (counter_mode == 2 && !g_vk.props.limits.timestampComputeAndGraphics) counter_mode = 0;
+    }
+    return counter_mode;
+}
+
+static void cq_resolve(int i) {  // (cq_lock held) submission slot i is done: its counters get their GPU times
+    CounterQ *q = &cq[i];
+    if (!q->n) return;
+    uint64_t t[CQ_MAX];
+    if (vkGetQueryPoolResults(g_vk.dev, q->pool, 0, q->n, sizeof t, t, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
+        double per = g_vk.props.limits.timestampPeriod;
+        int64_t cand = (int64_t)plat_now_ns() - (int64_t)((double)t[q->n - 1] * per);
+        if (!cq_calibrated || cand < cq_offset) cq_offset = cand, cq_calibrated = true;
+        static int log = -1;  // LARECOMP_LOG_COUNTER=1: the host (provisional) and GPU times of each counter
+        if (log < 0) log = getenv("LARECOMP_LOG_COUNTER") != NULL;
+        for (uint32_t k = 0; k < q->n; k++) {
+            uint64_t gpu = ns_to_gpu_ticks((uint64_t)((int64_t)((double)t[k] * per) + cq_offset));
+            if (log) LOG("[counter] seq %llu #%u at %llx host %.3f gpu %.3f ms\n", (unsigned long long)q->seq, k,
+                         (unsigned long long)(uintptr_t)q->out[k], q->out[k][1] * 625.0 / 384 / 1e6, gpu * 625.0 / 384 / 1e6);
+            q->out[k][1] = gpu;
+        }
+        stat_counters_gpu += q->n;
+    }
+    q->n = 0;
+}
+
+static void cq_resolve_done(uint64_t done) {  // every slot whose submission is done
+    pthread_mutex_lock(&cq_lock);
+    for (int i = 0; i < SUBS; i++) if (cq[i].n && cq[i].seq <= done) cq_resolve(i);
+    pthread_mutex_unlock(&cq_lock);
+}
+
 static Sub *sub(void) {
     Sub *s = &subs[cur_sub];
     if (s->seq != submit_seq + 1) {  // slot reused: its previous submission must be done
         wait_why = "ring slot";
         vk_wait_seq(s->seq);
+        cq_resolve_done(s->seq);
         if (s->ts) {  // (profiling) GPU time of that submission
             uint64_t t[2];
             if (vkGetQueryPoolResults(g_vk.dev, prof_qp, (uint32_t)cur_sub * 2, 2, sizeof t, t, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS && t[1] > t[0])
@@ -128,6 +189,19 @@ VkCommandBuffer vk_cmd(void) {
     if (!s->main_begun) {
         begin_cb(&s->main, &s->main_begun);
         ss_forget();  // (a new command buffer starts with no state)
+        if (vk_counter_mode() == 2) {  // this slot's timing counter queries (reset outside any render pass)
+            CounterQ *q = &cq[cur_sub];
+            if (!q->pool) {
+                VkQueryPoolCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP,
+                                            .queryCount = CQ_MAX};
+                if (vkCreateQueryPool(g_vk.dev, &qi, NULL, &q->pool) != VK_SUCCESS) q->pool = VK_NULL_HANDLE;
+            }
+            pthread_mutex_lock(&cq_lock);
+            q->n = 0;  // (resolved when the slot was freed: sub())
+            q->seq = s->seq;
+            pthread_mutex_unlock(&cq_lock);
+            if (q->pool) vkCmdResetQueryPool(s->main, q->pool, 0, CQ_MAX);
+        }
         gp_mark(s->main, "(submission start; includes GPU idle before it)");
         if (prof && prof_qp) {
             vkCmdResetQueryPool(s->main, prof_qp, (uint32_t)cur_sub * 2, 2);
@@ -605,7 +679,9 @@ const char *renderer_stats(void) {
             if (prof_end_line[l] > 20) { n = strlen(stats_text); snprintf(stats_text + n, sizeof stats_text - n, " %d:%u", l, prof_end_line[l]); }
         memset(prof_end_line, 0, sizeof prof_end_line);
         n = strlen(stats_text);
-        snprintf(stats_text + n, sizeof stats_text - n, " | views created %llu", (unsigned long long)prof_views_created);
+        snprintf(stats_text + n, sizeof stats_text - n, " | views created %llu | counters gpu %llu", (unsigned long long)prof_views_created,
+                 (unsigned long long)stat_counters_gpu);
+        stat_counters_gpu = 0;
         {
             extern uint64_t prof_vc_hits, prof_vc_bypass, prof_vc_copied, prof_vc_queries, prof_vc_scan_pages, prof_vc_scan_ns;
             n = strlen(stats_text);
@@ -3568,19 +3644,38 @@ static void exec_list(uint64_t handle, int depth) {
             break;
         }
         case CMD_REPORT_COUNTER: {
-            // The game times its GPU work with these (two per frame) and drops to 30 fps when that looks slow;
-            // the value is our translation time, not GPU time. LARECOMP_VK_COUNTER=frozen: the same timestamp for
-            // every counter within a presented frame (experiment).
+            // The game times its GPU work with these (two per frame) and drops to 30 fps when that looks slow: the
+            // host clock now, replaced by the GPU's time at this point once the submission is done (cq_resolve).
             uint64_t *out = (uint64_t *)(uintptr_t)r->x[1];
             uint32_t type = (uint32_t)r->x[0];
             static uint32_t seen;
             if (type < 32 && !(seen & (1u << type))) { seen |= 1u << type; LOG("[nvn] ReportCounter type %u\n", type); }
-            static int frozen = -1;
-            if (frozen < 0) { const char *e = getenv("LARECOMP_VK_COUNTER"); frozen = e && !strcmp(e, "frozen"); }
+            int mode = vk_counter_mode();
             static uint64_t frame_seen = ~0ull, frame_ts;
             extern uint64_t vk_frame_counter(void);
-            if (frozen && vk_frame_counter() != frame_seen) { frame_seen = vk_frame_counter(); frame_ts = SDL_GetTicksNS(); }
-            if (out) { out[0] = 0; out[1] = frozen ? frame_ts : SDL_GetTicksNS(); }
+            if (mode == 1 && vk_frame_counter() != frame_seen) { frame_seen = vk_frame_counter(); frame_ts = ns_to_gpu_ticks(plat_now_ns()); }
+            if (!out) break;
+            out[0] = 0;
+            out[1] = mode == 1 ? frame_ts : mode == 3 ? SDL_GetTicksNS() : ns_to_gpu_ticks(plat_now_ns());  // (3 legacy: ns, the old bug)
+            {   // (test) LARECOMP_TEST_COUNTER_DELAY_MS=<ms>: stall the host after a frame's first counter - a slow CPU
+                static double delay = -1;
+                static uint64_t delayed_frame = ~0ull;
+                if (delay < 0) delay = getenv("LARECOMP_TEST_COUNTER_DELAY_MS") ? atof(getenv("LARECOMP_TEST_COUNTER_DELAY_MS")) : 0;
+                if (delay > 0 && vk_frame_counter() != delayed_frame) {
+                    delayed_frame = vk_frame_counter();
+                    SDL_DelayPrecise((Uint64)(delay * 1e6));
+                }
+            }
+            if (mode == 2 && type == 0) {  // (type 0: timestamp)
+                VkCommandBuffer cb = vk_cmd();  // (first: may begin the buffer, which resets the slot's queries)
+                CounterQ *q = &cq[cur_sub];
+                pthread_mutex_lock(&cq_lock);
+                if (q->pool && q->n < CQ_MAX) {
+                    vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, q->pool, q->n);
+                    q->out[q->n++] = out;
+                }
+                pthread_mutex_unlock(&cq_lock);
+            }
             break;
         }
         case CMD_COPY_TEXTURE_TO_TEXTURE: { const TexRefRec *t = x; copy_texture(&t[0], &t[1], r->x[6]); break; }

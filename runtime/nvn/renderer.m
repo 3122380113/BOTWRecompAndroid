@@ -2610,7 +2610,8 @@ static void exec_list(uint64_t handle, int depth) {
             static uint32_t seen;
             uint32_t type = (uint32_t)r->x[0];
             if (type < 32 && !(seen & (1u << type))) { seen |= 1u << type; LOG("[nvn] ReportCounter type %u\n", type); }
-            if (out) { out[0] = 0; out[1] = SDL_GetTicksNS(); }
+            // (Switch GPU ticks, 614.4 MHz: the game converts the difference to ns itself - see the Vulkan exec.c)
+            if (out) { out[0] = 0; out[1] = (uint64_t)((unsigned __int128)plat_now_ns() * 384 / 625); }
             break;
         }
         case CMD_COPY_TEXTURE_TO_TEXTURE: {
