@@ -60,8 +60,9 @@ if(HAVE_FFMPEG)
 else()
     target_compile_definitions(main PRIVATE LARECOMP_NO_FFMPEG)
 endif()
-target_compile_options(main PRIVATE -fno-strict-aliasing -Wall -Wno-unused-function -Wno-format  # (as on Linux: %llx for uint64_t)
-   
+# -O2 -g whatever the Gradle build type (the Makefile's RTFLAGS): a debug build left the runtime at -O0, about half of the
+# game thread's time
+target_compile_options(main PRIVATE -O2 -g -fno-strict-aliasing -Wall -Wno-unused-function -Wno-format  # (as on Linux: %llx for uint64_t)
     $<$<COMPILE_LANGUAGE:CXX>:-std=c++17>)
 target_link_libraries(main PRIVATE SDL3 shaderc_shared adrenotools android log dl m)
 # (runtime/hle.h, ipc.h, main.c: tables in named sections found through __start_ / __stop_ symbols)
