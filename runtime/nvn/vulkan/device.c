@@ -381,6 +381,41 @@ static void recreate_swapchain(void) {
     create_swapchain();
 }
 
+#ifdef __ANDROID__
+// The app in the background loses its window surface (SDL clears the window's ANativeWindow, and gives the new one
+// when it comes back): the Vulkan surface and swapchain are made again for the new window. Frames in between are
+// skipped. Before this, everything after a trip to the background stayed black (every acquire: SURFACE_LOST).
+static struct ANativeWindow *surface_aw;  // the window g_vk.surface was made for
+static bool surface_lost;
+
+static struct ANativeWindow *android_window(void) {
+    return SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, NULL);
+}
+
+static void android_create_surface(struct ANativeWindow *aw) {
+    VkAndroidSurfaceCreateInfoKHR si = {.sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR, .window = aw};
+    VK_CHECK(vkCreateAndroidSurfaceKHR(g_vk.inst, &si, NULL, &g_vk.surface));
+    surface_aw = aw;
+}
+
+static bool android_surface_ready(void) {  // false: no window to draw into now
+    struct ANativeWindow *aw = android_window();
+    if (!aw) { surface_lost = true; return false; }
+    if (aw == surface_aw && !surface_lost) return true;
+    vkDeviceWaitIdle(g_vk.dev);
+    for (uint32_t i = 0; i < g_vk.sc_count; i++) vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
+    g_vk.sc_count = 0;
+    if (g_vk.swapchain) vkDestroySwapchainKHR(g_vk.dev, g_vk.swapchain, NULL);
+    g_vk.swapchain = VK_NULL_HANDLE;
+    vkDestroySurfaceKHR(g_vk.inst, g_vk.surface, NULL);
+    android_create_surface(aw);
+    surface_lost = false;
+    LOG("[vk] window surface made again (the app came back from the background)\n");
+    create_swapchain();
+    return g_vk.swapchain != VK_NULL_HANDLE;
+}
+#endif
+
 // ================================================================== frames (start screen and game)
 // Acquire semaphores rotate per frame in flight; a slot is reused once the submission that waited on it is done.
 #define FRAMES 3
@@ -417,6 +452,9 @@ bool vk_frame_begin(const float clear[4]) {
     int w, h;
     SDL_GetWindowSizeInPixels(window, &w, &h);
     if (!w || !h) return false;  // minimised
+#ifdef __ANDROID__
+    if (!android_surface_ready()) return false;
+#endif
     if (!g_vk.swapchain || (uint32_t)w != g_vk.sc_extent.width || (uint32_t)h != g_vk.sc_extent.height) recreate_swapchain();
     if (!g_vk.swapchain) return false;
     static int trace = -1;
@@ -430,6 +468,9 @@ bool vk_frame_begin(const float clear[4]) {
         recreate_swapchain();
         r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image);
     }
+#ifdef __ANDROID__
+    if (r == VK_ERROR_SURFACE_LOST_KHR) { surface_lost = true; return false; }  // (made again at the next frame)
+#endif
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) { LOG("[vk] acquire failed: %d\n", r); return false; }
     cur_frame.acquired = acquire_sem[slot];
     slot_seq[slot] = vk_pending_seq();
@@ -500,6 +541,7 @@ void vk_frame_end(const char *shot_path) {
     VkResult r = vkQueuePresentKHR(g_vk.queue, &pi);
 #ifdef __ANDROID__
     if (r == VK_ERROR_OUT_OF_DATE_KHR) recreate_swapchain();  // (SUBOPTIMAL: every frame of an unrotated swapchain)
+    else if (r == VK_ERROR_SURFACE_LOST_KHR) surface_lost = true;
 #else
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) recreate_swapchain();
 #endif
@@ -735,10 +777,9 @@ void ui_window_init(void) {
     create_instance();
 #ifdef __ANDROID__
     {   // (through the driver volk loaded: SDL would use the system loader's)
-        struct ANativeWindow *aw = SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, NULL);
+        struct ANativeWindow *aw = android_window();
         if (!aw) FATAL("no Android window\n");
-        VkAndroidSurfaceCreateInfoKHR si = {.sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR, .window = aw};
-        VK_CHECK(vkCreateAndroidSurfaceKHR(g_vk.inst, &si, NULL, &g_vk.surface));
+        android_create_surface(aw);
     }
 #else
     if (!SDL_Vulkan_CreateSurface(window, g_vk.inst, NULL, &g_vk.surface)) FATAL("SDL_Vulkan_CreateSurface: %s\n", SDL_GetError());
