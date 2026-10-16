@@ -2438,8 +2438,21 @@ static void gcopy_retire(uint64_t done) {
     int k = 0;
     for (int i = 0; i < gc_nback; i++) {
         if (gc_back[i].seq <= done) {
-            memcpy((void *)(uintptr_t)gc_back[i].addr, gc_back[i].src, gc_back[i].len);
-            if (gc_back[i].shadow) memcpy(gc_back[i].shadow, gc_back[i].src, gc_back[i].len);  // (not the CPU's write)
+            if (!gc_back[i].shadow) {
+                memcpy((void *)(uintptr_t)gc_back[i].addr, gc_back[i].src, gc_back[i].len);
+                continue;
+            }
+            // (the arena: 256 bytes at a time, what the GPU changed since the last upload - the shadow - and the CPU
+            // didn't: a block the CPU wrote meanwhile stays the CPU's (gres_sync uploads it); copying whole ranges
+            // back undid the CPU's writes made since, for good - wrong shadows while moving)
+            uint8_t *g = (uint8_t *)(uintptr_t)gc_back[i].addr, *sh = gc_back[i].shadow;
+            const uint8_t *src = gc_back[i].src;
+            for (uint64_t b = 0; b < gc_back[i].len; b += 256) {
+                uint64_t n = gc_back[i].len - b < 256 ? gc_back[i].len - b : 256;
+                if (!memcmp(src + b, sh + b, n) || memcmp(g + b, sh + b, n)) continue;  // (GPU unchanged / CPU wrote)
+                memcpy(g + b, src + b, n);
+                memcpy(sh + b, src + b, n);
+            }
         } else gc_back[k++] = gc_back[i];
     }
     gc_nback = k;
