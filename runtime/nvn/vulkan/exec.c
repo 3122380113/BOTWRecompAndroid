@@ -1403,6 +1403,21 @@ static void compile_program(void *arg) {
 static uint64_t hmix(uint64_t h, const void *p, size_t n);  // (below; LARECOMP_DUMP_FS)
 #endif
 
+#ifdef __ANDROID__
+// The structured control flow (maxwell_structured) unless LARECOMP_NO_STRUCTURE - and not on Qualcomm's own driver,
+// whose shader compiler crashed on it inside vkCreateGraphicsPipelines (libllvm-qgl, 2026-10-16: the overworld) -
+// LARECOMP_STRUCTURE=1 there anyway
+static bool structure_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        extern bool vk_driver_is_qualcomm(void);
+        on = !getenv("LARECOMP_NO_STRUCTURE") && (!vk_driver_is_qualcomm() || getenv("LARECOMP_STRUCTURE"));
+        if (!on && vk_driver_is_qualcomm()) LOG("[vk] Qualcomm's driver: shaders keep their branch state machine (its compiler)\n");
+    }
+    return on;
+}
+#endif
+
 static void translate_program(void *arg) {
     Prog *p = arg;
     maxwell_gmem_base = HEAP_BASE;
@@ -1412,7 +1427,7 @@ static void translate_program(void *arg) {
     maxwell_gmem_miss_log = gcopy_mode && !getenv("LARECOMP_NO_GMISS");
     maxwell_brx_window = !getenv("LARECOMP_BRX_ALL_LABELS");
     maxwell_static_stacks = !getenv("LARECOMP_DYN_STACKS");
-    maxwell_structured = !getenv("LARECOMP_NO_STRUCTURE");
+    maxwell_structured = structure_on();
     maxwell_native_half = !getenv("LARECOMP_BITWISE_HALF");
     maxwell_fast_minmax = !getenv("LARECOMP_SAFE_MATH");
 #endif
@@ -2428,7 +2443,7 @@ static void gfast_finish(VkCommandBuffer cb) {
 // What a storing shader wrote goes back to guest memory once its submission is done (gcopy_retire: from vk_transient
 // before the ring reuses a chunk, and after every wait). Without this, global loads read zero: the game's text is
 // drawn by a vertex shader that reads its vertices that way (nothing of it showed).
-typedef struct { const uint8_t *src; uint64_t addr, len, seq; uint8_t *shadow; } GcBack;  // (shadow: the arena's, below)
+typedef struct { const uint8_t *src; uint64_t addr, len, seq; uint8_t *shadow; const uint64_t *bseq; } GcBack;  // (arena)
 static GcBack gc_back[256];
 static int gc_nback;
 static pthread_mutex_t gc_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -2449,6 +2464,10 @@ static void gcopy_retire(uint64_t done) {
             const uint8_t *src = gc_back[i].src;
             for (uint64_t b = 0; b < gc_back[i].len; b += 256) {
                 uint64_t n = gc_back[i].len - b < 256 ? gc_back[i].len - b : 256;
+                // (a block the CPU's newer data was uploaded into after this submission: the shadow is that data
+                // already while the slot may not have it yet - comparing them took the slot's older bytes for the
+                // GPU's and wrote them over the CPU's: the game's allocator lists looped, the game hung)
+                if (gc_back[i].bseq[b / 256] > gc_back[i].seq) continue;
                 if (!memcmp(src + b, sh + b, n) || memcmp(g + b, sh + b, n)) continue;  // (GPU unchanged / CPU wrote)
                 memcpy(g + b, src + b, n);
                 memcpy(sh + b, src + b, n);
@@ -2477,7 +2496,7 @@ typedef struct { uint64_t lo, hi; } GcRange;  // heap offsets, 256-aligned
 #define GA_RES (32ull << 20)    // [0, GA_RES): resident slots; the rest: the ring
 #define GA_SEG (8ull << 20)
 #define GA_NRES 512
-typedef struct { uint64_t lo, hi, off, checked; uint8_t *shadow; bool live; } GaRes;
+typedef struct { uint64_t lo, hi, off, checked; uint8_t *shadow; bool live; uint64_t *bseq; } GaRes;  // (bseq: per 256 B)
 static GaRes ga_res[GA_NRES];
 static int ga_nres;
 static VkBuffer ga_buf;
@@ -2542,6 +2561,7 @@ static void gres_sync(GaRes *e) {
         VkSpan sp = vk_transient(n, 256);
         memcpy(sp.ptr, g + s0, n);
         memcpy(e->shadow + s0, g + s0, n);
+        for (uint64_t k = s0 / 256; k < (s0 + n + 255) / 256; k++) e->bseq[k] = pend;
         VkCommandBuffer up = vk_upload_cmd();
         vk_full_barrier(up);  // (after the slot's writers in earlier submissions)
         VkBufferCopy cp = {sp.off, e->off + s0, n};
@@ -2576,9 +2596,10 @@ static GaRes *gres_get(uint64_t lo, uint64_t hi, bool create) {
     if (slot < 0 || ga_res_top + len > GA_RES) return NULL;
     GaRes *n = &ga_res[slot];
     uint8_t *shadow = malloc(len);
-    if (!shadow) return NULL;
+    uint64_t *bseq = calloc((len + 255) / 256, sizeof *bseq);
+    if (!shadow || !bseq) { free(shadow); free(bseq); return NULL; }
     const uint8_t *g = (const uint8_t *)(uintptr_t)(HEAP_BASE + ulo);
-    *n = (GaRes){ulo, uhi, ga_res_top, vk_pending_seq(), shadow, true};
+    *n = (GaRes){ulo, uhi, ga_res_top, vk_pending_seq(), shadow, true, bseq};
     ga_res_top += (len + 255) & ~255ull;
     memcpy(shadow, g, len);
     memcpy(ga_ptr + n->off, g, len);  // (a new slot: nothing on the GPU uses it yet)
@@ -2700,7 +2721,7 @@ static bool gres_prepare(const GcRange *r, int m, bool store) {
             pthread_mutex_lock(&gc_lock);
             if (gc_nback < 256)
                 gc_back[gc_nback++] = (GcBack){ga_ptr + e->off + (lo - e->lo), HEAP_BASE + lo, hi - lo, vk_pending_seq(),
-                                               e->shadow + (lo - e->lo)};
+                                               e->shadow + (lo - e->lo), e->bseq + (lo - e->lo) / 256};
             pthread_mutex_unlock(&gc_lock);
             continue;
         }
@@ -2737,7 +2758,7 @@ static bool gres_prepare(const GcRange *r, int m, bool store) {
 }
 
 static void gres_reset(void) {
-    for (int i = 0; i < ga_nres; i++) free(ga_res[i].shadow);
+    for (int i = 0; i < ga_nres; i++) { free(ga_res[i].shadow); free(ga_res[i].bseq); }
     memset(ga_res, 0, sizeof ga_res);
     ga_nres = 0;
     ga_res_top = 0;
@@ -2812,7 +2833,7 @@ static void gcopy_prepare(unsigned stage_mask, bool store) {
         gmap_tab[i * 4 + 1] = (uint32_t)len;
         gmap_tab[i * 4 + 2] = (uint32_t)(off >> 2);
         if (store && gc_nback < 256)
-            gc_back[gc_nback++] = (GcBack){(const uint8_t *)gc_span.ptr + off, HEAP_BASE + r[i].lo, len, seq, NULL};
+            gc_back[gc_nback++] = (GcBack){(const uint8_t *)gc_span.ptr + off, HEAP_BASE + r[i].lo, len, seq, NULL, NULL};
         off += (len + 255) & ~255ull;
     }
     pthread_mutex_unlock(&gc_lock);
@@ -3284,7 +3305,7 @@ static CsProg *compute_program(NvnProgram *np) {
     maxwell_gmem_miss_log = gcopy_mode && !getenv("LARECOMP_NO_GMISS");
     maxwell_brx_window = !getenv("LARECOMP_BRX_ALL_LABELS");
     maxwell_static_stacks = !getenv("LARECOMP_DYN_STACKS");
-    maxwell_structured = !getenv("LARECOMP_NO_STRUCTURE");
+    maxwell_structured = structure_on();
     maxwell_native_half = !getenv("LARECOMP_BITWISE_HALF");
     maxwell_fast_minmax = !getenv("LARECOMP_SAFE_MATH");
 #endif

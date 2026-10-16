@@ -867,6 +867,18 @@ const char *vk_gpu_desc(void) {
     snprintf(s, sizeof s, "%s - %s", p.properties.deviceName, drv);
     return s;
 }
+
+// Qualcomm's own driver (not Turnip): its shader compiler crashed on the structured control flow (vulkan/exec.c)
+bool vk_driver_is_qualcomm(void) {
+    static int q = -1;
+    if (q < 0 && g_vk.phys) {
+        VkPhysicalDeviceDriverProperties d = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+        VkPhysicalDeviceProperties2 p = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &d};
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &p);
+        q = d.driverID == VK_DRIVER_ID_QUALCOMM_PROPRIETARY;
+    }
+    return q > 0;
+}
 #endif
 
 void backend_init(void) {
