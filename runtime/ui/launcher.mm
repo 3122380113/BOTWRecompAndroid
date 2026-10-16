@@ -968,6 +968,9 @@ extern "C" void launcher_run(const char *root) {
     g_root = root;
     g_start_screen = 1;
     static bool update_checked;  // (once per launch, not again after a "Title screen" reboot)
+#ifdef __ANDROID__
+    update_checked = true;  // (the PC releases: not for this app, and no curl on the phone)
+#endif
     if (!update_checked && !getenv("LARECOMP_NO_UPDATE_CHECK")) {
         update_checked = true;
         pthread_t t;
@@ -1575,7 +1578,11 @@ extern "C" void launcher_run(const char *root) {
                     dl->AddText(font, size, p, col, t);
                     if (bold) dl->AddText(font, size, ImVec2(p.x + 0.7f * s, p.y), col, t);
                 };
+#ifdef __ANDROID__
+                std::string ver;  // (the PC version's label: not this app's)
+#else
                 std::string ver = tag_label(LARECOMP_VERSION, true);
+#endif
                 float vs = fs * 1.4f, y = ImGui::GetWindowPos().y + ds.y - 134 * s;
                 ImVec2 vsz = font->CalcTextSizeA(vs, FLT_MAX, 0, ver.c_str());
                 text(ImVec2(right - vsz.x, y), vs, IM_COL32(255, 255, 255, 255), ver.c_str(), false);
