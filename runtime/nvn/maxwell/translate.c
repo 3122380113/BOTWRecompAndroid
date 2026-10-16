@@ -1958,7 +1958,7 @@ static void st_code(SCtx *x, int k) {
         if (i % 4 && !x->skip[i]) sp(&x->out, "%.*s", (int)(x->ue[i] - x->us[i]), x->src + x->us[i]);
 }
 
-static void st_switch(SCtx *x, int k, int end, int depth);
+static int st_switch(SCtx *x, int k, int end, int depth);
 
 static void st_range_alt(SCtx *x, int a, int end, int opened, int depth, int alt);
 static void st_range(SCtx *x, int a, int end, int opened, int depth) { st_range_alt(x, a, end, opened, depth, -1); }
@@ -1981,8 +1981,9 @@ static void st_range_alt(SCtx *x, int a, int end, int opened, int depth, int alt
         st_code(x, k);
         if (!b->term || x->consumed[k]) { k++; continue; }
         if (b->term == 3) {
-            st_switch(x, k, end, depth);
-            return;
+            k = st_switch(x, k, end, depth);
+            if (k < 0 || x->fail) return;
+            continue;
         }
         bool always = !strcmp(b->cond, "true");
         const char *j = st_jump(x, b->term == 2 ? -1 : b->tgt);
@@ -2016,10 +2017,19 @@ static void st_range_alt(SCtx *x, int a, int end, int opened, int depth, int alt
             if (x->fail || jj) { x->fail = false; els = false; }
             x->nloops = nl;
         }
+        if (!els && alt >= 0 && t - 1 > k && last->term == 1 && !strcmp(last->cond, "true") && J == alt && !x->consumed[t - 1]) {
+            x->consumed[t - 1] = 1;
+            sp(&x->out, "  if (!(%s)) {\n", b->cond);
+            st_range_alt(x, k + 1, t, -1, depth + 1, alt);
+            sp(&x->out, "  } else {\n");
+            st_range_alt(x, t, end, -1, depth + 1, alt);
+            sp(&x->out, "  }\n");
+            return;
+        }
         sp(&x->out, "  if (!(%s)) {\n", b->cond);
         if (els) {
             x->consumed[t - 1] = 1;
-            st_range(x, k + 1, t, -1, depth + 1);
+            st_range_alt(x, k + 1, t, -1, depth + 1, J);
             sp(&x->out, "  } else {\n");
             st_range(x, t, J, -1, depth + 1);
             sp(&x->out, "  }\n");
@@ -2035,7 +2045,7 @@ static void st_range_alt(SCtx *x, int a, int end, int opened, int depth, int alt
 // A BRX through a table (block k): `bt` is its computed target, and each target starts a case running to the next
 // one (the last: to the region's end); a case must end in a jump or an EXIT, not run into the next. A target that is
 // none of them exits, as the state machine's default does.
-static void st_switch(SCtx *x, int k, int end, int depth) {
+static int st_switch(SCtx *x, int k, int end, int depth) {
     const Ctx *c = x->c;
     int bx = x->b[k].brx;
     uint64_t w = x->w[x->c->brx[bx].at];
@@ -2045,21 +2055,33 @@ static void st_switch(SCtx *x, int k, int end, int depth) {
         int ti = (int)(c->brx[bx].t[q] / 8), b = 0;
         while (b < x->nb && x->b[b].s != (uint32_t)ti) b++;
         tb[q] = b;
-        if (b >= end || b <= k) { x->fail = true; return; }
+        if (b >= end || b <= k) { x->fail = true; return -1; }
     }
-    if (tb[0] != k + 1) { x->fail = true; return; }  // (code between the BRX and its first case)
+    if (tb[0] != k + 1) { x->fail = true; return -1; }  // (code between the BRX and its first case)
+    // the cases' join: where those that end in a jump go, past the last case's start (one place for all, else none:
+    // the cases run to the region's end)
+    int J = -1;
+    for (int q = 0; q + 1 < n; q++) {
+        SBlk *last = &x->b[tb[q + 1] - 1];
+        if (last->term != 1 || strcmp(last->cond, "true") || last->tgt <= tb[n - 1]) continue;
+        if (J < 0) J = last->tgt;
+        else if (J != last->tgt) { J = -1; break; }
+    }
+    if (J > end) J = -1;
+    int stop = J >= 0 ? J : end;
     char r[8];
     if (ra == RZ) strcpy(r, "0u"); else snprintf(r, sizeof r, "r%d", ra);
     sp(&x->out, "  { uint bt = %uu + %s + 0x%08xu; if (((bt >> 3) & 3u) == 0u) bt += 8u;\n", x->c->brx[bx].at * 8 + 8, r,
        (uint32_t)sbits(w, 20, 24));
     for (int q = 0; q < n && !x->fail; q++) {
-        int e = q + 1 < n ? tb[q + 1] : end;
+        int e = q + 1 < n ? tb[q + 1] : stop;
         SBlk *last = &x->b[e - 1];
-        if (q + 1 < n && !((last->term == 1 || last->term == 2) && !strcmp(last->cond, "true"))) { x->fail = true; return; }
+        if (q + 1 < n && !((last->term == 1 || last->term == 2) && !strcmp(last->cond, "true"))) { x->fail = true; return -1; }
         sp(&x->out, "  %sif (bt == %uu) {\n", q ? "} else " : "", x->b[tb[q]].s * 8);
-        st_range_alt(x, tb[q], e, -1, depth + 1, end);
+        st_range_alt(x, tb[q], e, -1, depth + 1, stop);
     }
     sp(&x->out, "  } else { %s }\n  }\n", st_jump(x, -1));
+    return J;
 }
 
 // Rewrites c->body (the state machine's, with per-instruction text in [us[i], ue[i])) as structured code.
