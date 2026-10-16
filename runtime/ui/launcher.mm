@@ -1206,6 +1206,37 @@ extern "C" void launcher_run(const char *root) {
                 ImGui::Dummy(ImGui::CalcTextSize(t));
             }
             ImGui::PopFont();
+#ifdef __ANDROID__
+            if (page == MAIN) {  // "Android" under the title, after the Android robot's head (Google, CC BY 3.0), in its green
+                ImDrawList *dl = ImGui::GetWindowDrawList();
+                ImGui::PushFont(g_font_menu);
+                float fs = ImGui::GetFontSize();
+                ImGui::SetCursorPosX(x0);
+                ImVec2 p = ImGui::GetCursorScreenPos();
+                p.y -= fs * 0.3f;  // (the title's line runs deep below its letters)
+                float r = fs * 0.34f;  // the head: a half disc on its flat side, two antennae, two eyes
+                ImVec2 c(p.x + 8 * s + r, p.y + fs * 0.66f);
+                const ImU32 green = IM_COL32(61, 220, 132, 255), shade = IM_COL32(4, 8, 30, 150);
+                auto head = [&](float dx, float dy, ImU32 col, bool eyes) {
+                    ImVec2 o(c.x + dx, c.y + dy);
+                    dl->PathArcTo(o, r, IM_PI, 2 * IM_PI, 32);
+                    dl->PathFillConvex(col);
+                    for (float sg : {-1.0f, 1.0f})
+                        dl->AddLine(ImVec2(o.x + sg * r * 0.45f, o.y - r * 0.78f), ImVec2(o.x + sg * r * 0.7f, o.y - r * 1.22f),
+                                    col, r * 0.09f);
+                    if (eyes)
+                        for (float sg : {-1.0f, 1.0f})
+                            dl->AddCircleFilled(ImVec2(o.x + sg * r * 0.42f, o.y - r * 0.42f), r * 0.1f, IM_COL32(16, 24, 48, 255));
+                };
+                head(2.5f * s, 2.5f * s, shade, false);
+                head(0, 0, green, true);
+                const char *t = "Android";
+                ImVec2 tp(c.x + r + fs * 0.28f, p.y);
+                for (float d : {2.5f, 1.5f}) dl->AddText(ImGui::GetFont(), fs, ImVec2(tp.x + d * s, tp.y + d * s), shade, t);
+                dl->AddText(ImGui::GetFont(), fs, tp, green, t);
+                ImGui::PopFont();
+            }
+#endif
             ImGui::SetCursorPos(ImVec2(x0, 285 * s));
             // typing in a text field / the on-screen keyboard (osk.h): B / Esc are for it, not "back" (from the frame
             // before too, so the Esc that ends the typing doesn't also leave the page)

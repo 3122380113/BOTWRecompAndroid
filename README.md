@@ -25,6 +25,8 @@ For the PC versions (Windows, macOS, Linux), features and the randomizer, see th
 
 ## Screenshots
 
+![The start screen](docs/android/start_screen.jpg)
+
 | ![Overworld, 58 fps](docs/android/overworld.jpg) | ![Toronbo Shores beach, 60 fps](docs/android/beach.jpg) |
 |:-:|:-:|
 | ![Finding the sword](docs/android/sword.jpg) | ![Toronbo Shores](docs/android/shore.jpg) |
@@ -147,6 +149,8 @@ For development, the game code can still be built on the PC and pushed: `bash an
 - [Dear ImGui](https://github.com/ocornut/imgui) (MIT): the overlay menu and the start screen.
 - [SMAA](https://github.com/iryoku/smaa) and [AMD FidelityFX Super Resolution 1](https://github.com/GPUOpen-Effects/FidelityFX-FSR)
   (MIT): the anti-aliasing and upscaler options, built into the renderer.
+- The Android robot on the start screen is reproduced or modified from work created and shared by Google and used
+  according to terms described in the [Creative Commons 3.0 Attribution License](https://creativecommons.org/licenses/by/3.0/).
 - [DejaVu fonts](https://dejavu-fonts.github.io) (Bitstream Vera license): stand-in for the Switch's system font.
 
 ## Legal

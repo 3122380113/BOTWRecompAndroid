@@ -25,6 +25,8 @@ Para as versões de PC (Windows, macOS, Linux), os recursos e o randomizer, veja
 
 ## Capturas de tela
 
+![A tela inicial](docs/android/start_screen.jpg)
+
 | ![Mapa aberto, 58 fps](docs/android/overworld.jpg) | ![Praia de Toronbo Shores, 60 fps](docs/android/beach.jpg) |
 |:-:|:-:|
 | ![Encontrando a espada](docs/android/sword.jpg) | ![Toronbo Shores](docs/android/shore.jpg) |
@@ -150,6 +152,8 @@ depois `bash android/push_game.sh <pasta com exefs/ e romfs/>`.
 - [Dear ImGui](https://github.com/ocornut/imgui) (MIT): o menu sobreposto e a tela inicial.
 - [SMAA](https://github.com/iryoku/smaa) e [AMD FidelityFX Super Resolution 1](https://github.com/GPUOpen-Effects/FidelityFX-FSR)
   (MIT): as opções de anti-aliasing e de upscaler, embutidas no renderizador.
+- O robô do Android na tela inicial é reproduzido ou modificado a partir de trabalho criado e compartilhado pelo
+  Google e usado de acordo com os termos da [Licença Creative Commons Atribuição 3.0](https://creativecommons.org/licenses/by/3.0/).
 - [Fontes DejaVu](https://dejavu-fonts.github.io) (licença Bitstream Vera): substituta da fonte de sistema do Switch.
 
 ## Aviso legal
