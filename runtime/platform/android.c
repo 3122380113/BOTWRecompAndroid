@@ -367,3 +367,40 @@ void plat_device_stats(PlatDeviceStats *out) {
         fclose(f);
     }
 }
+
+// ---- ADPF (Android Dynamic Performance Framework, API 33+): the presenting thread's work per frame against its
+// target. Android's governor otherwise keeps a thread that works ~65% of each 60 fps frame on a middling clock (or
+// core), and a frame with more of the game's work than usual (2-3x in places) overran: the overworld fell back to its
+// 30 fps mode. Loaded at run time (minSdk 30). LARECOMP_NO_ADPF=1: off.
+typedef struct APerformanceHintManager APerformanceHintManager;
+typedef struct APerformanceHintSession APerformanceHintSession;
+void plat_frame_work(uint64_t work_ns, uint64_t target_ns) {
+    static int state;  // 0 untried, 1 on, -1 off
+    static APerformanceHintManager *(*get_manager)(void);
+    static APerformanceHintSession *(*create)(APerformanceHintManager *, const int32_t *, size_t, int64_t);
+    static int (*report)(APerformanceHintSession *, int64_t);
+    static int (*retarget)(APerformanceHintSession *, int64_t);
+    static APerformanceHintSession *session;
+    static uint64_t target;
+    if (state < 0) return;
+    if (!state) {
+        state = -1;
+        if (getenv("LARECOMP_NO_ADPF")) return;
+        void *lib = dlopen("libandroid.so", RTLD_NOW);
+        if (!lib) return;
+        get_manager = (APerformanceHintManager * (*)(void)) dlsym(lib, "APerformanceHint_getManager");
+        create = (APerformanceHintSession * (*)(APerformanceHintManager *, const int32_t *, size_t, int64_t))
+            dlsym(lib, "APerformanceHint_createSession");
+        report = (int (*)(APerformanceHintSession *, int64_t))dlsym(lib, "APerformanceHint_reportActualWorkDuration");
+        retarget = (int (*)(APerformanceHintSession *, int64_t))dlsym(lib, "APerformanceHint_updateTargetWorkDuration");
+        APerformanceHintManager *m = get_manager && create && report && retarget ? get_manager() : NULL;
+        int32_t tid = (int32_t)gettid();
+        session = m ? create(m, &tid, 1, (int64_t)target_ns) : NULL;
+        LOG("[android] performance hint session: %s\n", session ? "on" : "not available");
+        if (!session) return;
+        target = target_ns;
+        state = 1;
+    }
+    if (target_ns != target) { retarget(session, (int64_t)target_ns); target = target_ns; }
+    if (work_ns) report(session, (int64_t)work_ns);
+}

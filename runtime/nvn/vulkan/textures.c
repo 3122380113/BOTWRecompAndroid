@@ -607,7 +607,11 @@ TexBackend *vk_tex(NvnTexture *t, bool for_render) {
         extern uint64_t prof_up_ns;
         uint64_t t0 = prof_up_ns != ~0ull ? SDL_GetTicksNS() : 0;
         upload_texture(t, b);
-        if (prof_up_ns != ~0ull) prof_up_ns += SDL_GetTicksNS() - t0;
+        if (prof_up_ns != ~0ull) {
+            extern uint64_t prof_up_cum;  // (exec.c: per-frame in LARECOMP_LOG_PACE)
+            uint64_t d = SDL_GetTicksNS() - t0;
+            prof_up_ns += d, prof_up_cum += d;
+        }
     }
     return b;
 }

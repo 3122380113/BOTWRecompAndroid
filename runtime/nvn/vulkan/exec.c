@@ -30,6 +30,7 @@ uint64_t vk_cum_wait_ns(void) { return cum_wait; }  // (the performance overlay:
 static uint32_t prof_end_line[4096];  // passes ended, by the exec.c line that ended them (0: submit / present)
 uint64_t prof_views_created;  // textures.c vk_image_view cache misses
 uint64_t prof_up_ns = ~0ull;  // textures.c upload checks (~0: profiling off)
+uint64_t prof_up_cum;  // (the same, never reset)
 #define PROF_T0() uint64_t prof_t0_ = prof ? SDL_GetTicksNS() : 0
 #define PROF_ADD(v) do { if (prof) v += SDL_GetTicksNS() - prof_t0_; } while (0)
 static _Atomic int stat_compiles;
@@ -174,10 +175,18 @@ void vk_pace_frame(void) {
     last = now, last_wait = w;
     if (first || p > 100000000ull) return;  // (loading, a hitch: not a pace)
     double busy = (p > wt ? p - wt : 0) / 1e6;
+#ifdef __ANDROID__
+    plat_frame_work((uint64_t)(busy * 1e6), pace_slow ? 33333333ull : 16666667ull);  // (ADPF: clocks for the frame's target)
+#endif
     avg = avg ? avg + (busy - avg) * 0.05 : busy;
     static int log = -1;  // LARECOMP_LOG_PACE=1: each frame's period, vsync wait and busy time
     if (log < 0) log = getenv("LARECOMP_LOG_PACE") != NULL;
-    if (log) LOG("[pace] period %.2f blocked %.2f busy %.2f ms\n", p / 1e6, wt / 1e6, busy);
+    if (log) {  // (with LARECOMP_VK_PROF also the frame's command translation and, of it, texture checks / uploads)
+        static uint64_t le, lu;
+        LOG("[pace] period %.2f blocked %.2f busy %.2f ms exec %.2f tex %.2f\n", p / 1e6, wt / 1e6, busy,
+            (cum_exec - le) / 1e6, (prof_up_cum - lu) / 1e6);
+        le = cum_exec, lu = prof_up_cum;
+    }
     int o = busy > 16.2;
     stat_pace_over += o;
     nover += o - over[idx];

@@ -81,6 +81,8 @@ typedef struct {
     float headroom;                // PowerManager thermal headroom (1.0 = throttling begins)
 } PlatDeviceStats;
 void plat_device_stats(PlatDeviceStats *out);
+// ADPF: the calling thread's work for a frame (busy, ns) and its target (the frame time it must fit)
+void plat_frame_work(uint64_t work_ns, uint64_t target_ns);
 #endif
 
 #ifdef __cplusplus
