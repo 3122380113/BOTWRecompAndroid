@@ -39,8 +39,8 @@ Tested on a **POCO F7 Ultra** (Snapdragon 8 Elite / Adreno 830, Android 16) with
 
 - the game boots, the movies play with sound, and the menus, saves and gameplay work;
 - **a steady 60 fps**, the overworld included, at the default 50% internal resolution (720p): 98% of the time at 60
-  in our overworld measurements, with no frame over 18 ms. The game still has its own 30 fps mode, as on the Switch,
-  for when a frame can't fit;
+  in our overworld measurements, with no frame over 18 ms. It also held 60 at 75% (1080p) in our tests. The game
+  still has its own 30 fps mode, as on the Switch, for when a frame can't fit;
 - **touch controls**: a floating stick, A / B / X / Y, L / R / ZL / ZR, Minus / Plus and a menu button, shown while
   no controller is connected (they hide as soon as one is). Their layout can be edited (drag them where you like,
   size, opacity) in the in-game menu's Controls tab; the Android back button opens the menu;
