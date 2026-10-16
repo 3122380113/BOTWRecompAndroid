@@ -693,7 +693,17 @@ static void keyboard_draw(ImGuiIO &io, float scale) {
                          [](ImGuiInputTextCallbackData *d) -> int { return d->EventChar < 0x20 ? 1 : 0; });
         ImGui::PopFont();
         if ((int)strlen(g_kbd_text) > g_kbd_max) g_kbd_text[g_kbd_max] = 0;
+#ifdef __ANDROID__
+        // (touch: no Enter / Esc keys to name - OK / Cancel buttons)
+        ImGui::TextDisabled("%d / %d", (int)strlen(g_kbd_text), g_kbd_max);
+        float bw = 240 * scale, bh = 64 * scale, sp = ImGui::GetStyle().ItemSpacing.x;
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - 2 * bw - sp);
+        if (ImGui::Button("Cancel", ImVec2(bw, bh))) g_kbd = 3;
+        ImGui::SameLine();
+        if (ImGui::Button("OK", ImVec2(bw, bh))) g_kbd = 2;
+#else
         ImGui::TextDisabled("Enter  confirm      Esc  cancel      (%d / %d)", (int)strlen(g_kbd_text), g_kbd_max);
+#endif
     } else {  // controller: on-screen keyboard (osk.mm, shared with our menus' text fields)
         int r = osk_keys(g_kbd_text, sizeof g_kbd_text, g_kbd_max, appearing, scale, g_font_big);
         if (r) g_kbd = r > 0 ? 2 : 3;  // (Start / + confirms in menu_handle_event too)
