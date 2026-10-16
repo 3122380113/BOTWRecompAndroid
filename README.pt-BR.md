@@ -37,6 +37,10 @@ Em um POCO F7 Ultra com Turnip: os controles de toque na tela e o overlay de des
 
 Em 75% de resolução interna (1080p) e em tela cheia: 55-60 fps, quase sempre 60.
 
+![Vila Mabe em 75% (1080p), 16:9, 60 fps](docs/android/1080p_16x9.jpg)
+
+Em 75% (1080p) em 16:9, o formato do Switch (barras nas laterais): 60 fps estáveis.
+
 ![Vila Mabe na resolução nativa, tela cheia, 30 fps](docs/android/native_fullscreen.jpg)
 
 Na resolução nativa (3200×1440, 100%) e em tela cheia: 30 fps estáveis, no modo de 30 fps do próprio jogo (velocidade
@@ -48,8 +52,8 @@ Testado em um **POCO F7 Ultra** (Snapdragon 8 Elite / Adreno 830, Android 16) co
 
 - o jogo inicia, os vídeos tocam com som, e os menus, os saves e a jogabilidade funcionam;
 - **60 fps estáveis**, inclusive no mapa aberto, na resolução interna padrão de 50% (720p): 98% do tempo a 60 nas
-  nossas medições no mapa aberto, sem nenhum quadro acima de 18 ms. Em 75% (1080p) rodou a 55-60 fps nos nossos
-  testes, quase sempre 60, e na resolução nativa (3200×1440) em tela cheia a 30 estáveis. O jogo ainda tem o seu próprio modo de 30 fps, como no Switch, para quando um quadro não cabe;
+  nossas medições no mapa aberto, sem nenhum quadro acima de 18 ms. Em 75% (1080p) segurou 60 em 16:9 e rodou a
+  55-60 fps em tela cheia nos nossos testes, e na resolução nativa (3200×1440) em tela cheia a 30 estáveis. O jogo ainda tem o seu próprio modo de 30 fps, como no Switch, para quando um quadro não cabe;
 - **controles de toque**: um analógico flutuante, A / B / X / Y, L / R / ZL / ZR, Menos / Mais e um botão de menu,
   exibidos enquanto nenhum controle está conectado (somem assim que um é conectado). O layout pode ser editado
   (arrastar para onde quiser, tamanho, opacidade) na aba Controls do menu do jogo; o botão voltar do Android abre o
