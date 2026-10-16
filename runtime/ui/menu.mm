@@ -671,8 +671,61 @@ RT_ON_RESET(menu_reset) {
     pthread_mutex_unlock(&q_lock);
 }
 
+static int name_filter(ImGuiInputTextCallbackData *d) { return d->EventChar < 0x20 ? 1 : 0; }
+
+#ifdef __ANDROID__
+// Touch (no controller): typed with Android's keyboard, which covers the lower half - so at the top, in the menu's
+// larger font, with OK / Cancel buttons (there's no Enter / Esc to press; the keyboard's own Enter still confirms)
+static void keyboard_draw_touch(ImGuiIO &io, float scale, bool appearing) {
+    float w = fminf(io.DisplaySize.x * 0.8f, 1700 * scale);
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.04f), ImGuiCond_Always, ImVec2(0.5f, 0));
+    ImGui::SetNextWindowSize(ImVec2(w, 0), ImGuiCond_Always);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(36 * scale, 28 * scale));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(24 * scale, 14 * scale));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(24 * scale, 20 * scale));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 18 * scale);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 12 * scale);
+    ImGui::Begin("##kbd", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                                    ImGuiWindowFlags_AlwaysAutoResize);
+    ImFont *big = g_menu_font_big ? g_menu_font_big : g_font_big, *small = g_menu_font ? g_menu_font : g_font;
+    ImGui::PushFont(big);
+    ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "Enter your name");
+    if (appearing) ImGui::SetKeyboardFocusHere();
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputText("##name", g_kbd_text, (size_t)(g_kbd_max * 4 + 1 < (int)sizeof g_kbd_text ? g_kbd_max * 4 + 1 : sizeof g_kbd_text),
+                     ImGuiInputTextFlags_CallbackCharFilter, name_filter);
+    ImGui::PopFont();
+    if ((int)strlen(g_kbd_text) > g_kbd_max) g_kbd_text[g_kbd_max] = 0;
+    float bw = 340 * scale, bh = 120 * scale, sp = ImGui::GetStyle().ItemSpacing.x;
+    // one row: the count at the left, the buttons at the right (placed, not SameLine: the same top for both)
+    float y = ImGui::GetCursorPosY(), x0 = ImGui::GetCursorPosX(), xr = ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x;
+    ImGui::PushFont(big);
+    ImGui::SetCursorPos(ImVec2(xr - 2 * bw - sp, y));
+    if (ImGui::Button("Cancel", ImVec2(bw, bh))) g_kbd = 3;
+    ImGui::SetCursorPos(ImVec2(xr - bw, y));
+    if (ImGui::Button("OK", ImVec2(bw, bh))) g_kbd = 2;
+    ImGui::PopFont();
+    ImGui::PushFont(small);
+    ImGui::SetCursorPos(ImVec2(x0, y + (bh - ImGui::GetTextLineHeight()) * 0.5f));
+    ImGui::TextDisabled("%d / %d", (int)strlen(g_kbd_text), g_kbd_max);
+    ImGui::PopFont();
+    ImGui::End();
+    ImGui::PopStyleVar(5);
+}
+#endif
+
 static void keyboard_draw(ImGuiIO &io, float scale) {
     ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), io.DisplaySize, IM_COL32(0, 0, 0, 120));
+    static bool was_open, was_pad;
+    bool pad = g_last_pad.load(), appearing = !was_open || pad != was_pad;  // (switching device: focus the new one)
+    was_open = true, was_pad = pad;
+#ifdef __ANDROID__
+    if (!pad) {
+        keyboard_draw_touch(io, scale, appearing);
+        if (g_kbd.load() != 1) was_open = false;
+        return;
+    }
+#endif
     float w = fminf(io.DisplaySize.x * 0.9f, 1100 * scale);
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(w, 0), ImGuiCond_Always);
@@ -681,29 +734,15 @@ static void keyboard_draw(ImGuiIO &io, float scale) {
     ImGui::PushFont(g_font_big);
     ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "Enter your name");
     ImGui::PopFont();
-    static bool was_open, was_pad;
-    bool pad = g_last_pad.load(), appearing = !was_open || pad != was_pad;  // (switching device: focus the new one)
-    was_open = true, was_pad = pad;
     if (!pad) {  // keyboard: type straight into the field
         if (appearing) ImGui::SetKeyboardFocusHere();
         ImGui::SetNextItemWidth(-1);
         ImGui::PushFont(g_font_big);
         ImGui::InputText("##name", g_kbd_text, (size_t)(g_kbd_max * 4 + 1 < (int)sizeof g_kbd_text ? g_kbd_max * 4 + 1 : sizeof g_kbd_text),
-                         ImGuiInputTextFlags_CallbackCharFilter,
-                         [](ImGuiInputTextCallbackData *d) -> int { return d->EventChar < 0x20 ? 1 : 0; });
+                         ImGuiInputTextFlags_CallbackCharFilter, name_filter);
         ImGui::PopFont();
         if ((int)strlen(g_kbd_text) > g_kbd_max) g_kbd_text[g_kbd_max] = 0;
-#ifdef __ANDROID__
-        // (touch: no Enter / Esc keys to name - OK / Cancel buttons)
-        ImGui::TextDisabled("%d / %d", (int)strlen(g_kbd_text), g_kbd_max);
-        float bw = 240 * scale, bh = 64 * scale, sp = ImGui::GetStyle().ItemSpacing.x;
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - 2 * bw - sp);
-        if (ImGui::Button("Cancel", ImVec2(bw, bh))) g_kbd = 3;
-        ImGui::SameLine();
-        if (ImGui::Button("OK", ImVec2(bw, bh))) g_kbd = 2;
-#else
         ImGui::TextDisabled("Enter  confirm      Esc  cancel      (%d / %d)", (int)strlen(g_kbd_text), g_kbd_max);
-#endif
     } else {  // controller: on-screen keyboard (osk.mm, shared with our menus' text fields)
         int r = osk_keys(g_kbd_text, sizeof g_kbd_text, g_kbd_max, appearing, scale, g_font_big);
         if (r) g_kbd = r > 0 ? 2 : 3;  // (Start / + confirms in menu_handle_event too)
@@ -1008,7 +1047,11 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
 
     if (kbd) keyboard_draw(io, scale);
     ImGui::Render();
+#ifdef __ANDROID__
+    g_text_busy = (open || kbd) && ui_text_busy();  // (the name entry too: Android's keyboard for its field)
+#else
     g_text_busy = open && ui_text_busy();
+#endif
 #ifdef __APPLE__
     id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rp];
     ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), cb, enc);
