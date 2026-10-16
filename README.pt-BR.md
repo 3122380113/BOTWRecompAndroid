@@ -23,6 +23,14 @@ Para as versões de PC (Windows, macOS, Linux), os recursos e o randomizer, veja
 > obtida legalmente, dos arquivos extraídos de *Link's Awakening* **v1.0.0**. Não serão dadas instruções de como
 > obtê-los.
 
+## Capturas de tela
+
+| ![Mapa aberto, 58 fps](docs/android/overworld.jpg) | ![Praia de Toronbo Shores, 60 fps](docs/android/beach.jpg) |
+|:-:|:-:|
+| ![Encontrando a espada](docs/android/sword.jpg) | ![Toronbo Shores](docs/android/shore.jpg) |
+
+Em um POCO F7 Ultra com Turnip: os controles de toque na tela e o overlay de desempenho ligado (canto superior esquerdo).
+
 ## Estado atual
 
 Testado em um **POCO F7 Ultra** (Snapdragon 8 Elite / Adreno 830, Android 16) com o driver **Turnip Gen8 V37**:

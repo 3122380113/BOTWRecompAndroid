@@ -23,6 +23,14 @@ For the PC versions (Windows, macOS, Linux), features and the randomizer, see th
 > copy of the extracted game files of *Link's Awakening* **v1.0.0**. Instructions on how to obtain them will not be
 > provided.
 
+## Screenshots
+
+| ![Overworld, 58 fps](docs/android/overworld.jpg) | ![Toronbo Shores beach, 60 fps](docs/android/beach.jpg) |
+|:-:|:-:|
+| ![Finding the sword](docs/android/sword.jpg) | ![Toronbo Shores](docs/android/shore.jpg) |
+
+On a POCO F7 Ultra with Turnip: the touch controls on screen, the performance overlay on (top left).
+
 ## Status
 
 Tested on a **POCO F7 Ultra** (Snapdragon 8 Elite / Adreno 830, Android 16) with the **Turnip Gen8 V37** driver:
