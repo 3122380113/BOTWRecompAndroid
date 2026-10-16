@@ -90,6 +90,10 @@ extern uint64_t maxwell_gmem_base, maxwell_gmem_size;
 // (GLSL) every stage's global memory through the GMap table, not only compute: set by a backend that can't wrap the
 // guest heap in a buffer (Android: no VK_EXT_external_memory_host; vulkan/exec.c copies the bound ranges instead)
 extern bool maxwell_gmem_map_all;
+// (diagnostics, Android copy mode) a mapped access outside the table records its heap offset at the end of the gfast_
+// buffer (the arena: exec.c) instead of reading the heap binding, which isn't there
+extern bool maxwell_gmem_miss_log;
+#define GMISS_WORD ((128u << 20) / 4u - 1024u)  // (the arena's last 4 KB: count, then up to 64 offsets)
 // A BRX (jump table) labels only the instructions up to the join pushed before it, not the whole shader (set by the
 // Android backend: Adreno's compiler turns every label into a block boundary)
 extern bool maxwell_brx_window;

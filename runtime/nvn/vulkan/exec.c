@@ -1409,6 +1409,7 @@ static void translate_program(void *arg) {
     maxwell_gmem_size = HEAP_MAX;
 #ifdef __ANDROID__
     maxwell_gmem_map_all = gcopy_mode;
+    maxwell_gmem_miss_log = gcopy_mode && !getenv("LARECOMP_NO_GMISS");
     maxwell_brx_window = !getenv("LARECOMP_BRX_ALL_LABELS");
     maxwell_static_stacks = !getenv("LARECOMP_DYN_STACKS");
     maxwell_structured = !getenv("LARECOMP_NO_STRUCTURE");
@@ -2427,7 +2428,7 @@ static void gfast_finish(VkCommandBuffer cb) {
 // What a storing shader wrote goes back to guest memory once its submission is done (gcopy_retire: from vk_transient
 // before the ring reuses a chunk, and after every wait). Without this, global loads read zero: the game's text is
 // drawn by a vertex shader that reads its vertices that way (nothing of it showed).
-typedef struct { const uint8_t *src; uint64_t addr, len, seq; } GcBack;
+typedef struct { const uint8_t *src; uint64_t addr, len, seq; uint8_t *shadow; } GcBack;  // (shadow: the arena's, below)
 static GcBack gc_back[256];
 static int gc_nback;
 static pthread_mutex_t gc_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -2436,11 +2437,299 @@ static void gcopy_retire(uint64_t done) {
     pthread_mutex_lock(&gc_lock);
     int k = 0;
     for (int i = 0; i < gc_nback; i++) {
-        if (gc_back[i].seq <= done) memcpy((void *)(uintptr_t)gc_back[i].addr, gc_back[i].src, gc_back[i].len);
-        else gc_back[k++] = gc_back[i];
+        if (gc_back[i].seq <= done) {
+            memcpy((void *)(uintptr_t)gc_back[i].addr, gc_back[i].src, gc_back[i].len);
+            if (gc_back[i].shadow) memcpy(gc_back[i].shadow, gc_back[i].src, gc_back[i].len);  // (not the CPU's write)
+        } else gc_back[k++] = gc_back[i];
     }
     gc_nback = k;
     pthread_mutex_unlock(&gc_lock);
+}
+
+
+// ---- the arena: shader global memory that stays on the GPU (LARECOMP_VK_NO_GRES=1: off)
+// The copies above are taken when a draw is translated, but a compute shader's output only reaches guest memory once
+// its submission is done. The game's lighting is such a case: each frame a compute dispatch writes the light list
+// (~34 KB) and then over a hundred draws' fragment shaders read it - from copies made before the dispatch had run:
+// no lighting on Qualcomm's driver (Turnip reads the heap itself). So every draw and dispatch reaches global memory
+// through one buffer, the arena: a range a shader stores to gets a slot there for good (resident), and everything
+// after it that touches that range - the dispatch itself next frame, the draws - uses the slot, in GPU order; the
+// other ranges are copied per draw into the arena's ring, as before. The CPU's writes to a resident range (the game
+// clearing a counter each frame) are found by comparing the range with what was last uploaded, 256 bytes at a time,
+// and copied into the slot by the GPU at the start of the submission. What a shader stored also goes back to guest
+// memory once its submission is done (the game reads some of it as uniform buffers, vertices, textures), and to the
+// range's last-uploaded copy, so that isn't taken for the CPU's write.
+typedef struct { uint64_t lo, hi; } GcRange;  // heap offsets, 256-aligned
+#define GA_SIZE (128ull << 20)  // (the minimum maxStorageBufferRange)
+#define GA_RES (32ull << 20)    // [0, GA_RES): resident slots; the rest: the ring
+#define GA_SEG (8ull << 20)
+#define GA_NRES 512
+typedef struct { uint64_t lo, hi, off, checked; uint8_t *shadow; bool live; } GaRes;
+static GaRes ga_res[GA_NRES];
+static int ga_nres;
+static VkBuffer ga_buf;
+static VmaAllocation ga_mem;
+static uint8_t *ga_ptr;
+static uint64_t ga_res_top, ga_head = GA_RES, ga_seg_seq[GA_SIZE / GA_SEG];
+static int gres_state = -1;
+static uint64_t stat_gres_res, stat_gres_sync;  // (resident ranges used, CPU-changed bytes uploaded)
+static uint64_t stat_gres_fail[4];  // (fell back to the plain copies: 0 no entry/space, 1 table full, 2 ring, 3 too big)
+
+static bool gres_init(void) {
+    if (gres_state >= 0) return gres_state;
+    gres_state = 0;
+    if (getenv("LARECOMP_VK_NO_GRES")) return false;
+    if (g_vk.props.limits.maxStorageBufferRange < GA_SIZE) return false;
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = GA_SIZE,
+                             .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                      VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+                                  .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT};  // (read back)
+    VmaAllocationInfo inf;
+    if (vmaCreateBuffer(g_vk.vma, &bi, &ai, &ga_buf, &ga_mem, &inf) != VK_SUCCESS || !inf.pMappedData) {
+        LOG("[vk] global memory arena: not available\n");
+        return false;
+    }
+    ga_ptr = inf.pMappedData;
+    gres_state = 1;
+    LOG("[vk] global memory arena: %llu MB (what shaders store stays on the GPU)\n", (unsigned long long)(GA_SIZE >> 20));
+    return true;
+}
+
+// A copy's place in the arena's ring (~0: none - too big, or the ring went round within one submission)
+static uint64_t ga_ring(uint64_t size) {
+    size = (size + 255) & ~255ull;
+    if (size > GA_SEG) return ~0ull;
+    if (ga_head / GA_SEG != (ga_head + size - 1) / GA_SEG || ga_head + size > GA_SIZE - 4096) {  // (the last 4 KB: GMISS)
+        ga_head = (ga_head / GA_SEG + 1) * GA_SEG;
+        if (ga_head >= GA_SIZE) ga_head = GA_RES;
+        uint64_t q = ga_seg_seq[ga_head / GA_SEG];
+        if (q >= vk_pending_seq()) return ~0ull;
+        if (q) vk_wait_seq(q);  // (the segment's last readers done)
+    }
+    uint64_t off = ga_head;
+    ga_head += size;
+    ga_seg_seq[off / GA_SEG] = vk_pending_seq();
+    return off;
+}
+
+// The CPU's writes to a resident range since its last upload, into its slot (by the GPU, first thing in the
+// submission: once per submission, before any of its uses)
+static void gres_sync(GaRes *e) {
+    uint64_t pend = vk_pending_seq();
+    if (e->checked == pend) return;
+    e->checked = pend;
+    const uint8_t *g = (const uint8_t *)(uintptr_t)(HEAP_BASE + e->lo);
+    uint64_t len = e->hi - e->lo;
+    for (uint64_t b = 0; b < len;) {
+        if (!memcmp(g + b, e->shadow + b, 256)) { b += 256; continue; }
+        uint64_t s0 = b;
+        while (b < len && memcmp(g + b, e->shadow + b, 256)) b += 256;
+        uint64_t n = b - s0;
+        VkSpan sp = vk_transient(n, 256);
+        memcpy(sp.ptr, g + s0, n);
+        memcpy(e->shadow + s0, g + s0, n);
+        VkCommandBuffer up = vk_upload_cmd();
+        vk_full_barrier(up);  // (after the slot's writers in earlier submissions)
+        VkBufferCopy cp = {sp.off, e->off + s0, n};
+        vkCmdCopyBuffer(up, sp.buf, ga_buf, 1, &cp);
+        stat_gres_sync += n;
+    }
+}
+
+// The live resident entry covering heap [lo, hi); create: else a new one for it (and any it overlaps)
+static GaRes *gres_get(uint64_t lo, uint64_t hi, bool create) {
+    for (int i = 0; i < ga_nres; i++)
+        if (ga_res[i].live && ga_res[i].lo <= lo && hi <= ga_res[i].hi) return &ga_res[i];
+    if (!create) return NULL;
+    uint64_t ulo = lo, uhi = hi;
+    int over[GA_NRES], no = 0;
+    for (bool grew = true; grew;) {  // (the union of the range and the entries it overlaps)
+        grew = false;
+        no = 0;
+        for (int i = 0; i < ga_nres; i++) {
+            GaRes *e = &ga_res[i];
+            if (!e->live || e->hi <= ulo || e->lo >= uhi) continue;
+            over[no++] = i;
+            if (e->lo < ulo) { ulo = e->lo; grew = true; }
+            if (e->hi > uhi) { uhi = e->hi; grew = true; }
+        }
+    }
+    if (no && in_pass) return NULL;  // (merging copies slot to slot: not inside a render pass)
+    uint64_t len = uhi - ulo;
+    int slot = -1;
+    for (int i = 0; i < ga_nres; i++) if (!ga_res[i].live && !ga_res[i].shadow) { slot = i; break; }
+    if (slot < 0 && ga_nres < GA_NRES) slot = ga_nres++;
+    if (slot < 0 || ga_res_top + len > GA_RES) return NULL;
+    GaRes *n = &ga_res[slot];
+    uint8_t *shadow = malloc(len);
+    if (!shadow) return NULL;
+    const uint8_t *g = (const uint8_t *)(uintptr_t)(HEAP_BASE + ulo);
+    *n = (GaRes){ulo, uhi, ga_res_top, vk_pending_seq(), shadow, true};
+    ga_res_top += (len + 255) & ~255ull;
+    memcpy(shadow, g, len);
+    memcpy(ga_ptr + n->off, g, len);  // (a new slot: nothing on the GPU uses it yet)
+    if (no) {  // the overlapped slots may hold the GPU's results: into the new one, in GPU order
+        VkCommandBuffer cb = vk_cmd();
+        vk_full_barrier(cb);
+        for (int k = 0; k < no; k++) {
+            GaRes *e = &ga_res[over[k]];
+            gres_sync(e);
+            VkBufferCopy cp = {e->off, n->off + (e->lo - ulo), e->hi - e->lo};
+            vkCmdCopyBuffer(cb, ga_buf, ga_buf, 1, &cp);
+            e->live = false;  // (its slot isn't reused: the arena's resident part only grows until a reset)
+        }
+        vk_full_barrier(cb);
+    }
+    return n;
+}
+
+// This draw's / dispatch's ranges through the arena: false - not possible here, the plain copies instead
+// Learned ranges: shaders also reach global memory through pointers, outside the storage buffers bound to them -
+// the lighting's draws read the light count, next to a light list a compute dispatch writes, without having the list
+// bound (~950k reads a frame, all zero: a dark scene). The shaders record such misses (gmiss, at the arena's end); a
+// miss inside a resident range makes that range part of every table from then on, pointing at its slot.
+#define GL_MAX 16
+static GcRange gl_learned[GL_MAX];
+static int gl_n;
+
+static void gres_learn(uint32_t off) {
+    for (int i = 0; i < gl_n; i++) if (gl_learned[i].lo <= off && off < gl_learned[i].hi) return;
+    GaRes *in = NULL;
+    for (int i = 0; i < ga_nres && !in; i++)
+        if (ga_res[i].live && ga_res[i].lo <= off && off < ga_res[i].hi) in = &ga_res[i];
+    if (!in) {  // (data the CPU writes, reached by pointer - the lights' parameters, objects' data: resident too, a
+                // window around it between the ranges already resident - 64 KB before, 256 KB after: the objects'
+                // data grows upward as the game allocates (walking around: a miss, and wrong shadows, for every
+                // 16 KB until learned); gres_sync keeps it current)
+        uint64_t base = off & ~0xFFFFull;
+        uint64_t lo = base > 0x10000 ? base - 0x10000 : 0, hi = base + 0x40000;
+        if (hi > HEAP_MAX) hi = HEAP_MAX;
+        for (int i = 0; i < ga_nres; i++) {
+            GaRes *e = &ga_res[i];
+            if (!e->live) continue;
+            if (e->hi <= off && e->hi > lo) lo = e->hi;
+            if (e->lo > off && e->lo < hi) hi = e->lo;
+        }
+        if (hi <= lo || !(in = gres_get(lo, hi, true))) return;
+    }
+    if (gl_n == GL_MAX) memmove(gl_learned, gl_learned + 1, sizeof gl_learned[0] * --gl_n);
+    gl_learned[gl_n++] = (GcRange){in->lo, in->hi};
+    LOG("[vk] global memory: shaders reach heap %x outside their tables - %llx+%llx goes in every table\n", off,
+        (unsigned long long)in->lo, (unsigned long long)(in->hi - in->lo));
+}
+
+static bool gres_prepare(const GcRange *r, int m, bool store) {
+    if (!gres_init()) return false;
+    {   // LARECOMP_GMISS: the arena's state every ~5 s
+        static uint64_t last;
+        if (getenv("LARECOMP_GMISS") && renderer_present_count() - last >= 300) {
+            last = renderer_present_count();
+            int live = 0;
+            for (int i = 0; i < ga_nres; i++) live += ga_res[i].live;
+            LOG("[gres] frame %llu: %d resident ranges (%d entries), %.1f of %llu MB, %d learned, %.1f KB synced; plain copies "
+                "instead: %llu no entry/space, %llu table full, %llu ring, %llu too big\n", (unsigned long long)last, live, ga_nres,
+                ga_res_top / 1048576.0, (unsigned long long)(GA_RES >> 20), gl_n, stat_gres_sync / 1024.0,
+                (unsigned long long)stat_gres_fail[0], (unsigned long long)stat_gres_fail[1], (unsigned long long)stat_gres_fail[2],
+                (unsigned long long)stat_gres_fail[3]);
+            stat_gres_sync = 0;
+            memset(stat_gres_fail, 0, sizeof stat_gres_fail);
+        }
+    }
+    if (maxwell_gmem_miss_log) {  // the accesses outside the tables lately: learned (and logged with LARECOMP_GMISS)
+        static uint64_t calls, last_frame;
+        if (++calls % 256 == 0 && renderer_present_count() - last_frame >= 30) {
+            last_frame = renderer_present_count();
+            static int logit = -1;
+            if (logit < 0) logit = getenv("LARECOMP_GMISS") != NULL;
+            uint32_t *w = (uint32_t *)(ga_ptr + (uint64_t)GMISS_WORD * 4);
+            uint32_t cnt = __atomic_load_n(&w[0], __ATOMIC_RELAXED);
+            if (cnt) {
+                char b[1024];
+                int o = 0, ns = 0;
+                uint32_t seen[64];
+                for (uint32_t i = 0; i < cnt && i < 64; i++) {
+                    uint32_t a = w[1 + i] & ~255u;
+                    bool dup = false;
+                    for (int k = 0; k < ns; k++) dup |= seen[k] == a;
+                    if (dup) continue;
+                    seen[ns++] = a;
+                    if (o < 980) o += snprintf(b + o, sizeof b - o, " %x", w[1 + i]);
+                    gres_learn(w[1 + i]);
+                }
+                if (logit) LOG("[gmiss] frame %llu: %u accesses outside the tables, at:%s\n", (unsigned long long)last_frame, cnt, b);
+                w[0] = 0;
+            }
+        }
+    }
+    uint32_t tab[(GMAP_MAX + 1) * 4];
+    memset(tab, 0, sizeof tab);
+    int n = 0;
+#define GRES_ADD(at, len, off)                                                                                        \
+    do {                                                                                                               \
+        if (n == GMAP_MAX) { stat_gres_fail[1]++; return false; }                                                      \
+        tab[n * 4 + 0] = (uint32_t)(at);                                                                               \
+        tab[n * 4 + 1] = (uint32_t)(len);                                                                              \
+        tab[n * 4 + 2] = (uint32_t)((off) >> 2);                                                                       \
+        n++;                                                                                                           \
+    } while (0)
+    for (int i = 0; i < m; i++) {
+        uint64_t lo = r[i].lo, hi = r[i].hi;
+        if (store) {  // a storing shader's ranges: resident from now on
+            GaRes *e = gres_get(lo, hi, true);
+            if (!e) { stat_gres_fail[0]++; return false; }
+            gres_sync(e);
+            GRES_ADD(lo, hi - lo, e->off + (lo - e->lo));
+            stat_gres_res++;
+            // and back into guest memory once done, as on Turnip (where the GPU writes the heap itself): the game
+            // also reads what its compute shaders wrote as uniform buffers, vertices and textures, which come from
+            // guest memory (gcopy_retire, at the game's waits)
+            pthread_mutex_lock(&gc_lock);
+            if (gc_nback < 256)
+                gc_back[gc_nback++] = (GcBack){ga_ptr + e->off + (lo - e->lo), HEAP_BASE + lo, hi - lo, vk_pending_seq(),
+                                               e->shadow + (lo - e->lo)};
+            pthread_mutex_unlock(&gc_lock);
+            continue;
+        }
+        for (uint64_t at = lo; at < hi;) {  // loads: resident parts from their slots, the rest copied
+            GaRes *in = NULL;
+            uint64_t next = hi;
+            for (int k = 0; k < ga_nres; k++) {
+                GaRes *e = &ga_res[k];
+                if (!e->live) continue;
+                if (e->lo <= at && at < e->hi) { in = e; break; }
+                if (e->lo > at && e->lo < next) next = e->lo;
+            }
+            if (in) {
+                uint64_t end = hi < in->hi ? hi : in->hi;
+                gres_sync(in);
+                GRES_ADD(at, end - at, in->off + (at - in->lo));
+                stat_gres_res++;
+                at = end;
+                continue;
+            }
+            uint64_t off = ga_ring(next - at);
+            if (off == ~0ull) { stat_gres_fail[next - at > GA_SEG ? 3 : 2]++; return false; }
+            memcpy(ga_ptr + off, (const void *)(uintptr_t)(HEAP_BASE + at), next - at);
+            GRES_ADD(at, next - at, off);
+            at = next;
+        }
+    }
+#undef GRES_ADD
+    tab[GMAP_MAX * 4] = (uint32_t)n;
+    memcpy(gmap_tab, tab, sizeof tab);
+    gc_span = (VkSpan){.buf = ga_buf, .off = 0, .ptr = ga_ptr};
+    gc_size = GA_SIZE;
+    return true;
+}
+
+static void gres_reset(void) {
+    for (int i = 0; i < ga_nres; i++) free(ga_res[i].shadow);
+    memset(ga_res, 0, sizeof ga_res);
+    ga_nres = 0;
+    ga_res_top = 0;
+    ga_head = GA_RES;
+    memset(ga_seg_seq, 0, sizeof ga_seg_seq);
 }
 
 // The storage buffers of the stages in stage_mask (bit = st.sbuf index) into the ring; store: copied back later.
@@ -2448,18 +2737,29 @@ static void gcopy_prepare(unsigned stage_mask, bool store) {
     memset(gmap_tab, 0, sizeof gmap_tab);
     gfast_n = 0;
     gc_size = 0;
-    struct { uint64_t lo, hi; } r[6 * 16];
+    GcRange r[6 * 16];
     int n = 0;
+    // a margin before each bound range (LARECOMP_GMARGIN bytes, 4 KB): the lighting's shaders read a header 0x100-0x200
+    // bytes before the light list's bound address (the light count: ~950k reads a frame outside the tables - zero
+    // lights, a dark scene - LARECOMP_GMISS); on Turnip the heap itself is there
+    static long margin = -1;
+    if (margin < 0) { const char *e = getenv("LARECOMP_GMARGIN"); margin = e ? atol(e) : 4096; }
     for (int s = 0; s < 6; s++) {
         if (!(stage_mask & (1u << s))) continue;
         for (int i = 0; i < 16; i++) {  // heap offsets, 256-aligned
             uint64_t a = st.sbuf[s][i].addr, sz = st.sbuf[s][i].size;
             if (!a || !sz || a < HEAP_BASE || a - HEAP_BASE + sz > HEAP_MAX) continue;
             uint64_t lo = (a - HEAP_BASE) & ~255ull, hi = (a - HEAP_BASE + sz + 255) & ~255ull;
+            lo = lo > (uint64_t)margin ? (lo - (uint64_t)margin) & ~255ull : 0;
             int k = n++;
             while (k > 0 && r[k - 1].lo > lo) { r[k] = r[k - 1]; k--; }
             r[k].lo = lo; r[k].hi = hi;
         }
+    }
+    for (int i = 0; i < gl_n && n < 6 * 16; i++) {  // (the learned ranges: reached through pointers - gres_learn)
+        int k = n++;
+        while (k > 0 && r[k - 1].lo > gl_learned[i].lo) { r[k] = r[k - 1]; k--; }
+        r[k] = gl_learned[i];
     }
     int m = 0;
     for (int i = 0; i < n; i++) {  // merged (nearby ranges too: a table entry costs more than a small gap)
@@ -2472,6 +2772,21 @@ static void gcopy_prepare(unsigned stage_mask, bool store) {
     }
     uint64_t total = 0;
     for (int i = 0; i < m; i++) total += (r[i].hi - r[i].lo + 255) & ~255ull;
+    {   // LARECOMP_LOG_GCOPY=n: every copy of one frame in n (which stages, storing or not, the ranges) - diagnostics
+        static long logn = -1;
+        if (logn < 0) { const char *e = getenv("LARECOMP_LOG_GCOPY"); logn = e ? atol(e) : 0; }
+        if (logn > 0 && renderer_present_count() % (uint64_t)logn == 0) {
+            char b[512];
+            int o = 0;
+            for (int i = 0; i < m && o < 440; i++)
+                o += snprintf(b + o, sizeof b - o, " %llx+%llx", (unsigned long long)r[i].lo, (unsigned long long)(r[i].hi - r[i].lo));
+            LOG("[gcopy] frame %llu stages %x %s %d ranges %.1f KB:%s%s\n", (unsigned long long)renderer_present_count(),
+                stage_mask, store ? "STORE" : "load", m, total / 1024.0, b, total > CHUNK_SIZE ? " (TOO MUCH: skipped)" : "");
+        }
+    }
+    if (m && gres_prepare(r, m, store)) return;  // (the arena: what shaders store stays on the GPU)
+    memset(gmap_tab, 0, sizeof gmap_tab);
+    gc_size = 0;
     if (!m || total > CHUNK_SIZE) return;  // (too much: those loads read zero, as without this)
     gc_span = vk_transient(total, 256);
     gc_size = total;
@@ -2484,7 +2799,7 @@ static void gcopy_prepare(unsigned stage_mask, bool store) {
         gmap_tab[i * 4 + 1] = (uint32_t)len;
         gmap_tab[i * 4 + 2] = (uint32_t)(off >> 2);
         if (store && gc_nback < 256)
-            gc_back[gc_nback++] = (GcBack){(const uint8_t *)gc_span.ptr + off, HEAP_BASE + r[i].lo, len, seq};
+            gc_back[gc_nback++] = (GcBack){(const uint8_t *)gc_span.ptr + off, HEAP_BASE + r[i].lo, len, seq, NULL};
         off += (len + 255) & ~255ull;
     }
     pthread_mutex_unlock(&gc_lock);
@@ -2735,6 +3050,7 @@ void vk_exec_reset(void) {
     gmem_size = gmem_tried = 0;
 #ifdef __ANDROID__
     gcopy_mode = !g_vk.host_import && !getenv("LARECOMP_VK_NO_GCOPY");  // (until the next heap is placed: vk_heap_place)
+    gres_reset();  // (the arena's resident ranges: keyed by the old heap's addresses)
 #endif
     for (int i = 0; i < VC_TAB; i++)  // (the vertex cache: copies of the old pages)
         if (vc_tab[i].buf) vmaDestroyBuffer(g_vk.vma, vc_tab[i].buf, vc_tab[i].mem);
@@ -2952,6 +3268,7 @@ static CsProg *compute_program(NvnProgram *np) {
     maxwell_gmem_size = HEAP_MAX;
 #ifdef __ANDROID__
     maxwell_gmem_map_all = gcopy_mode;
+    maxwell_gmem_miss_log = gcopy_mode && !getenv("LARECOMP_NO_GMISS");
     maxwell_brx_window = !getenv("LARECOMP_BRX_ALL_LABELS");
     maxwell_static_stacks = !getenv("LARECOMP_DYN_STACKS");
     maxwell_structured = !getenv("LARECOMP_NO_STRUCTURE");

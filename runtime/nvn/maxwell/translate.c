@@ -24,6 +24,7 @@
 
 uint64_t maxwell_gmem_base, maxwell_gmem_size;
 bool maxwell_gmem_map_all;
+bool maxwell_gmem_miss_log;
 bool maxwell_brx_window;
 bool maxwell_static_stacks;
 bool maxwell_structured;
@@ -1435,7 +1436,7 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
                     if (d != RZ) {
                         char fast[160], slow[160];
                         snprintf(fast, sizeof fast, gl_small[size], "gfast_.w[fw]");
-                        snprintf(slow, sizeof slow, gl_small[size], "gmem_.w[uint(ga >> 2)]");
+                        snprintf(slow, sizeof slow, gl_small[size], maxwell_gmem_miss_log ? "gmiss(ga)" : "gmem_.w[uint(ga >> 2)]");
                         c->reg_used[d] = 1;
                         sp(&c->body, "      r%d = fw != 0xFFFFFFFFu ? %s : ok ? %s : 0u;\n", d, fast, slow);
                     }
@@ -1443,8 +1444,11 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
                     for (int k = 0; k < nw; k++)
                         if (d != RZ && d + k < RZ) {
                             c->reg_used[d + k] = 1;
-                            sp(&c->body, "      r%d = fw != 0xFFFFFFFFu ? gfast_.w[fw + %du] : ok ? gmem_.w[uint(ga >> 2) + %du] : 0u;\n",
-                               d + k, k, k);
+                            if (maxwell_gmem_miss_log)
+                                sp(&c->body, "      r%d = fw != 0xFFFFFFFFu ? gfast_.w[fw + %du] : ok ? gmiss(ga) : 0u;\n", d + k, k);
+                            else
+                                sp(&c->body, "      r%d = fw != 0xFFFFFFFFu ? gfast_.w[fw + %du] : ok ? gmem_.w[uint(ga >> 2) + %du] : 0u;\n",
+                                   d + k, k, k);
                         }
                 }
             } else {
@@ -2225,9 +2229,12 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     if (info->uses_gmem_map) {  // (compute) the dispatch's storage buffers, device-local: gmap[i] = heap offset, size, word
         sp(&s, "layout(std140, set = %d, binding = %d) uniform GMap { uvec4 gmap[%d]; };\n", set, GMAP_BUFFER_INDEX, GMAP_MAX + 1);
         sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GFast { uint w[]; } gfast_;\n", set, GFAST_BUFFER_INDEX,
-           c->uses_gmem_store ? "" : "readonly ");
+           c->uses_gmem_store || maxwell_gmem_miss_log ? "" : "readonly ");
         sp(&s, "uint gfind(uint g) { uint n = gmap[%d].x; for (uint i = 0u; i < n; i++) { uint o = g - gmap[i].x; "
                "if (g >= gmap[i].x && o < gmap[i].y) return gmap[i].z + (o >> 2); } return 0xFFFFFFFFu; }\n", GMAP_MAX);
+        if (maxwell_gmem_miss_log)
+            sp(&s, "uint gmiss(uint64_t ga) { if (uint(gfast_.w.length()) > %uu + 65u) { uint k = atomicAdd(gfast_.w[%uu], 1u); "
+                   "if (k < 64u) gfast_.w[%uu + 1u + k] = uint(ga); } return 0u; }\n", GMISS_WORD, GMISS_WORD, GMISS_WORD);
     }
     if (c->uses_rscale && stage != STAGE_VERTEX) {
         sp(&s, "layout(std140, set = %d, binding = 18) uniform RScale { vec4 rscale[%d]; };\n", set,
