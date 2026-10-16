@@ -336,8 +336,26 @@ exatamente igual).
    aparelhos intermediários podem exigir resolução interna baixa.
 6. **Turnip × versão do Mesa:** comportamento varia por versão. Fixar uma versão testada e deixar o usuário trocar.
 
-## Próximo passo
+## Próximos passos
 
-Fase 3: os shaders traduzidos estruturados (`if`/laços em vez de `switch (pc)`), medidos antes com
-`LARECOMP_SHADER_SUBST` numa versão estruturada à mão do shader de iluminação do mundo aberto. Depois: toque e ciclo
-de vida (Fase 4) e o seletor de pasta (Fase 5), para instalar sem `adb`.
+Em andamento (2026-10-16): a release do APK com tudo no celular (Fases 5 e 6). O app escolhe a pasta do jogo pelo
+seletor do Android (SAF), copia `exefs/` e `romfs/`, gera o `romfs.bin` e compila o código do jogo no próprio aparelho
+(`runtime/gamebuild.c`, com o Python 3.14 oficial para Android e o Zig: `android/deps/build_gen_deps.sh`); o driver
+Turnip também é escolhido pelo app. Falta testar o fluxo completo no aparelho.
+
+Depois, nesta ordem:
+
+1. **Botões na tela com controle conectado:** esconder o controle de toque sempre que houver um controle conectado
+   (inclusive quando ele já estava conectado ao abrir o app).
+2. **Geração de quadros opcional (LSFG):** integrar o lsfg-vk direto no present do renderer (o Vulkan é nosso: não
+   precisa capturar a tela), com os shaders da Lossless.dll fornecida pelo próprio usuário (não pode ser distribuída).
+   Encaixa na folga da GPU (~9-13 ms por frame no modo 30): o jogo segue a 30 nas áreas pesadas e a tela mostra 60.
+   Conferir a licença do lsfg-vk antes (GPL afetaria a licença MIT do projeto).
+3. **60 fps sustentados, como no PC:** hoje o campo fica a 60 em ~55% do tempo; os frames que estouram vêm da lógica
+   do jogo (uma thread) e da gravação de comandos nas vistas com muitos draws. Candidatos: dynamic offsets nos
+   uniforms (reaproveitar descriptor sets), gravação de comandos em outra thread, rastreamento de escrita nas
+   texturas.
+4. **Além do Turnip:** rodar em outras GPUs (Mali, Xclipse, Adreno com o driver da Qualcomm). O bloqueio é a memória
+   global dos shaders sem `VK_EXT_map_memory_placed`: hoje o fallback por cópias da CPU quebra a iluminação (o
+   compute escreve e o fragment lê no mesmo frame). Caminhos: cópias de volta pela GPU no mesmo frame,
+   `VK_EXT_external_memory_host` onde existir, ou `adrenotools_import_user_mem` no driver da Qualcomm.
