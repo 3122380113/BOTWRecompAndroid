@@ -51,7 +51,10 @@ were the bottleneck, so on Android the translator now:
 On the CPU side, the runtime is built optimized, the game's GPU fences no longer wait for the compositor, and
 per-draw work is cached.
 
-## Why it needs the Turnip driver
+## Why the lighting needs the Turnip driver
+
+**The game runs without Turnip**, with the phone's own Qualcomm driver: it boots, plays and saves. But its
+**lighting only shows up with Turnip**. Without it, the scenes are drawn without the game's dynamic lights.
 
 The game's shaders read and write the game's memory directly, at the same addresses the CPU uses: for example, each
 frame's light list is built by a compute shader and then read by the pixel shaders. On PC, the game's memory is
@@ -65,31 +68,33 @@ with that driver.
 
 ## Current limitations
 
-- Snapdragon (Adreno GPU) with Turnip only. The app loads the driver with
-  [libadrenotools](https://github.com/bylaws/libadrenotools); the driver is not included, you provide your own.
+- Made for Snapdragon (Adreno GPU) with Turnip. The game runs with the phone's own driver too, but without its
+  lighting. The app loads Turnip with [libadrenotools](https://github.com/bylaws/libadrenotools); the driver is not
+  included, you provide your own. Other GPUs (Mali, Xclipse, ...) are untested.
 - You need your own v1.0.0 dump, and about **12 GB free** for the setup (the app keeps its own copy of the game
   files plus a data image built from them); the dump itself can be deleted afterwards.
-- The first setup builds the game code on the phone: about 15 minutes on a Snapdragon 8 Elite.
+- The first setup builds the game code on the phone: about 20 minutes on a Snapdragon 8 Elite.
 - Changing the resolution while the game is running can close the app. Change it on the title screen.
 - No randomizer on the phone yet.
 
 ## Installing
 
 You need a phone with a Snapdragon (Adreno) GPU, Android 11 or newer, a Turnip driver package (the adrenotools
-`.zip`, as used by other emulators), and your own extracted v1.0.0 game files (the folders `exefs` and `romfs`)
+`.zip`, as used by other emulators; the game runs without it, but the lighting only shows up with it), and your own extracted v1.0.0 game files (the folders `exefs` and `romfs`)
 copied somewhere on the phone.
 
 1. Install the APK from the [Releases](https://github.com/mamcjr/LASRecompAndroid/releases) page.
 2. Open the app, tap **Game files folder** and pick the folder that holds `exefs` and `romfs` (or the folder above
    it). Android asks you to allow access to it: the app copies the files to its own folder.
-3. Wait for the setup: the copy, the game data image and the game code (about 15 minutes the first time; keep the
+3. Wait for the setup: the copy, the game data image and the game code (about 20 minutes the first time; keep the
    screen on).
 4. **Settings > Prelaunch > Vulkan driver > Choose driver**: pick the Turnip `.zip`, then **Restart now**.
+   Without this step the game still runs, on the phone's own driver, but without its lighting.
 5. **Play**, with the touch controls or a controller. The on-screen menu button, the back button or Minus + Plus on a
    controller opens the in-game menu.
 
 The app keeps everything in `Android/data/com.lasrecomp.android/files/`: saves, settings, the pipeline cache and the
-game files. Uninstalling the app deletes that folder, saves included: copy `saves` out first.
+game files. Uninstalling the app deletes that folder, saves included: copy the `save` folder out first.
 
 ## Building from source
 
