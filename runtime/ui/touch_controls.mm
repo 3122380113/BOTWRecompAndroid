@@ -42,7 +42,7 @@ static float stick_cx, stick_cy, stick_kx, stick_ky;  // where the stick started
 static bool stick_on;
 static float disp_w = 1, disp_h = 1;  // the window in pixels (as last drawn)
 static atomic_bool used;  // a touch since the last controller: show the controls
-static atomic_bool hide_auto;  // a controller is connected
+static atomic_bool hide_auto;  // a controller is connected (as of the last event or check)
 static atomic_bool editing;
 static float edit_pos[K_N][2];  // (editing) the layout being edited
 static _Atomic uint64_t last_draw_ms;
@@ -174,6 +174,16 @@ extern "C" void touch_layout_reset(void) {
 }
 
 extern "C" bool touch_controls_visible(void) {
+    // a controller connected before the game started (its ADDED event went to the start screen): checked here too,
+    // a few times a second
+    static _Atomic uint64_t checked_ms;
+    uint64_t now = SDL_GetTicks();
+    if (now - checked_ms > 250) {
+        checked_ms = now;
+        bool pad = SDL_HasGamepad();
+        if (pad && !hide_auto) release_all();
+        hide_auto = pad;
+    }
     return editing || (!hide_auto && !menu_input_captured() && g_settings.touch_controls);
 }
 
@@ -191,9 +201,8 @@ extern "C" bool touch_controls_event(const SDL_Event *e) {
     case SDL_EVENT_FINGER_DOWN: case SDL_EVENT_FINGER_MOTION: case SDL_EVENT_FINGER_UP: break;
     default: return false;
     }
-    if (!editing && (menu_input_captured() || !g_settings.touch_controls)) { release_all(); return false; }  // (the menu's clicks)
+    if (!editing && (menu_input_captured() || !g_settings.touch_controls || hide_auto)) { release_all(); return false; }  // (the menu's clicks)
     used = true;
-    if (hide_auto && !SDL_HasGamepad()) hide_auto = false;
     float x = e->tfinger.x * disp_w, y = e->tfinger.y * disp_h;
     pthread_mutex_lock(&t_lock);
     int f = -1;

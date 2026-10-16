@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
 }
@@ -5,6 +7,9 @@ plugins {
 val repo: File = rootDir.resolve("../..").canonicalFile
 val deps: File = repo.resolve("android/deps/out")  // android/deps/build_deps.sh
 val gen = layout.buildDirectory.dir("generated/lasrecomp")
+// The release key: outside the repository, in ~/.lasrecomp/keystore.properties (storeFile, storePassword, keyAlias,
+// keyPassword); without it, release builds are signed with the debug key
+val releaseKey: File = File(System.getProperty("user.home"), ".lasrecomp/keystore.properties")
 
 android {
     namespace = "com.lasrecomp"
@@ -16,7 +21,7 @@ android {
         minSdk = 30
         targetSdk = 36
         versionCode = 1
-        versionName = "0.1-dev"
+        versionName = "0.1.0"
         ndk {
             abiFilters += "arm64-v8a"
         }
@@ -56,10 +61,20 @@ android {
         }
     }
 
+    signingConfigs {
+        if (releaseKey.exists()) create("release") {
+            val p = Properties().apply { releaseKey.inputStream().use { load(it) } }
+            storeFile = file(p.getProperty("storeFile"))
+            storePassword = p.getProperty("storePassword")
+            keyAlias = p.getProperty("keyAlias")
+            keyPassword = p.getProperty("keyPassword")
+        }
+    }
+
     buildTypes {
         getByName("release") {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")  // (development builds only, for now)
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
 

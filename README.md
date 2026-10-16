@@ -12,9 +12,9 @@ For the PC versions (Windows, macOS, Linux), features and the randomizer, see th
 > discretion.
 
 > [!WARNING]
-> **Experimental.** An APK release is coming soon. Until then, the app and the game code are built on a PC from
-> your own game files, and copied to the phone with `adb`. The full plan, the state of each phase and the measurements are in
-> [docs/ANDROID-PORT.md](docs/ANDROID-PORT.md) (in Portuguese).
+> **Experimental.** Get the APK from the [Releases](https://github.com/mamcjr/LASRecompAndroid/releases) page:
+> everything else (your game files, the game code, the driver) is set up from the app, on the phone. The full plan,
+> the state of each phase and the measurements are in [docs/ANDROID-PORT.md](docs/ANDROID-PORT.md) (in Portuguese).
 
 > [!NOTE]
 > **No game files are included**, and the app contains nothing from the game. You need your own legally obtained
@@ -30,7 +30,7 @@ Tested on a **POCO F7 Ultra** (Snapdragon 8 Elite / Adreno 830, Android 16) with
   overworld views still drop to the game's 30 fps mode. The game picks between the two, as it does on the Switch,
   from each frame's GPU time (about 9 ms per overworld frame now, down from ~18.5 ms);
 - **touch controls**: a floating stick, A / B / X / Y, L / R / ZL / ZR, Minus / Plus and a menu button, shown while
-  no controller is connected. Their layout can be edited (drag them where you like, size, opacity) in the
+  no controller is connected (they hide as soon as one is). Their layout can be edited (drag them where you like, size, opacity) in the
   in-game menu's Controls tab; the Android back button opens the menu;
 - Bluetooth controllers (tested with a GameSir X4 Aileron), remappable in the Controls tab;
 - a frame rate setting (Video tab): Auto (the game's own 30 / 60 choice), 30 fps or 60 fps;
@@ -67,34 +67,48 @@ with that driver.
 
 - Snapdragon (Adreno GPU) with Turnip only. The app loads the driver with
   [libadrenotools](https://github.com/bylaws/libadrenotools); the driver is not included, you provide your own.
-- You need your own v1.0.0 dump. The game code is generated and compiled **on a PC** from it.
+- You need your own v1.0.0 dump, and about **12 GB free** for the setup (the app keeps its own copy of the game
+  files plus a data image built from them); the dump itself can be deleted afterwards.
+- The first setup builds the game code on the phone: about 15 minutes on a Snapdragon 8 Elite.
 - Changing the resolution while the game is running can close the app. Change it on the title screen.
 - No randomizer on the phone yet.
 
-## Building and installing
+## Installing
+
+You need a phone with a Snapdragon (Adreno) GPU, Android 11 or newer, a Turnip driver package (the adrenotools
+`.zip`, as used by other emulators), and your own extracted v1.0.0 game files (the folders `exefs` and `romfs`)
+copied somewhere on the phone.
+
+1. Install the APK from the [Releases](https://github.com/mamcjr/LASRecompAndroid/releases) page.
+2. Open the app, tap **Game files folder** and pick the folder that holds `exefs` and `romfs` (or the folder above
+   it). Android asks you to allow access to it: the app copies the files to its own folder.
+3. Wait for the setup: the copy, the game data image and the game code (about 15 minutes the first time; keep the
+   screen on).
+4. **Settings > Prelaunch > Vulkan driver > Choose driver**: pick the Turnip `.zip`, then **Restart now**.
+5. **Play**, with the touch controls or a controller. The on-screen menu button, the back button or Minus + Plus on a
+   controller opens the in-game menu.
+
+The app keeps everything in `Android/data/com.lasrecomp.android/files/`: saves, settings, the pipeline cache and the
+game files. Uninstalling the app deletes that folder, saves included: copy `saves` out first.
+
+## Building from source
 
 On Windows with Git Bash, the Android SDK with **NDK 30.0.16248370** and **CMake 3.30.4**, a phone with USB
 debugging, and Python 3.12. On Linux the same steps should work with bash, but they are untested there.
 
-1. The generator's environment: `python -m venv tools/venv`, then
-   `tools/venv/Scripts/pip install lz4 capstone unicorn` (`tools/venv/bin/pip` on Linux).
-2. The app's dependencies (SDL3, shaderc, Vulkan-Headers, VMA, volk and the DejaVu font):
+1. The app's dependencies (SDL3, shaderc, Vulkan-Headers, VMA, volk and the DejaVu font):
    `bash android/deps/build_deps.sh`.
-3. Optional: FFmpeg, for the movies and the start screen's background. Its `configure` wants a Unix shell, so on
+2. Optional: FFmpeg, for the movies and the start screen's background. Its `configure` wants a Unix shell, so on
    Windows run it in WSL: `wsl -- bash android/deps/build_ffmpeg.sh`.
-4. The app: `cd android/lasrecomp && ./gradlew assembleDebug`, then
-   `adb install -r app/build/outputs/apk/debug/app-debug.apk`.
-5. The game code, generated from **your** `exefs`: `bash android/build_gamelib.sh <dump>/exefs`. It links against
-   the `libmain.so` from step 4, so build the app first.
-6. The game files and the game code onto the phone: `bash android/push_game.sh <folder with exefs/ and romfs/>`.
-7. The driver: copy Turnip (the adrenotools `.zip` or the `.so`) to
-   `Android/data/com.lasrecomp.android/files/drivers/` on the phone. Without it the app uses the system driver, and
-   the lighting is broken.
-8. Open the app and play with the touch controls or a controller. The on-screen menu button, the back button or
-   Minus + Plus on a controller opens the in-game menu.
+3. The game code's builder that the app carries (Python 3.14 for Android, capstone, lz4, zig):
+   `bash android/deps/build_gen_deps.sh`; unicorn needs a Unix shell too: `wsl -- bash android/deps/build_unicorn.sh`.
+4. The app: `cd android/lasrecomp && ./gradlew assembleRelease` (signed with your key from
+   `~/.lasrecomp/keystore.properties` if it exists, else with the debug key), then
+   `adb install -r app/build/outputs/apk/release/app-release.apk`, and set up as in [Installing](#installing).
 
-The app keeps everything in `Android/data/com.lasrecomp.android/files/`: saves, settings, the pipeline cache and the
-game files.
+For development, the game code can still be built on the PC and pushed: `bash android/build_gamelib.sh <dump>/exefs`
+(with `python -m venv tools/venv` and `pip install lz4 capstone unicorn`), then
+`bash android/push_game.sh <folder with exefs/ and romfs/>`.
 
 ## Credits
 
@@ -110,6 +124,11 @@ game files.
   (Apache 2.0 / MIT), [volk](https://github.com/zeux/volk) (MIT) and
   [Vulkan Memory Allocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator) (MIT).
 - [FFmpeg](https://ffmpeg.org) (LGPL 2.1+, optional, linked dynamically): movie playback.
+- The game code's builder, run on the phone: [Python](https://www.python.org) 3.14 (PSF license),
+  [Zig](https://ziglang.org) 0.17 (MIT), [Capstone](https://github.com/capstone-engine/capstone) 5.0.9 (BSD 3-Clause),
+  [Unicorn](https://github.com/unicorn-engine/unicorn) 2.1.4 (GPL 2.0; its unmodified source:
+  [2.1.4](https://github.com/unicorn-engine/unicorn/archive/refs/tags/2.1.4.tar.gz), built by
+  `android/deps/build_unicorn.sh`) and [LZ4](https://github.com/lz4/lz4) 1.10.0 (BSD 2-Clause).
 - [Dear ImGui](https://github.com/ocornut/imgui) (MIT): the overlay menu and the start screen.
 - [SMAA](https://github.com/iryoku/smaa) and [AMD FidelityFX Super Resolution 1](https://github.com/GPUOpen-Effects/FidelityFX-FSR)
   (MIT): the anti-aliasing and upscaler options, built into the renderer.
