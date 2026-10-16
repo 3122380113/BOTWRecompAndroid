@@ -21,6 +21,9 @@
         <!-- SDL hints (SDL_ENV.*): landscape only (SDL would allow any orientation for a resizable window) -->
         <meta-data android:name="SDL_ENV.SDL_ORIENTATIONS" android:value="LandscapeLeft LandscapeRight" />
 
+        <!-- simpleperf over adb on release builds (CPU profiles: docs/ANDROID-PORT.md); nothing else changes -->
+        <profileable android:shell="true" />
+
         <activity
             android:name=".LASRecompActivity"
             android:alwaysRetainTaskState="true"

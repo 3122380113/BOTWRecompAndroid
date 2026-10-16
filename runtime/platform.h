@@ -83,6 +83,11 @@ typedef struct {
 void plat_device_stats(PlatDeviceStats *out);
 // ADPF: the calling thread's work for a frame (busy, ns) and its target (the frame time it must fit)
 void plat_frame_work(uint64_t work_ns, uint64_t target_ns);
+#ifdef __ANDROID__
+// A new thread back on every core: threads inherit the creating thread's affinity, and the presenting thread is
+// pinned to the fastest cores (platform/android.c)
+void plat_thread_unpin(void);
+#endif
 #endif
 
 #ifdef __cplusplus

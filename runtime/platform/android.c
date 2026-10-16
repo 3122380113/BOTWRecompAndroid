@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -374,6 +375,49 @@ void plat_device_stats(PlatDeviceStats *out) {
 // 30 fps mode. Loaded at run time (minSdk 30). LARECOMP_NO_ADPF=1: off.
 typedef struct APerformanceHintManager APerformanceHintManager;
 typedef struct APerformanceHintSession APerformanceHintSession;
+
+// LARECOMP_PIN=1 (experiment, off by default): the presenting thread (the game's main thread, which also records the
+// frame) on the cores with the highest clock. Left to the scheduler it stays on the middle cluster (cores 0-5 at
+// ~2.4 GHz on a Snapdragon 8 Elite) while the two prime cores idle at 1 GHz. But pinned, it crashed the game within a
+// minute or two every time (2026-10-16, four runs): a job worker called into a job the main thread had already moved
+// on from - a race in the game's job system that a main thread much faster than its workers wins (on the Switch every
+// core runs at the same clock).
+static cpu_set_t g_all_cores;
+static bool g_pinned;
+
+void plat_thread_unpin(void) {
+    if (g_pinned) sched_setaffinity(0, sizeof g_all_cores, &g_all_cores);
+}
+
+static void pin_to_fastest_cores(void) {
+    if (!getenv("LARECOMP_PIN")) return;
+    long best = 0, mhz[CPU_SETSIZE] = {0};
+    int n = 0;
+    for (int c = 0; c < CPU_SETSIZE && c < 64; c++) {
+        char path[96];
+        snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", c);
+        FILE *f = fopen(path, "re");
+        if (!f) continue;
+        if (fscanf(f, "%ld", &mhz[c]) != 1) mhz[c] = 0;
+        fclose(f);
+        if (mhz[c] > best) best = mhz[c];
+        n = c + 1;
+    }
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    int k = 0;
+    for (int c = 0; c < n; c++)
+        if (mhz[c] == best) {
+            CPU_SET(c, &set);
+            k++;
+        }
+    if (!best || k == 0 || k == n) return;  // (one cluster: nothing to pick)
+    if (sched_getaffinity(0, sizeof g_all_cores, &g_all_cores)) return;
+    g_pinned = true;  // (before: a thread started from here from now on goes back to g_all_cores)
+    int r = sched_setaffinity(0, sizeof set, &set);
+    LOG("[android] presenting thread on the %d fastest cores (%ld MHz): %s\n", k, best / 1000, r ? strerror(errno) : "ok");
+}
+
 void plat_frame_work(uint64_t work_ns, uint64_t target_ns) {
     static int state;  // 0 untried, 1 on, -1 off
     static APerformanceHintManager *(*get_manager)(void);
@@ -394,6 +438,7 @@ void plat_frame_work(uint64_t work_ns, uint64_t target_ns) {
         report = (int (*)(APerformanceHintSession *, int64_t))dlsym(lib, "APerformanceHint_reportActualWorkDuration");
         retarget = (int (*)(APerformanceHintSession *, int64_t))dlsym(lib, "APerformanceHint_updateTargetWorkDuration");
         APerformanceHintManager *m = get_manager && create && report && retarget ? get_manager() : NULL;
+        pin_to_fastest_cores();
         int32_t tid = (int32_t)gettid();
         session = m ? create(m, &tid, 1, (int64_t)target_ns) : NULL;
         LOG("[android] performance hint session: %s\n", session ? "on" : "not available");

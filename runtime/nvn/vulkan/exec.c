@@ -176,18 +176,46 @@ void vk_pace_frame(void) {
     if (first || p > 100000000ull) return;  // (loading, a hitch: not a pace)
     double busy = (p > wt ? p - wt : 0) / 1e6;
 #ifdef __ANDROID__
-    plat_frame_work((uint64_t)(busy * 1e6), pace_slow ? 33333333ull : 16666667ull);  // (ADPF: clocks for the frame's target)
+    // (ADPF: clocks for 60 fps even in the 30 fps mode - with that mode's 33 ms as the target, a 21 ms frame looked
+    // comfortable, the clocks stayed low and so did the mode)
+    static int follow = -1;  // LARECOMP_ADPF_FOLLOW=1: the old target (the mode's own)
+    if (follow < 0) follow = getenv("LARECOMP_ADPF_FOLLOW") != NULL;
+    plat_frame_work((uint64_t)(busy * 1e6), follow && pace_slow ? 33333333ull : 16666667ull);
 #endif
+#ifdef __ANDROID__
+    // Per world step: the game picks its present interval frame by frame (1: one step, 60 fps; 2: two steps, 30 fps),
+    // and a 2-step frame's ~19 ms counted as a 60 fps frame over its budget - the pacer forced the 30 fps mode, which
+    // made the game choose more 2-step frames, which kept it forced (2026-10-16, standing still in Mabe Village: left
+    // alone the game kept 60 in 96% of its frames, forced 32% were at 30). Only a 1-step frame over 16.2 ms is slow
+    // motion; the average is per step. LARECOMP_PACE_PER_FRAME=1: as before.
+    extern int g_present_interval;
+    static int per_frame = -1;
+    if (per_frame < 0) per_frame = getenv("LARECOMP_PACE_PER_FRAME") != NULL;
+    int steps = per_frame || g_present_interval < 1 ? 1 : g_present_interval;
+    double step_busy = busy / steps;
+    avg = avg ? avg + (step_busy - avg) * 0.05 : step_busy;
+#else
     avg = avg ? avg + (busy - avg) * 0.05 : busy;
+#endif
     static int log = -1;  // LARECOMP_LOG_PACE=1: each frame's period, vsync wait and busy time
     if (log < 0) log = getenv("LARECOMP_LOG_PACE") != NULL;
     if (log) {  // (with LARECOMP_VK_PROF also the frame's command translation and, of it, texture checks / uploads)
         static uint64_t le, lu;
+#ifdef __ANDROID__
+        extern int g_present_interval;
+        LOG("[pace] period %.2f blocked %.2f busy %.2f ms exec %.2f tex %.2f interval %d slow %d\n", p / 1e6, wt / 1e6,
+            busy, (cum_exec - le) / 1e6, (prof_up_cum - lu) / 1e6, g_present_interval, pace_slow);
+#else
         LOG("[pace] period %.2f blocked %.2f busy %.2f ms exec %.2f tex %.2f\n", p / 1e6, wt / 1e6, busy,
             (cum_exec - le) / 1e6, (prof_up_cum - lu) / 1e6);
+#endif
         le = cum_exec, lu = prof_up_cum;
     }
+#ifdef __ANDROID__
+    int o = steps == 1 && busy > 16.2;
+#else
     int o = busy > 16.2;
+#endif
     stat_pace_over += o;
     nover += o - over[idx];
     over[idx] = (uint8_t)o;

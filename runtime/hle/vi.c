@@ -12,6 +12,9 @@ volatile uint64_t g_vsync_count;  // vsyncs signalled so far (runtime/hle/framep
 uint64_t g_native_window;
 
 static void *vsync_thread(void *arg) {
+#ifdef __ANDROID__
+    plat_thread_unpin();  // (not the presenting thread's fast cores: platform.h)
+#endif
     (void)arg;
     const uint64_t period = 16666667;
     plat_thread_realtime(period);

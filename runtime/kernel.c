@@ -191,6 +191,9 @@ void rt_unwind_point(void) {
 static void *thread_main(void *arg) {
     KThread *t = arg;
     t_cur = t;
+#ifdef __ANDROID__
+    plat_thread_unpin();  // (not the presenting thread's fast cores: platform.h)
+#endif
     crash_handler_install();
     rt_set_fpcr(0);
     if (!setjmp(t->unwind)) guest_call(&t->cpu, t->entry);
@@ -304,6 +307,9 @@ static uint32_t block_current(int64_t timeout_ns) {
     struct timespec ts;
     if (timeout_ns >= 0) deadline(&ts, timeout_ns);
     waitlist_add(t);
+#ifdef __ANDROID__
+    int kind0 = t->wait_kind;
+#endif
     while (t->wait_kind != WAIT_NONE) {
         if (g_rt_unwind) {  // reboot: give up the wait (the thread unwinds when its svc returns)
             t->wait_kind = WAIT_NONE;
@@ -317,6 +323,15 @@ static uint32_t block_current(int64_t timeout_ns) {
             break;
         }
         if (!kwait(timeout_ns, &ts)) {
+#ifdef __ANDROID__
+            // the wait ended while the timeout fired: a waker got there first (woken: wait_kind is NONE and the
+            // loop ends with its result - a condition variable's thread may own the mutex by now) or moved it on
+            // (a condition variable's thread signalled, now waiting for its mutex: no timeout for that part)
+            if (t->wait_kind != kind0) {
+                timeout_ns = -1;
+                continue;
+            }
+#endif
             t->wait_kind = WAIT_NONE;
             t->wait_result = R_TIMEOUT;
             break;
@@ -352,6 +367,11 @@ static uint32_t svc_arbitrate_unlock(uint64_t addr) {
 static uint32_t svc_wait_process_wide_key(uint64_t mutex, uint64_t key, uint32_t tag, int64_t timeout) {
     pthread_mutex_lock(&g_klock);
     KThread *t = t_cur;
+#ifdef __ANDROID__
+    // the key says "waiters" before the mutex goes: once it's released, a thread that takes it, changes the state
+    // and checks the key must see this waiter (else it skips the signal and the wakeup is lost)
+    __atomic_store_n(u32p(key), 1, __ATOMIC_SEQ_CST);
+#endif
     mutex_release(mutex);
     t->wait_kind = WAIT_CONDVAR;
     t->wait_addr = key;
@@ -410,7 +430,13 @@ static uint32_t svc_wait_for_address(uint64_t addr, uint32_t type, int32_t value
     if (type == ARB_WAIT_LESS) wait = cur < value;
     else if (type == ARB_DEC_WAIT_LESS) {
         wait = cur < value;
+#ifdef __ANDROID__
+        while (wait && !__atomic_compare_exchange_n(u32p(addr), (uint32_t *)&cur, (uint32_t)(cur - 1), false,
+                                                    __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
+            wait = cur < value;  // (cur reloaded by the failed exchange)
+#else
         if (wait) __atomic_store_n(u32p(addr), (uint32_t)(cur - 1), __ATOMIC_SEQ_CST);
+#endif
     } else if (type == ARB_WAIT_EQ) wait = cur == value;
     else { pthread_mutex_unlock(&g_klock); return R_INVALID_ENUM; }
     if (!wait) { pthread_mutex_unlock(&g_klock); return R_INVALID_STATE; }
@@ -443,8 +469,15 @@ static uint32_t svc_signal_to_address(uint64_t addr, uint32_t type, int32_t valu
     if (type == ARB_SIGNAL) {
         arbiter_wake(addr, count);
     } else if (type == ARB_SIGNAL_INC_EQ) {
+#ifdef __ANDROID__
+        uint32_t expect = (uint32_t)value;
+        if (!__atomic_compare_exchange_n(u32p(addr), &expect, (uint32_t)value + 1, false, __ATOMIC_SEQ_CST,
+                                         __ATOMIC_SEQ_CST)) r = R_INVALID_STATE;
+        else arbiter_wake(addr, count);
+#else
         if (cur != value) r = R_INVALID_STATE;
         else { __atomic_store_n(u32p(addr), (uint32_t)(cur + 1), __ATOMIC_SEQ_CST); arbiter_wake(addr, count); }
+#endif
     } else if (type == ARB_SIGNAL_MOD_EQ) {
         int waiting = 0;
         for (KThread *t = g_waitlist; t; t = t->wnext)
@@ -452,8 +485,15 @@ static uint32_t svc_signal_to_address(uint64_t addr, uint32_t type, int32_t valu
         int32_t nv;
         if (count <= 0) nv = waiting > 0 ? value - 2 : value + 1;
         else nv = waiting == 0 ? value + 1 : (waiting <= count ? value - 1 : value);
+#ifdef __ANDROID__
+        uint32_t expect = (uint32_t)value;
+        if (!__atomic_compare_exchange_n(u32p(addr), &expect, (uint32_t)nv, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
+            r = R_INVALID_STATE;
+        else arbiter_wake(addr, count);
+#else
         if (cur != value) r = R_INVALID_STATE;
         else { __atomic_store_n(u32p(addr), (uint32_t)nv, __ATOMIC_SEQ_CST); arbiter_wake(addr, count); }
+#endif
     } else {
         r = R_INVALID_ENUM;
     }

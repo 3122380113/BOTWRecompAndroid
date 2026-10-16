@@ -315,6 +315,9 @@ void rt_brk(Cpu *c, uint32_t imm, uint64_t pc) {
 uint64_t g_watch_lo, g_watch_hi;
 static uint64_t watch_page;
 static void *watch_thread(void *a) {
+#ifdef __ANDROID__
+    plat_thread_unpin();  // (not the presenting thread's fast cores: platform.h)
+#endif
     (void)a;
     int r = plat_protect(watch_page, PLAT_PAGE, PLAT_PROT_NONE);
     fprintf(stderr, "[watch] page %llx protect -> %d\n", (unsigned long long)watch_page, r);
