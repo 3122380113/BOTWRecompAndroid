@@ -220,6 +220,15 @@ public class LASRecompActivity extends SDLActivity {
         });
     }
 
+    // Back to the system's Vulkan driver: the chosen package and its unpacked copy go (from the next start on)
+    public static void useSystemDriver() {
+        new Thread(() -> {
+            deleteTree(new File(self.getExternalFilesDir(null), "drivers"));
+            deleteTree(new File(self.getFilesDir(), "drivers"));
+            nativeDriverPicked("-");
+        }, "driver").start();
+    }
+
     // a new process: the driver is loaded once, at start
     public static void restartApp() {
         self.runOnUiThread(() -> {

@@ -96,6 +96,10 @@ Turnip is still the one to use for **60 fps**:
 | Turnip | yes | 60 fps (98% of the time) |
 | Qualcomm's own | yes | 30 fps |
 
+![Mabe Village on the phone's own Qualcomm driver, lighting included, 30 fps](docs/android/qualcomm_driver.jpg)
+
+On the phone's own Qualcomm driver, no Turnip (the overlay's GPU line says "Qualcomm"): the lighting is there.
+
 The game's shaders read and write the game's memory directly, at the same addresses the CPU uses: for example, each
 frame's light list is built by a compute shader and then read by the pixel shaders, and some shaders reach data
 through pointers. On PC, the game's memory is imported into the GPU with `VK_EXT_external_memory_host`, which

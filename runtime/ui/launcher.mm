@@ -437,7 +437,9 @@ extern "C" JNIEXPORT void JNICALL Java_com_lasrecomp_LASRecompActivity_nativeImp
 extern "C" JNIEXPORT void JNICALL Java_com_lasrecomp_LASRecompActivity_nativeDriverPicked(JNIEnv *env, jclass, jstring name) {
     const char *n = env->GetStringUTFChars(name, NULL);
     pthread_mutex_lock(&g_lock);
-    g_driver_msg = n && *n ? std::string(n) + " installed. Restart LAS Recomp to use it." : "That file isn't a driver.";
+    g_driver_msg = n && !strcmp(n, "-") ? "The system's driver from the next start on. Restart LAS Recomp to use it."
+                   : n && *n                ? std::string(n) + " installed. Restart LAS Recomp to use it."
+                                            : "That file isn't a driver.";
     pthread_mutex_unlock(&g_lock);
     if (n) env->ReleaseStringUTFChars(name, n);
 }
@@ -892,6 +894,10 @@ static void prelaunch_tab(float sc) {
                             "driver runs it at 60 fps: choose a Turnip driver package (.zip, as for adrenotools).");
         ImGui::PopTextWrapPos();
         if (ImGui::Button("Choose driver")) android_call("pickDriver");
+        if (d && *d) {  // (a custom driver in use: back to the system's)
+            ImGui::SameLine();
+            if (ImGui::Button("Use the system driver")) android_call("useSystemDriver");
+        }
         pthread_mutex_lock(&g_lock);
         std::string msg = g_driver_msg;
         pthread_mutex_unlock(&g_lock);

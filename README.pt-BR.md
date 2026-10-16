@@ -99,6 +99,10 @@ celular. O Turnip continua sendo o indicado para **60 fps**:
 | Turnip | sim | 60 fps (98% do tempo) |
 | Qualcomm do celular | sim | 30 fps |
 
+![Vila Mabe no driver Qualcomm do próprio celular, com a iluminação, 30 fps](docs/android/qualcomm_driver.jpg)
+
+No driver Qualcomm do próprio celular, sem o Turnip (a linha da GPU no overlay diz "Qualcomm"): a iluminação está lá.
+
 Os shaders do jogo leem e escrevem diretamente na memória do jogo, nos mesmos endereços que a CPU usa: por exemplo, a
 lista de luzes de cada quadro é montada por um compute shader e depois lida pelos shaders de pixel, e alguns shaders
 chegam aos dados por ponteiros. No PC, a memória do jogo é importada para a GPU com `VK_EXT_external_memory_host`,
