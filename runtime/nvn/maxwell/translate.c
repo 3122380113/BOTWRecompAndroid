@@ -1923,6 +1923,7 @@ typedef struct {
     uint8_t *skip;  // per instruction: no code of its own here (flow, SSY / PBK / PCNT)
     SBlk *b;
     int nb, *latch, nloops, loops[32][2];
+    int nsw, sw_loops[16];  // open GLSL switches (st_switch), each with the loop count when it opened
     uint8_t *consumed;
     Str out;
     bool fail, exit_used;
@@ -1941,13 +1942,14 @@ static int st_thread(SCtx *x, int b) {  // through blocks that are only an uncon
 static const char *st_jump(SCtx *x, int t) {
     if (t < 0) {
         x->exit_used = true;
-        return x->nloops ? "exit_now = true; break;" : "break;";
+        return x->nloops || x->nsw ? "exit_now = true; break;" : "break;";
     }
     for (int l = x->nloops - 1; l >= 0; l--) {
         int h = x->loops[l][0], e = x->loops[l][1];
         bool cont = t == h, brk = t == e || st_thread(x, t) == st_thread(x, e);
         if (!cont && !brk) continue;
         if (l != x->nloops - 1) { x->fail = true; return NULL; }  // (out of two loops)
+        if (brk && x->nsw && x->sw_loops[x->nsw - 1] > l) { x->fail = true; return NULL; }  // (break: the switch's)
         return cont ? "continue;" : "break;";
     }
     return NULL;
@@ -2049,38 +2051,53 @@ static int st_switch(SCtx *x, int k, int end, int depth) {
     const Ctx *c = x->c;
     int bx = x->b[k].brx;
     uint64_t w = x->w[x->c->brx[bx].at];
-    int ra = (int)bits(w, 8, 8), n = c->brx[bx].n;
+    int ra = (int)bits(w, 8, 8), n = 0;
     int tb[256];
-    for (int q = 0; q < n; q++) {
+    for (int q = 0; q < c->brx[bx].n; q++) {  // (blocks; the list is a superset: words of cbuf 1 that land on code)
         int ti = (int)(c->brx[bx].t[q] / 8), b = 0;
         while (b < x->nb && x->b[b].s != (uint32_t)ti) b++;
-        tb[q] = b;
-        if (b >= end || b <= k) { x->fail = true; return -1; }
+        if (b <= k || b >= x->nb) { x->fail = true; return -1; }
+        tb[n++] = b;
     }
-    if (tb[0] != k + 1) { x->fail = true; return -1; }  // (code between the BRX and its first case)
-    // the cases' join: where those that end in a jump go, past the last case's start (one place for all, else none:
-    // the cases run to the region's end)
-    int J = -1;
+    if (!n || tb[0] != k + 1 || x->nsw == 16) { x->fail = true; return -1; }  // (code between the BRX and its first case)
+    // the join: where most cases that end in a jump go, forward past their own start; the table's words past it are
+    // no cases (nor past the region's end)
+    int J = -1, best = 0;
     for (int q = 0; q + 1 < n; q++) {
         SBlk *last = &x->b[tb[q + 1] - 1];
-        if (last->term != 1 || strcmp(last->cond, "true") || last->tgt <= tb[n - 1]) continue;
-        if (J < 0) J = last->tgt;
-        else if (J != last->tgt) { J = -1; break; }
+        if (last->term != 1 || strcmp(last->cond, "true") || last->tgt <= tb[q + 1] - 1) continue;
+        int cnt = 0;
+        for (int r = 0; r + 1 < n; r++) {
+            SBlk *l2 = &x->b[tb[r + 1] - 1];
+            cnt += l2->term == 1 && !strcmp(l2->cond, "true") && l2->tgt == last->tgt;
+        }
+        if (cnt > best) best = cnt, J = last->tgt;
     }
     if (J > end) J = -1;
     int stop = J >= 0 ? J : end;
+    while (n && tb[n - 1] >= stop) n--;
+    if (!n) { x->fail = true; return -1; }
     char r[8];
     if (ra == RZ) strcpy(r, "0u"); else snprintf(r, sizeof r, "r%d", ra);
-    sp(&x->out, "  { uint bt = %uu + %s + 0x%08xu; if (((bt >> 3) & 3u) == 0u) bt += 8u;\n", x->c->brx[bx].at * 8 + 8, r,
-       (uint32_t)sbits(w, 20, 24));
+    sp(&x->out, "  { uint bt = %uu + %s + 0x%08xu; if (((bt >> 3) & 3u) == 0u) bt += 8u;\n  switch (bt) {\n",
+       x->c->brx[bx].at * 8 + 8, r, (uint32_t)sbits(w, 20, 24));
+    x->sw_loops[x->nsw++] = x->nloops;
+    bool ex0 = x->exit_used;
     for (int q = 0; q < n && !x->fail; q++) {
         int e = q + 1 < n ? tb[q + 1] : stop;
         SBlk *last = &x->b[e - 1];
-        if (q + 1 < n && !((last->term == 1 || last->term == 2) && !strcmp(last->cond, "true"))) { x->fail = true; return -1; }
-        sp(&x->out, "  %sif (bt == %uu) {\n", q ? "} else " : "", x->b[tb[q]].s * 8);
-        st_range_alt(x, tb[q], e, -1, depth + 1, stop);
+        // ends in a jump to the join or an EXIT: a break after it (and a jump to the join inside skips the rest);
+        // else it runs into the next case (one of the table's extra words: never a value of bt)
+        bool to_join = last->term == 1 && !strcmp(last->cond, "true") && last->tgt == stop;
+        bool ends = to_join || (last->term == 2 && !strcmp(last->cond, "true")) || (last->term == 1 && !strcmp(last->cond, "true"));
+        sp(&x->out, "  case %uu: {\n", x->b[tb[q]].s * 8);
+        st_range_alt(x, tb[q], e, -1, depth + 1, ends ? stop : -1);
+        sp(&x->out, ends ? "  break; }\n" : "  }\n");
     }
-    sp(&x->out, "  } else { %s }\n  }\n", st_jump(x, -1));
+    x->nsw--;
+    x->exit_used = true;
+    sp(&x->out, "  default: exit_now = true; break;\n  }\n  if (exit_now) break;\n  }\n");
+    (void)ex0;
     return J;
 }
 
