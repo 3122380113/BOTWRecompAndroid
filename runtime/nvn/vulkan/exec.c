@@ -222,11 +222,22 @@ void vk_pace_frame(void) {
     } else if (pace_slow) {
         // headroom: busy well under a 60 fps frame on average, hardly a frame over (single spikes are normal play)
         calm = avg < 13.0 && nover <= 2 ? calm + 1 : 0;
+#ifdef __ANDROID__
+        // (headroom at 30 doesn't mean 60 fits: in the overworld this went back and forth every few seconds, slow
+        // motion each time - it is a trial too, so a quick failure doubles the wait, and it waits a quarter of it)
+        if (calm >= 120 && now - slow_since >= probe_wait / 4) {
+            pace_slow = false, nover = 0;
+            memset(over, 0, sizeof over);
+            probe_at = now;
+            LOG("[pace] 2 s with headroom: back to the game's own choice\n");
+        }
+#else
         if (calm >= 120) {
             pace_slow = false, nover = 0;
             memset(over, 0, sizeof over);
             LOG("[pace] 2 s with headroom: back to the game's own choice\n");
         }
+#endif
 #ifdef __ANDROID__
         else if (now - slow_since >= probe_wait) {
             pace_slow = false, nover = 0;
@@ -2727,15 +2738,23 @@ static float g_mirror_w;  // mirror mode's composite: its render target width (r
 
 static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t set, int stage, ShaderInfo *si, const float *rscale_row0,
                                  const float tint[8], uint32_t gx, uint32_t gy, uint32_t gz, const VkDescriptorImageInfo *pre_ii) {
+#ifdef __ANDROID__
+    VkDescriptorSet ds = VK_NULL_HANDLE;  // (allocated at the end, unless this submission already wrote the same set)
+#else
     VkDescriptorSet ds = vk_alloc_set(layout);
+#endif
     VkWriteDescriptorSet w[MAX_BIND];
     VkDescriptorBufferInfo bi[MAX_BIND];
     VkDescriptorImageInfo ii[MAX_BIND];
     int n = 0;
     int sg = stage == 1 ? 1 : 0;
+#ifdef __ANDROID__
+    float rs[66][4];  // (filled when the shader has the table: binding 18 below)
+#else
     float rs[66][4] = {{1, 1, 0, 0}};  // ([65]: mirror mode, renderer.m)
     if (rscale_row0) memcpy(rs[0], rscale_row0, 16);
     rs[65][0] = g_mirror_w;
+#endif
     for (int i = 0; i < p->nbinds; i++) {
         VkBindingInfo *b = &p->binds[i];
         if (b->set != set) continue;
@@ -2785,6 +2804,12 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
         if (b->binding == GMAP_BUFFER_INDEX) {  // (compute) this dispatch's fast-copy table: gfast_prepare
             bi[n] = ubo_span(vk_transient_copy(gmap_tab, sizeof gmap_tab, 256), sizeof gmap_tab);
         } else if (b->binding == 18) {
+#ifdef __ANDROID__
+            memset(rs, 0, sizeof rs);
+            rs[0][0] = rs[0][1] = 1;  // ([65]: mirror mode, renderer.m)
+            if (rscale_row0) memcpy(rs[0], rscale_row0, 16);
+            rs[65][0] = g_mirror_w;
+#endif
             for (int t = 0; t < si->ntex && t < 64; t++) { rs[1 + t][0] = tex_sc[sg][t][0]; rs[1 + t][1] = tex_sc[sg][t][1]; }
             bi[n] = ubo_span(copy_dedupe(sg ? DEDUPE_RSCALE_F : DEDUPE_RSCALE_V, rs, sizeof rs, 256), sizeof rs);
         } else {
@@ -2794,8 +2819,37 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
         w[n].pBufferInfo = &bi[n];
         n++;
     }
+#ifdef __ANDROID__
+    // Draws of one material in a row write the same set over and over (same buffers / offsets / views / samplers): a
+    // set written this submission with the same contents (two independent 64-bit hashes of them) is bound again
+    // instead of allocating and writing another - the descriptor writes were a good part of the driver's time per
+    // draw. Sets live as long as the submission's pools. LARECOMP_NO_SET_CACHE=1: off.
+    {
+        static int off = -1;
+        if (off < 0) off = getenv("LARECOMP_NO_SET_CACHE") != NULL;
+        uint64_t h1 = (uint64_t)(uintptr_t)layout * 0x9E3779B97F4A7C15ull, h2 = (uint64_t)(uintptr_t)layout ^ 0xC2B2AE3D27D4EB4Full;
+#define DS_MIX(v) do { uint64_t v_ = (uint64_t)(v); h1 = (h1 ^ v_) * 0x100000001B3ull; h1 ^= h1 >> 29; \
+                       h2 = (h2 + v_) * 0xFF51AFD7ED558CCDull; h2 ^= h2 >> 33; } while (0)
+        for (int i = 0; i < n; i++) {
+            DS_MIX(w[i].dstBinding | (uint64_t)w[i].descriptorType << 32);
+            if (w[i].pImageInfo) { DS_MIX((uintptr_t)w[i].pImageInfo->sampler); DS_MIX((uintptr_t)w[i].pImageInfo->imageView); DS_MIX(w[i].pImageInfo->imageLayout); }
+            else { DS_MIX((uintptr_t)w[i].pBufferInfo->buffer); DS_MIX(w[i].pBufferInfo->offset); DS_MIX(w[i].pBufferInfo->range); }
+        }
+#undef DS_MIX
+        static struct { uint64_t seq, h1, h2; VkDescriptorSet ds; } cache[4096];
+        uint64_t seq = vk_pending_seq();
+        uint32_t slot = (uint32_t)(h1 ^ (h1 >> 32)) & 4095;
+        if (!off && cache[slot].seq == seq && cache[slot].h1 == h1 && cache[slot].h2 == h2) return cache[slot].ds;
+        ds = vk_alloc_set(layout);
+        for (int i = 0; i < n; i++) w[i].dstSet = ds;
+        if (n) vkUpdateDescriptorSets(g_vk.dev, (uint32_t)n, w, 0, NULL);
+        cache[slot].seq = seq, cache[slot].h1 = h1, cache[slot].h2 = h2, cache[slot].ds = ds;
+        return ds;
+    }
+#else
     if (n) vkUpdateDescriptorSets(g_vk.dev, (uint32_t)n, w, 0, NULL);
     return ds;
+#endif
 }
 
 // ================================================================== compute
