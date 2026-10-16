@@ -27,6 +27,7 @@ bool maxwell_gmem_map_all;
 bool maxwell_brx_window;
 bool maxwell_static_stacks;
 bool maxwell_structured;
+bool maxwell_native_half;
 const uint8_t *maxwell_dbg_code;
 uint32_t maxwell_dbg_pc;
 int maxwell_dbg_reg;
@@ -2153,6 +2154,16 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     int set = stage == STAGE_FRAGMENT ? 1 : 0;
     Str s = {0};
     sp(&s, "%s", glsl_prelude);
+    if (maxwell_native_half && stage != STAGE_VERTEX) {
+        // (maxwell_native_half) halves by the GPU's own conversion outside vertex shaders: the bitwise h2f (kept for
+        // the positions a depth pre-pass and its colour pass must agree on) is a dozen operations with branches per
+        // half, and the overworld's lit pass converts ~300 of them, half inside its light loop. For the code after
+        // here only (the prelude's own functions keep theirs).
+        sp(&s, "float h2fn(uint h) { return unpackHalf2x16(h).x; }\n"
+               "vec2 hxn(uint v, uint swz) { if (swz == 1u) return vec2(uintBitsToFloat(v)); vec2 h = unpackHalf2x16(v); "
+               "return swz == 2u ? h.xx : (swz == 3u ? h.yy : h); }\n"
+               "#define h2f h2fn\n#define unpack_h2 unpackHalf2x16\n#define hx hxn\n");
+    }
     for (int i = 0; i < 18; i++) {
         if (!(info->cbuf_mask & (1u << i))) continue;
         uint32_t n = info->cbuf_size[i] / 16;

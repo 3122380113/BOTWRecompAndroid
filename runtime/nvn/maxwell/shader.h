@@ -100,6 +100,9 @@ extern bool maxwell_static_stacks;
 // (GLSL, with maxwell_static_stacks) shaders with branches as if / else / for instead of the `switch (pc)` state
 // machine when their control flow allows it (translate.c structure()). Set by the Android backend.
 extern bool maxwell_structured;
+// (GLSL) fragment and compute shaders convert halves with unpackHalf2x16 instead of the bitwise h2f (vertex shaders
+// keep it: NVIDIA ran math after unpacked halves in fp16, and depth passes disagreed). Set by the Android backend.
+extern bool maxwell_native_half;
 // Debug: when translating the shader whose code starts at maxwell_dbg_code, output register
 // maxwell_dbg_reg as captured after the instruction at maxwell_dbg_pc (greyscale, all targets).
 extern const uint8_t *maxwell_dbg_code;
