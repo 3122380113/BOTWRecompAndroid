@@ -28,6 +28,7 @@ bool maxwell_brx_window;
 bool maxwell_static_stacks;
 bool maxwell_structured;
 bool maxwell_native_half;
+bool maxwell_fast_minmax;
 const uint8_t *maxwell_dbg_code;
 uint32_t maxwell_dbg_pc;
 int maxwell_dbg_reg;
@@ -2202,6 +2203,13 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
                "vec2 hxn(uint v, uint swz) { if (swz == 1u) return vec2(uintBitsToFloat(v)); vec2 h = unpackHalf2x16(v); "
                "return swz == 2u ? h.xx : (swz == 3u ? h.yy : h); }\n"
                "#define h2f h2fn\n#define unpack_h2 unpackHalf2x16\n#define hx hxn\n");
+    }
+    if (maxwell_fast_minmax) {
+        // (maxwell_fast_minmax) the GPU's own min / max / saturation: on Adreno, as in D3D, min and max return the
+        // operand that isn't NaN and a clamp to [0, 1] is the saturate modifier (NaN to 0) - the Maxwell semantics
+        // the helpers spell out with NaN tests (two tests and selects per fmin / fmax, ~40 in the lit pass's light
+        // loop). For the code after here only.
+        sp(&s, "#define fmin min\n#define fmax max\n#define saturate(x) clamp((x), 0.0f, 1.0f)\n");
     }
     for (int i = 0; i < 18; i++) {
         if (!(info->cbuf_mask & (1u << i))) continue;
