@@ -33,13 +33,17 @@ For the PC versions (Windows, macOS, Linux), features and the randomizer, see th
 
 On a POCO F7 Ultra with Turnip: the touch controls on screen, the performance overlay on (top left).
 
+![Mabe Village at native resolution, full screen, 30 fps](docs/android/native_fullscreen.jpg)
+
+At native resolution (3200×1440, 100%) and full screen: a steady 30 fps, in the game's own 30 fps mode (full speed).
+
 ## Status
 
 Tested on a **POCO F7 Ultra** (Snapdragon 8 Elite / Adreno 830, Android 16) with the **Turnip Gen8 V37** driver:
 
 - the game boots, the movies play with sound, and the menus, saves and gameplay work;
 - **a steady 60 fps**, the overworld included, at the default 50% internal resolution (720p): 98% of the time at 60
-  in our overworld measurements, with no frame over 18 ms. It also held 60 at 75% (1080p) in our tests. The game
+  in our overworld measurements, with no frame over 18 ms. It also held 60 at 75% (1080p) in our tests, and a steady 30 at native resolution (3200×1440) full screen. The game
   still has its own 30 fps mode, as on the Switch, for when a frame can't fit;
 - **touch controls**: a floating stick, A / B / X / Y, L / R / ZL / ZR, Minus / Plus and a menu button, shown while
   no controller is connected (they hide as soon as one is). Their layout can be edited (drag them where you like,

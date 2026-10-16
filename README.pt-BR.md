@@ -33,6 +33,11 @@ Para as versões de PC (Windows, macOS, Linux), os recursos e o randomizer, veja
 
 Em um POCO F7 Ultra com Turnip: os controles de toque na tela e o overlay de desempenho ligado (canto superior esquerdo).
 
+![Vila Mabe na resolução nativa, tela cheia, 30 fps](docs/android/native_fullscreen.jpg)
+
+Na resolução nativa (3200×1440, 100%) e em tela cheia: 30 fps estáveis, no modo de 30 fps do próprio jogo (velocidade
+normal).
+
 ## Estado atual
 
 Testado em um **POCO F7 Ultra** (Snapdragon 8 Elite / Adreno 830, Android 16) com o driver **Turnip Gen8 V37**:
@@ -40,7 +45,7 @@ Testado em um **POCO F7 Ultra** (Snapdragon 8 Elite / Adreno 830, Android 16) co
 - o jogo inicia, os vídeos tocam com som, e os menus, os saves e a jogabilidade funcionam;
 - **60 fps estáveis**, inclusive no mapa aberto, na resolução interna padrão de 50% (720p): 98% do tempo a 60 nas
   nossas medições no mapa aberto, sem nenhum quadro acima de 18 ms. Também segurou 60 em 75% (1080p) nos nossos
-  testes. O jogo ainda tem o seu próprio modo de 30 fps, como no Switch, para quando um quadro não cabe;
+  testes, e 30 estáveis na resolução nativa (3200×1440) em tela cheia. O jogo ainda tem o seu próprio modo de 30 fps, como no Switch, para quando um quadro não cabe;
 - **controles de toque**: um analógico flutuante, A / B / X / Y, L / R / ZL / ZR, Menos / Mais e um botão de menu,
   exibidos enquanto nenhum controle está conectado (somem assim que um é conectado). O layout pode ser editado
   (arrastar para onde quiser, tamanho, opacidade) na aba Controls do menu do jogo; o botão voltar do Android abre o
