@@ -15,6 +15,7 @@
 #include "vk.h"
 #include "../renderer.h"
 #include "../../settings.h"
+#include "../../paths.h"
 
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
 static uint64_t stat_upload_bytes;
@@ -699,6 +700,27 @@ VkSpan vk_transient_copy(const void *data, uint64_t size, uint64_t align) {
 // Per-draw constants that usually repeat the previous draw's (scale table, tint, driver constants): reuse that copy
 // while it's identical, within one submission. slot: one per kind of data.
 enum { DEDUPE_RSCALE_V, DEDUPE_RSCALE_F, DEDUPE_TINT, DEDUPE_DRV_V, DEDUPE_DRV_F, DEDUPE_DRV_C, DEDUPE_SLOTS };
+#ifdef __ANDROID__
+// This draw's gmap table (gmap_tab) in transient memory, shared with the draws of the submission that have the same
+// one (the last 8 kept): the copy mode gives every draw that reaches global memory a table, and a new copy each time
+// made each of their descriptor sets new too - the overworld's lit draws all have the same table, and Qualcomm's
+// driver is slow at writing descriptor sets (~4 ms a frame on them)
+static uint32_t gmap_tab[(GMAP_MAX + 1) * 4];
+static VkSpan gmap_copy(void) {
+    static struct { uint64_t seq; uint32_t tab[(GMAP_MAX + 1) * 4]; VkSpan span; } c[8];
+    static int next;
+    uint64_t seq = vk_pending_seq();
+    for (int i = 0; i < 8; i++)
+        if (c[i].seq == seq && !memcmp(c[i].tab, gmap_tab, sizeof c[i].tab)) return c[i].span;
+    VkSpan sp = vk_transient_copy(gmap_tab, sizeof c[0].tab, 256);
+    c[next].seq = seq;
+    memcpy(c[next].tab, gmap_tab, sizeof c[next].tab);
+    c[next].span = sp;
+    next = (next + 1) % 8;
+    return sp;
+}
+#endif
+
 static VkSpan copy_dedupe(int slot, const void *data, uint64_t size, uint64_t align) {
     static struct { uint64_t seq, size; uint8_t data[0x800]; VkSpan span; } last[DEDUPE_SLOTS];
     uint64_t seq = vk_pending_seq();
@@ -1351,9 +1373,18 @@ static VkPipelineLayout make_layout(Prog *p, int nsets, VkShaderStageFlags s0, V
 
 static void save_glsl(const char *src, uint64_t addr, const char *suffix) {
     if (!getenv("LARECOMP_SAVE_MSL")) return;
+#ifdef __ANDROID__
+    char path[1100];  // (in the data folder, where adb reads it: <external files>/build/glsl)
+    snprintf(path, sizeof path, "%s/build", rt_data_root());
+    mkdir(path, 0755);
+    snprintf(path, sizeof path, "%s/build/glsl", rt_data_root());
+    mkdir(path, 0755);
+    snprintf(path, sizeof path, "%s/build/glsl/%llx_%s.glsl", rt_data_root(), (unsigned long long)addr, suffix);
+#else
     mkdir("build/glsl", 0755);
     char path[256];
     snprintf(path, sizeof path, "build/glsl/%llx_%s.glsl", (unsigned long long)addr, suffix);
+#endif
     FILE *f = fopen(path, "w");
     if (f) { fputs(src, f); fclose(f); }
 }
@@ -1418,6 +1449,17 @@ static bool structure_on(void) {
 }
 #endif
 
+// Qualcomm's driver with the structured control flow (LARECOMP_STRUCTURE=1): its compiler crashed on a shader whose
+// structured form has a GLSL switch (a jump table) - those keep their state machine there. LARECOMP_QCOM_SWITCH=1: not.
+static bool qcom_no_switch(void) {
+    static int on = -1;
+    if (on < 0) {
+        extern bool vk_driver_is_qualcomm(void);
+        on = vk_driver_is_qualcomm() && !getenv("LARECOMP_QCOM_SWITCH");
+    }
+    return on;
+}
+
 static void translate_program(void *arg) {
     Prog *p = arg;
     maxwell_gmem_base = HEAP_BASE;
@@ -1428,6 +1470,7 @@ static void translate_program(void *arg) {
     maxwell_brx_window = !getenv("LARECOMP_BRX_ALL_LABELS");
     maxwell_static_stacks = !getenv("LARECOMP_DYN_STACKS");
     maxwell_structured = structure_on();
+    maxwell_no_switch = qcom_no_switch();
     maxwell_native_half = !getenv("LARECOMP_BITWISE_HALF");
     maxwell_fast_minmax = !getenv("LARECOMP_SAFE_MATH");
 #endif
@@ -1767,6 +1810,12 @@ static void build_pipeline(void *arg) {
                                        .pColorBlendState = &cb, .pDynamicState = &dy, .layout = k->prog->layout};
 #ifdef __ANDROID__
     if (g_vk.exec_stats) pi.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
+    {   // LARECOMP_LOG_PIPE=1: each pipeline's shaders before the driver compiles them (a crash in its compiler: the
+        // last line names the pair; their sources with LARECOMP_SAVE_MSL, build/glsl/<address>_vs|fs.glsl)
+        static int logp = -1;
+        if (logp < 0) logp = getenv("LARECOMP_LOG_PIPE") != NULL;
+        if (logp) LOG("[pipe] compiling vs %llx fs %llx\n", (unsigned long long)k->prog->code[0], (unsigned long long)k->prog->code[1]);
+    }
 #endif
     VkResult r = vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, &pp->pipe);
     if (r != VK_SUCCESS) {
@@ -3213,7 +3262,11 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
         w[n] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = b->binding,
                                       .descriptorCount = 1, .descriptorType = b->type};
         if (b->binding == GMAP_BUFFER_INDEX) {  // (compute) this dispatch's fast-copy table: gfast_prepare
+#ifdef __ANDROID__
+            bi[n] = ubo_span(gmap_copy(), sizeof gmap_tab);
+#else
             bi[n] = ubo_span(vk_transient_copy(gmap_tab, sizeof gmap_tab, 256), sizeof gmap_tab);
+#endif
         } else if (b->binding == 18) {
 #ifdef __ANDROID__
             memset(rs, 0, sizeof rs);
@@ -3306,6 +3359,7 @@ static CsProg *compute_program(NvnProgram *np) {
     maxwell_brx_window = !getenv("LARECOMP_BRX_ALL_LABELS");
     maxwell_static_stacks = !getenv("LARECOMP_DYN_STACKS");
     maxwell_structured = structure_on();
+    maxwell_no_switch = qcom_no_switch();
     maxwell_native_half = !getenv("LARECOMP_BITWISE_HALF");
     maxwell_fast_minmax = !getenv("LARECOMP_SAFE_MATH");
 #endif

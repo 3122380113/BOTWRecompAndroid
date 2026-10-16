@@ -28,6 +28,7 @@ bool maxwell_gmem_miss_log;
 bool maxwell_brx_window;
 bool maxwell_static_stacks;
 bool maxwell_structured;
+bool maxwell_no_switch;
 bool maxwell_native_half;
 bool maxwell_fast_minmax;
 const uint8_t *maxwell_dbg_code;
@@ -2054,6 +2055,7 @@ static void st_range_alt(SCtx *x, int a, int end, int opened, int depth, int alt
 // none of them exits, as the state machine's default does.
 static int st_switch(SCtx *x, int k, int end, int depth) {
     const Ctx *c = x->c;
+    if (maxwell_no_switch) { x->fail = true; return -1; }  // (the whole shader keeps its state machine)
     int bx = x->b[k].brx;
     uint64_t w = x->w[x->c->brx[bx].at];
     int ra = (int)bits(w, 8, 8), n = 0;
@@ -2095,6 +2097,10 @@ static int st_switch(SCtx *x, int k, int end, int depth) {
         // else it runs into the next case (one of the table's extra words: never a value of bt)
         bool to_join = last->term == 1 && !strcmp(last->cond, "true") && last->tgt == stop;
         bool ends = to_join || (last->term == 2 && !strcmp(last->cond, "true")) || (last->term == 1 && !strcmp(last->cond, "true"));
+        // the last case runs up to the join: running off its end reaches it, as a break does (it fell into default -
+        // exit_now - and skipped the rest of the shader: an alpha test's discard, the outputs; and Qualcomm's compiler
+        // crashed on that fall into default)
+        if (q == n - 1) ends = true;
         sp(&x->out, "  case %uu: {\n", x->b[tb[q]].s * 8);
         st_range_alt(x, tb[q], e, -1, depth + 1, ends ? stop : -1);
         sp(&x->out, ends ? "  break; }\n" : "  }\n");
