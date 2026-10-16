@@ -813,6 +813,11 @@ static bool launcher_pad_event(const SDL_Event &e) {
         return true;
     case SDL_EVENT_GAMEPAD_BUTTON_DOWN: case SDL_EVENT_GAMEPAD_BUTTON_UP: {
         ImGuiKey k = launcher_pad_key(e.gbutton.button);
+#ifdef __ANDROID__
+        // ImGui ignores A while its nav cursor is hidden, as it starts out (PLAY focused at launch): A did nothing until
+        // the d-pad had moved the selection. A controller press shows it, so this very press acts
+        if (k != ImGuiKey_None && e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) ImGui::SetNavCursorVisible(true);
+#endif
         if (k != ImGuiKey_None) io.AddKeyEvent(k, e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN);
         return true;
     }
