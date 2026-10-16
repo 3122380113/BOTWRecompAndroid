@@ -303,6 +303,22 @@ static void *extract_thread(void *) {
     g_done = 0, g_total = 0, g_phase_base = 0, g_build_frac = -1, g_copy_skipped = false;
     std::string exefs, romfs;
     bool unusable = false;  // (game packages rather than its files)
+#ifdef __ANDROID__
+    extern std::atomic<bool> g_android_imported;
+    if (g_android_imported.exchange(false)) {  // (the activity copied them: android_import below) the image, the code
+        unsigned long long rbytes = romfs_dir_bytes((g_root + "/romfs").c_str());
+        g_total = 2 * rbytes, g_phase_base = rbytes, g_done = rbytes;
+        set_job("Building the game data image...");
+        char why[256] = "";
+        if (!romfs_build((g_root + "/romfs").c_str(), (g_root + "/romfs.bin").c_str(), setup_progress, why, sizeof why)) {
+            fprintf(stderr, "[launcher] romfs image: %s\n", why);
+            set_failure(FAIL_COPY);
+            goto done;
+        }
+        if (!build_game_code()) goto done;
+        goto check;
+    }
+#endif
     if (src.empty() && check_copied_files(g_root).empty()) {  // copied already (an update needs new game code)
         g_copy_skipped = true;
         if (!build_game_code()) goto done;
@@ -353,6 +369,79 @@ done:
     pthread_mutex_unlock(&g_lock);
     return NULL;
 }
+
+#ifdef __ANDROID__
+// ------------------------------------------------------------------ Android: the system's pickers (SAF)
+// Android has no POSIX path to a folder the player picks: LASRecompActivity opens the system's folder picker, finds
+// exefs/ and romfs/ in the picked folder (a few levels down too, as find_game), checks the game version with
+// nativeBuildIdOk and copies them into <g_root> (nativeImportBegin / Progress / Done); the setup then goes on as on the
+// desktop: the data image, then the game code (runtime/gamebuild.c, on the phone itself). The Vulkan driver is
+// picked the same way (a Turnip .zip, copied to the drivers folder the activity loads from at start).
+#include <jni.h>
+std::atomic<bool> g_android_imported{false};
+static std::string g_driver_msg;
+
+static void android_call(const char *method) {  // a static method of the activity
+    JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
+    jobject act = (jobject)SDL_GetAndroidActivity();
+    if (!env || !act) return;
+    jclass c = env->GetObjectClass(act);
+    jmethodID m = env->GetStaticMethodID(c, method, "()V");
+    if (m) env->CallStaticVoidMethod(c, m);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    env->DeleteLocalRef(c);
+    env->DeleteLocalRef(act);
+}
+
+extern "C" JNIEXPORT jboolean JNICALL Java_com_lasrecomp_LASRecompActivity_nativeBuildIdOk(JNIEnv *env, jclass, jbyteArray head) {
+    if (env->GetArrayLength(head) < 0x48) return JNI_FALSE;
+    jbyte b[8];
+    env->GetByteArrayRegion(head, 0x40, 8, b);
+    return memcmp(b, BUILD_ID, 8) == 0 ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT void JNICALL Java_com_lasrecomp_LASRecompActivity_nativeImportBegin(JNIEnv *env, jclass, jstring name) {
+    const char *n = env->GetStringUTFChars(name, NULL);
+    pthread_mutex_lock(&g_lock);
+    g_busy = true;
+    g_src = n ? n : "";
+    pthread_mutex_unlock(&g_lock);
+    if (n) env->ReleaseStringUTFChars(name, n);
+    rt_remove_game_files(g_root.c_str());  // (an earlier or interrupted setup's)
+    mkdir(g_root.c_str(), 0755);
+    g_done = 0, g_total = 0, g_phase_base = 0, g_build_frac = -1, g_copy_skipped = false;
+    set_job("Copying the game files...");
+}
+
+extern "C" JNIEXPORT void JNICALL Java_com_lasrecomp_LASRecompActivity_nativeImportProgress(JNIEnv *, jclass, jlong done, jlong total) {
+    g_total = 2ull * (unsigned long long)total;  // (the copy, then the data image: each about the size of romfs/)
+    g_done = (unsigned long long)done;
+}
+
+// 0 copied, 1 cancelled, 2 no game files found, 3 game packages instead of files, 4 another version, 5 copy failed
+extern "C" JNIEXPORT void JNICALL Java_com_lasrecomp_LASRecompActivity_nativeImportDone(JNIEnv *, jclass, jint result) {
+    if (result == 0) {
+        g_android_imported = true;
+        pthread_t t;
+        pthread_create(&t, NULL, extract_thread, NULL);
+        pthread_detach(t);
+        return;
+    }
+    pthread_mutex_lock(&g_lock);
+    g_busy = false;
+    pthread_mutex_unlock(&g_lock);
+    if (result == 1) return;
+    set_failure(result == 2 ? FAIL_NOT_FOUND : result == 3 ? FAIL_UNUSABLE : result == 4 ? FAIL_VERSION : FAIL_COPY);
+}
+
+extern "C" JNIEXPORT void JNICALL Java_com_lasrecomp_LASRecompActivity_nativeDriverPicked(JNIEnv *env, jclass, jstring name) {
+    const char *n = env->GetStringUTFChars(name, NULL);
+    pthread_mutex_lock(&g_lock);
+    g_driver_msg = n && *n ? std::string(n) + " installed. Restart LAS Recomp to use it." : "That file isn't a driver.";
+    pthread_mutex_unlock(&g_lock);
+    if (n) env->ReleaseStringUTFChars(name, n);
+}
+#endif
 
 // ------------------------------------------------------------------ folder dialog (SDL calls back on any thread)
 static void SDLCALL picked(void *, const char *const *files, int) {
@@ -787,17 +876,46 @@ static void prelaunch_tab(float sc) {
         ImGui::Separator();
         ImGui::Spacing();
     };
+#ifdef __ANDROID__
+    heading("Vulkan driver");
+    {
+        const char *d = getenv("LARECOMP_VK_DRIVER");
+        const char *base = d && *d ? strrchr(d, '/') : NULL;
+        ImGui::Text("In use: %s", d && *d ? (base ? base + 1 : d) : "the system's driver");
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextDisabled("LAS Recomp needs Mesa's Turnip driver for Adreno GPUs: with the system's driver the lighting is "
+                            "broken. Choose a Turnip driver package (.zip, as for adrenotools).");
+        ImGui::PopTextWrapPos();
+        if (ImGui::Button("Choose driver")) android_call("pickDriver");
+        pthread_mutex_lock(&g_lock);
+        std::string msg = g_driver_msg;
+        pthread_mutex_unlock(&g_lock);
+        if (!msg.empty()) {
+            ImGui::Text("%s", msg.c_str());
+            if (msg.find("Restart") != std::string::npos) {
+                ImGui::SameLine();
+                if (ImGui::Button("Restart now")) android_call("restartApp");
+            }
+        }
+    }
+    ImGui::Spacing();
+    ImGui::Spacing();
+#endif
     heading("Game files");
     static double gb = -1;
     if (gb < 0) gb = rt_game_files_size(g_root.c_str()) / 1e9;
-#ifdef _WIN32
+#ifdef __ANDROID__
+    // (no file manager to show the folder in)
+#elif defined(_WIN32)
     if (ImGui::Button("Show in Explorer")) reveal_folder(g_root);
 #elif defined(__linux__)
     if (ImGui::Button("Open folder")) reveal_folder(g_root);
 #else
     if (ImGui::Button("Show in Finder")) reveal_folder(g_root);
 #endif
+#ifndef __ANDROID__
     ImGui::SameLine();
+#endif
     static bool shot_del = getenv("LARECOMP_LAUNCHER_SHOT") && strstr(getenv("LARECOMP_LAUNCHER_SHOT"), ":askdelete");
     if (ImGui::Button("Delete game files") || shot_del) ImGui::OpenPopup("##delfiles"), shot_del = false;  // (test: :askdelete)
     if (ImGui::BeginPopupModal("##delfiles", NULL, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar)) {
@@ -1314,8 +1432,12 @@ extern "C" void launcher_run(const char *root) {
                 if (!ready) {
                     opt_section("Your copy of the game");
                     if (busy) opt_disable_next();
+#ifdef __ANDROID__
+                    if (opt_action("Game files folder", src_v.c_str(), src_d.c_str(), true)) android_call("pickGameFolder");
+#else
                     if (opt_action("Game files folder", src_v.c_str(), src_d.c_str(), true))
                         SDL_ShowOpenFolderDialog(picked, NULL, win, NULL, false);
+#endif
                     check_left_of_value(src_v);
                     first_row();
                     opt_section("Set up");

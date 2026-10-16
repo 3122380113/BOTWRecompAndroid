@@ -6,12 +6,23 @@
 // - LARECOMP_NATIVE_LIB_DIR: where adrenotools finds its hook libraries;
 // - the game code (lasgame.so + lasgame.so.id, built from the player's own game files: android/build_gamelib.sh) from
 //   <external files>/extracted to <internal files>/res, where runtime/gamelib.c looks for it next to "the executable".
+// - the game code's builder (docs/ANDROID-PORT.md, Fase 6): assets/gen (the generator, its Python's standard library,
+//   zig's headers) unpacked to <internal files>/gen once per app version, named in LARECOMP_GEN_DIR; its programs
+//   (libpymain.so, libzig.so) are in nativeLibraryDir;
+// - the system's pickers for the start screen (runtime/ui/launcher.mm): the game files folder (exefs/ and romfs/ are
+//   found in it and copied to <external files>/extracted) and the Vulkan driver (a .zip copied to the drivers folder).
 // The data root (game files, saves, settings) is <external files>: /sdcard/Android/data/com.lasrecomp.android/files.
 // While in front it reports the battery and thermal state once a second for the performance overlay
 // (runtime/ui/perf_overlay.mm): apps can't read those in /sys.
 package com.lasrecomp;
 
+import android.app.Activity;
+import android.content.ContentResolver;
 import android.content.Intent;
+import android.database.Cursor;
+import android.net.Uri;
+import android.provider.DocumentsContract;
+import android.provider.OpenableColumns;
 import android.content.IntentFilter;
 import android.content.res.AssetManager;
 import android.os.BatteryManager;
@@ -31,7 +42,9 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -48,6 +61,15 @@ public class LASRecompActivity extends SDLActivity {
     };
 
     private static native void nativeDeviceStats(float battTempC, float battPct, float watts, int thermal, float headroom);
+    // the start screen (runtime/ui/launcher.mm)
+    private static native boolean nativeBuildIdOk(byte[] head);
+    private static native void nativeImportBegin(String name);
+    private static native void nativeImportProgress(long done, long total);
+    private static native void nativeImportDone(int result);
+    private static native void nativeDriverPicked(String name);
+
+    private static final int REQ_GAME = 0x4c41, REQ_DRIVER = 0x4c42;
+    private static LASRecompActivity self;
 
     @Override
     protected String[] getLibraries() {
@@ -63,6 +85,9 @@ public class LASRecompActivity extends SDLActivity {
             copyIfChanged(new File(games, "lasgame.so"), new File(res, "lasgame.so"));
             copyIfChanged(new File(games, "lasgame.so.id"), new File(res, "lasgame.so.id"));
             setenv("LARECOMP_NATIVE_LIB_DIR", getApplicationInfo().nativeLibraryDir);
+            File gen = new File(getFilesDir(), "gen");
+            unpackGen(gen);
+            setenv("LARECOMP_GEN_DIR", gen.getAbsolutePath());
             File driver = customDriver();
             setenv("LARECOMP_VK_DRIVER", driver != null ? driver.getAbsolutePath() : "");
             // testing: the runtime's LARECOMP_* switches from the launch intent, separated by commas (adb shell drops
@@ -84,6 +109,7 @@ public class LASRecompActivity extends SDLActivity {
         } catch (IOException | ErrnoException e) {
             Log.e(TAG, "setup: " + e);
         }
+        self = this;
         super.onCreate(state);
         // SDL's own immersive full screen (no status / navigation bar, the camera cutout used): SDL's onCreate asks
         // for the windowed style, and keeps the bars hidden once its full screen mode is on
@@ -123,6 +149,241 @@ public class LASRecompActivity extends SDLActivity {
             nativeDeviceStats(temp, pct, watts, thermal, Float.isNaN(headroom) ? -1 : headroom);
         } catch (Throwable t) {  // (also before libmain is loaded: UnsatisfiedLinkError)
             Log.w(TAG, "device stats: " + t);
+        }
+    }
+
+    // ---- the game code's builder: assets/gen, unpacked once per installed version (runtime/gamebuild.c)
+    private void unpackGen(File dir) throws IOException {
+        String[] top = getAssets().list("gen");
+        if (top == null || top.length == 0) return;  // (an APK without it: android/deps/build_gen_deps.sh not run)
+        String stamp;
+        try {
+            stamp = String.valueOf(getPackageManager().getPackageInfo(getPackageName(), 0).lastUpdateTime);
+        } catch (Exception e) {
+            stamp = "?";
+        }
+        File st = new File(dir, ".stamp");
+        if (st.exists() && stamp.equals(readSmall(st))) return;
+        deleteTree(dir);
+        copyAssetTree("gen", dir);
+        try (OutputStream o = new FileOutputStream(st)) {
+            o.write(stamp.getBytes());
+        }
+        Log.i(TAG, "unpacked the game code builder to " + dir);
+    }
+
+    private void copyAssetTree(String from, File to) throws IOException {
+        AssetManager am = getAssets();
+        String[] names = am.list(from);
+        if (names == null || names.length == 0) {  // a file (or an empty folder)
+            try (InputStream in = am.open(from)) {
+                to.getParentFile().mkdirs();
+                copy(in, to);
+            } catch (IOException e) {
+                to.mkdirs();
+            }
+            return;
+        }
+        to.mkdirs();
+        for (String n : names) copyAssetTree(from + "/" + n, new File(to, n));
+    }
+
+    // ---- pickers (called from the start screen, on SDL's thread)
+    public static void pickGameFolder() {
+        self.runOnUiThread(() -> {
+            try {
+                self.startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_GAME);
+            } catch (Exception e) {
+                Log.e(TAG, "folder picker: " + e);
+                nativeImportDone(1);
+            }
+        });
+    }
+
+    public static void pickDriver() {
+        self.runOnUiThread(() -> {
+            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            i.addCategory(Intent.CATEGORY_OPENABLE);
+            i.setType("*/*");
+            try {
+                self.startActivityForResult(i, REQ_DRIVER);
+            } catch (Exception e) {
+                Log.e(TAG, "file picker: " + e);
+            }
+        });
+    }
+
+    // a new process: the driver is loaded once, at start
+    public static void restartApp() {
+        self.runOnUiThread(() -> {
+            Intent i = self.getPackageManager().getLaunchIntentForPackage(self.getPackageName());
+            if (i != null) {
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+                self.startActivity(i);
+            }
+            System.exit(0);
+        });
+    }
+
+    @Override
+    protected void onActivityResult(int req, int result, Intent data) {
+        if (req == REQ_GAME) {
+            Uri tree = result == Activity.RESULT_OK && data != null ? data.getData() : null;
+            if (tree == null) nativeImportDone(1);
+            else new Thread(() -> importGame(tree), "import").start();
+            return;
+        }
+        if (req == REQ_DRIVER) {
+            Uri f = result == Activity.RESULT_OK && data != null ? data.getData() : null;
+            if (f != null) new Thread(() -> importDriver(f), "driver").start();
+            return;
+        }
+        super.onActivityResult(req, result, data);
+    }
+
+    // A document in the picked tree: id, name, folder or not, size
+    private static final class Doc {
+        String id, name;
+        boolean dir;
+        long size;
+    }
+
+    private List<Doc> children(Uri tree, String id) {
+        List<Doc> out = new ArrayList<>();
+        Uri u = DocumentsContract.buildChildDocumentsUriUsingTree(tree, id);
+        String[] cols = {DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                         DocumentsContract.Document.COLUMN_MIME_TYPE, DocumentsContract.Document.COLUMN_SIZE};
+        try (Cursor c = getContentResolver().query(u, cols, null, null, null)) {
+            while (c != null && c.moveToNext()) {
+                Doc d = new Doc();
+                d.id = c.getString(0);
+                d.name = c.getString(1);
+                d.dir = DocumentsContract.Document.MIME_TYPE_DIR.equals(c.getString(2));
+                d.size = c.isNull(3) ? 0 : c.getLong(3);
+                out.add(d);
+            }
+        }
+        return out;
+    }
+
+    private static Doc named(List<Doc> l, String name) {
+        for (Doc d : l) if (d.name != null && d.name.equals(name)) return d;
+        return null;
+    }
+
+    // exefs: the folder with main and main.npdm; romfs: the folder with region_common - in the picked folder or a few
+    // levels below it (as runtime/ui/launcher.mm find_game)
+    private Doc exefs, romfs;
+    private boolean packages;
+
+    private void find(Uri tree, Doc dir, int depth) {
+        if (depth > 4 || (exefs != null && romfs != null)) return;
+        List<Doc> kids = children(tree, dir.id);
+        if (exefs == null && named(kids, "main") != null && named(kids, "main.npdm") != null) exefs = dir;
+        Doc rc = named(kids, "region_common");
+        if (romfs == null && rc != null && rc.dir) romfs = dir;
+        for (Doc k : kids) {
+            String n = k.name == null ? "" : k.name.toLowerCase();
+            if (n.endsWith(".nsp") || n.endsWith(".xci") || n.endsWith(".nca") || n.endsWith(".nsz") || n.endsWith(".xcz")) packages = true;
+            if (k.dir && !"region_common".equals(k.name)) find(tree, k, depth + 1);
+        }
+    }
+
+    private long treeBytes(Uri tree, Doc dir) {
+        long n = 0;
+        for (Doc k : children(tree, dir.id)) n += k.dir ? treeBytes(tree, k) : k.size;
+        return n;
+    }
+
+    private long copied, total, reported;
+
+    private void copyTree(Uri tree, Doc dir, File to) throws IOException {
+        to.mkdirs();
+        ContentResolver cr = getContentResolver();
+        for (Doc k : children(tree, dir.id)) {
+            File dst = new File(to, k.name);
+            if (k.dir) {
+                copyTree(tree, k, dst);
+                continue;
+            }
+            try (InputStream in = cr.openInputStream(DocumentsContract.buildDocumentUriUsingTree(tree, k.id));
+                 OutputStream o = new FileOutputStream(dst)) {
+                byte[] buf = new byte[1 << 20];
+                for (int r; (r = in.read(buf)) > 0; ) {
+                    o.write(buf, 0, r);
+                    copied += r;
+                    if (copied - reported > (16 << 20)) {
+                        reported = copied;
+                        nativeImportProgress(copied, total);
+                    }
+                }
+            }
+        }
+    }
+
+    private void importGame(Uri tree) {
+        int result;
+        try {
+            exefs = romfs = null;
+            packages = false;
+            Doc root = new Doc();
+            root.id = DocumentsContract.getTreeDocumentId(tree);
+            root.dir = true;
+            find(tree, root, 0);
+            if (exefs == null || romfs == null) {
+                nativeImportDone(packages ? 3 : 2);
+                return;
+            }
+            Doc main = named(children(tree, exefs.id), "main");
+            byte[] head = new byte[0x48];
+            try (InputStream in = getContentResolver().openInputStream(DocumentsContract.buildDocumentUriUsingTree(tree, main.id))) {
+                int got = 0;
+                for (int r; got < head.length && (r = in.read(head, got, head.length - got)) > 0; ) got += r;
+            }
+            if (!nativeBuildIdOk(head)) {
+                nativeImportDone(4);
+                return;
+            }
+            String name = DocumentsContract.getTreeDocumentId(tree);
+            nativeImportBegin(name.substring(name.lastIndexOf(':') + 1));
+            File games = new File(getExternalFilesDir(null), "extracted");
+            copied = reported = 0;
+            total = treeBytes(tree, romfs) + treeBytes(tree, exefs);
+            copyTree(tree, exefs, new File(games, "exefs"));
+            copyTree(tree, romfs, new File(games, "romfs"));
+            nativeImportProgress(copied, total);
+            result = 0;
+        } catch (Exception e) {
+            Log.e(TAG, "game files: " + e);
+            result = 5;
+        }
+        nativeImportDone(result);
+    }
+
+    // A driver package (.zip, or a bare .so) into <external files>/drivers, in place of any there (customDriver loads
+    // it at the next start)
+    private void importDriver(Uri f) {
+        String name = "driver.zip";
+        try (Cursor c = getContentResolver().query(f, new String[] {OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (c != null && c.moveToFirst() && !c.isNull(0)) name = c.getString(0);
+        } catch (Exception ignored) {
+        }
+        String low = name.toLowerCase();
+        if (!low.endsWith(".zip") && !low.endsWith(".so")) {
+            nativeDriverPicked("");
+            return;
+        }
+        try {
+            File dir = new File(getExternalFilesDir(null), "drivers");
+            deleteTree(dir);
+            dir.mkdirs();
+            try (InputStream in = getContentResolver().openInputStream(f)) {
+                copy(in, new File(dir, name));
+            }
+            nativeDriverPicked(name);
+        } catch (Exception e) {
+            Log.e(TAG, "driver: " + e);
+            nativeDriverPicked("");
         }
     }
 

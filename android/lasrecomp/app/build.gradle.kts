@@ -43,6 +43,11 @@ android {
         }
     }
 
+    // aapt's default without "<dir>_*": the game code's builder needs Python's folders named _* (zipfile/_path, ...)
+    androidResources {
+        ignoreAssetsPattern = "!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~"
+    }
+
     packaging {
         jniLibs {
             useLegacyPackaging = true  // adrenotools loads its hooks from nativeLibraryDir
@@ -73,6 +78,10 @@ val prepareLasRecomp by tasks.registering {
     val libs = listOf("libSDL3.so", "libshaderc_shared.so", "libavcodec.so", "libavformat.so", "libavutil.so", "libswscale.so")
     inputs.files(smaa, font, icon)
     inputs.files(libs.map { deps.resolve("lib/$it") }.filter { it.exists() })
+    if (deps.resolve("gen").exists()) inputs.dir(deps.resolve("gen"))  // (the game code's builder, below)
+    inputs.files(listOf("tools/gen.py", "tools/lifter.py", "tools/analyze.py", "tools/nso.py", "tools/passes.py", "tools/patches.py",
+                        "tools/simd_c.py", "tools/rando/patch_variants.json", "tools/gamelib_entry.c", "runtime/cpu.h",
+                        "runtime/simd.h", "runtime/simd_fp.h", "runtime/gamelib.h", "runtime/hle/hle_symbols.txt").map { repo.resolve(it) })
     outputs.dir(gen)
     doLast {
         val out = gen.get().asFile
@@ -88,6 +97,28 @@ val prepareLasRecomp by tasks.registering {
         deps.resolve("fonts/DejaVuSans.ttf").copyTo(out.resolve("assets/res/DejaVuSans.ttf"), overwrite = true)
         icon.copyTo(out.resolve("assets/res/icon.png"), overwrite = true)
         icon.copyTo(out.resolve("res/mipmap-xxxhdpi/ic_launcher.png"), overwrite = true)
+        // the game code's builder (docs/ANDROID-PORT.md, Fase 6; android/deps/build_gen_deps.sh): its programs and
+        // libraries as native libraries (Android runs binaries only from nativeLibraryDir), the rest as assets/gen
+        // (runtime/gamebuild.c; unpacked by LASRecompActivity)
+        val g = deps.resolve("gen")
+        if (g.resolve("zig/libzig.so").exists()) {
+            val jni = out.resolve("jniLibs/arm64-v8a")
+            for (f in listOf(g.resolve("zig/libzig.so"), g.resolve("python/libpymain.so"), g.resolve("python/libpython3.14.so")) +
+                     (g.resolve("lib").listFiles() ?: arrayOf()).filter { it.name.endsWith(".so") })
+                f.copyTo(jni.resolve(f.name), overwrite = true)
+            val a = out.resolve("assets/gen")
+            a.deleteRecursively()
+            g.resolve("python/lib").copyRecursively(a.resolve("python/lib"), overwrite = true)
+            g.resolve("site").copyRecursively(a.resolve("site"), overwrite = true)
+            g.resolve("zig/lib").copyRecursively(a.resolve("zig/lib"), overwrite = true)
+            for (n in listOf("gen.py", "lifter.py", "analyze.py", "nso.py", "passes.py", "patches.py", "simd_c.py"))
+                repo.resolve("tools/$n").copyTo(a.resolve("tools/$n"), overwrite = true)
+            repo.resolve("tools/rando/patch_variants.json").copyTo(a.resolve("tools/rando/patch_variants.json"), overwrite = true)
+            for (n in listOf("cpu.h", "simd.h", "simd_fp.h", "gamelib.h"))
+                repo.resolve("runtime/$n").copyTo(a.resolve("gamelib-src/$n"), overwrite = true)
+            repo.resolve("tools/gamelib_entry.c").copyTo(a.resolve("gamelib-src/gamelib_entry.c"), overwrite = true)
+            repo.resolve("runtime/hle/hle_symbols.txt").copyTo(a.resolve("gamelib-src/hle_symbols.txt"), overwrite = true)
+        }
     }
 }
 tasks.named("preBuild") { dependsOn(prepareLasRecomp) }
