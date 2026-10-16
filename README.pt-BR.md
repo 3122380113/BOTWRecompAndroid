@@ -89,27 +89,36 @@ No lado da CPU:
 - o runtime é compilado com otimização, os fences de GPU do jogo não esperam mais o compositor, e o trabalho por draw
   é guardado em cache.
 
-## Por que a iluminação precisa do driver Turnip
+## Turnip ou o driver do próprio celular
 
-**O jogo funciona sem o Turnip**, com o driver Qualcomm do próprio celular: ele inicia, roda e salva. Mas a
-**iluminação só aparece com o Turnip**. Sem ele, as cenas são desenhadas sem as luzes dinâmicas do jogo.
+O jogo roda, **com a iluminação**, tanto com o driver **Turnip** do Mesa quanto com o driver **Qualcomm** do próprio
+celular. O Turnip continua sendo o indicado para **60 fps**:
+
+| Driver | Iluminação | Mapa aberto (720p) |
+|---|---|---|
+| Turnip | sim | 60 fps (98% do tempo) |
+| Qualcomm do celular | sim | 30 fps |
 
 Os shaders do jogo leem e escrevem diretamente na memória do jogo, nos mesmos endereços que a CPU usa: por exemplo, a
-lista de luzes de cada quadro é montada por um compute shader e depois lida pelos shaders de pixel. No PC, a memória
-do jogo é importada para a GPU com `VK_EXT_external_memory_host`. Nem o driver da Qualcomm nem o Turnip têm essa
-extensão.
+lista de luzes de cada quadro é montada por um compute shader e depois lida pelos shaders de pixel, e alguns shaders
+chegam aos dados por ponteiros. No PC, a memória do jogo é importada para a GPU com `VK_EXT_external_memory_host`,
+que nenhum dos dois drivers tem.
 
-O **Turnip** (o driver Vulkan de código aberto do Mesa para Adreno) tem `VK_EXT_map_memory_placed`: a memória da GPU
-é alocada exatamente no endereço do heap do jogo, então CPU e GPU compartilham a mesma memória, sem cópias. Com o
-driver da Qualcomm, o app recorre a cópias pela CPU. Isso é mais lento, e o que um compute shader escreve só volta
-para a memória do jogo depois que a GPU termina, tarde demais para o mesmo quadro. É por isso que **a iluminação
-falha** com esse driver.
+- O **Turnip** tem `VK_EXT_map_memory_placed`: a memória da GPU é alocada exatamente no endereço do heap do jogo,
+  então CPU e GPU compartilham a mesma memória, sem cópias.
+- **Qualquer outro driver** (o da Qualcomm e, em princípio, Mali, Xclipse e outros) passa por uma **arena na GPU**:
+  as regiões de memória que os shaders escrevem ficam na GPU, então os draws que as leem veem os resultados no mesmo
+  quadro; as mudanças da CPU são detectadas e copiadas pela GPU, e os resultados da GPU voltam para a memória do jogo
+  quando ela termina. As regiões que os shaders alcançam por ponteiros são descobertas durante o jogo: os shaders
+  registram as leituras fora das regiões conhecidas e elas são adicionadas. Isso custa mais que a memória
+  compartilhada do Turnip, daí os 30 fps por enquanto.
 
 ## Limitações atuais
 
-- Feito para Snapdragon (GPU Adreno) com Turnip. O jogo também roda com o driver do próprio celular, mas sem a
-  iluminação. O app carrega o Turnip com [libadrenotools](https://github.com/bylaws/libadrenotools); o driver não está
-  incluído, você fornece o seu. Outras GPUs (Mali, Xclipse, ...) não foram testadas.
+- Testado em Snapdragon (Adreno): com o Turnip a 60 fps, com o driver do próprio celular a 30 fps (com a iluminação
+  nos dois). O app carrega o Turnip com [libadrenotools](https://github.com/bylaws/libadrenotools); o driver não está
+  incluído, você fornece o seu. Outras GPUs (Mali, Xclipse, ...) devem funcionar pelo mesmo caminho do driver da
+  Qualcomm, mas não foram testadas: relatos são bem-vindos.
 - Você precisa do seu próprio dump v1.0.0 e de cerca de **12 GB livres** para a configuração (o app guarda a sua
   própria cópia dos arquivos do jogo mais uma imagem de dados gerada a partir deles); o dump pode ser apagado depois.
 - A primeira configuração compila o código do jogo no celular: cerca de 20 minutos em um Snapdragon 8 Elite.
@@ -118,17 +127,17 @@ falha** com esse driver.
 
 ## Instalação
 
-Você precisa de um celular com GPU Snapdragon (Adreno), Android 11 ou mais novo, um pacote do driver Turnip (o
-`.zip` do adrenotools, o mesmo usado por outros emuladores; o jogo roda sem ele, mas a iluminação só aparece com ele)
-e os seus próprios arquivos extraídos da v1.0.0 (as pastas `exefs` e `romfs`) copiados em alguma pasta do celular.
+Você precisa de um celular arm64 com Android 11 ou mais novo (testado num Snapdragon), dos seus próprios arquivos
+extraídos da v1.0.0 (as pastas `exefs` e `romfs`) copiados em alguma pasta do celular e, para 60 fps numa GPU Adreno,
+de um pacote do driver Turnip (o `.zip` do adrenotools, o mesmo usado por outros emuladores).
 
 1. Instale o APK da página de [Releases](https://github.com/mamcjr/LASRecompAndroid/releases).
 2. Abra o app, toque em **Game files folder** e escolha a pasta que contém `exefs` e `romfs` (ou a pasta acima dela).
    O Android pede permissão de acesso a ela: o app copia os arquivos para a sua própria pasta.
 3. Aguarde a configuração: a cópia, a imagem de dados do jogo e o código do jogo (cerca de 20 minutos na primeira
    vez; mantenha a tela ligada).
-4. **Settings > Prelaunch > Vulkan driver > Choose driver**: escolha o `.zip` do Turnip e depois **Restart now**. Sem
-   esse passo o jogo ainda roda, no driver do próprio celular, mas sem a iluminação.
+4. Opcional, para 60 fps em Adreno: **Settings > Prelaunch > Vulkan driver > Choose driver**, escolha o `.zip` do
+   Turnip e depois **Restart now**. Sem isso o jogo roda no driver do próprio celular, com a iluminação, a 30 fps.
 5. **Play**, com os controles de toque ou um controle. O botão de menu na tela, o botão voltar ou Menos + Mais no
    controle abrem o menu do jogo.
 

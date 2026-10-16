@@ -358,7 +358,10 @@ Depois, nesta ordem:
    explícito do autor. Decisão (2026-10-16): primeiro os 60 fps sustentados; depois, se ainda fizer sentido, geração
    de quadros própria com o AMD FidelityFX FSR 3 (MIT), sem Lossless.dll (o jogo não dá vetores de movimento: a
    qualidade é a dúvida).
-3. **Além do Turnip:** rodar em outras GPUs (Mali, Xclipse, Adreno com o driver da Qualcomm). O bloqueio é a memória
-   global dos shaders sem `VK_EXT_map_memory_placed`: hoje o fallback por cópias da CPU quebra a iluminação (o
-   compute escreve e o fragment lê no mesmo frame). Caminhos: cópias de volta pela GPU no mesmo frame,
-   `VK_EXT_external_memory_host` onde existir, ou `adrenotools_import_user_mem` no driver da Qualcomm.
+3. **Além do Turnip (iluminação feita, 2026-10-16, v0.3.0):** no driver da própria Qualcomm o jogo agora roda com a
+   iluminação, a 30 fps. Sem `VK_EXT_map_memory_placed`, a memória global dos shaders passa por uma arena na GPU
+   (`exec.c`, gres_*): as regiões que um shader escreve ficam residentes, as escritas da CPU são detectadas por
+   comparação e copiadas pela GPU, os resultados da GPU voltam bloco a bloco; uma margem de 4 KB antes de cada região
+   (o contador de luzes fica antes da lista); e os shaders registram os acessos fora das tabelas, que viram regiões
+   aprendidas. O compilador da Qualcomm trava com o structurizer: desligado nesse driver. Falta: desempenho nesse modo
+   (~640 MB de cópias a cada 2 s) e testar Mali / Xclipse (devem usar o mesmo caminho).

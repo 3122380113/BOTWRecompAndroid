@@ -888,8 +888,8 @@ static void prelaunch_tab(float sc) {
         const char *base = d && *d ? strrchr(d, '/') : NULL;
         ImGui::Text("In use: %s", d && *d ? (base ? base + 1 : d) : "the system's driver");
         ImGui::PushTextWrapPos(0);
-        ImGui::TextDisabled("LAS Recomp needs Mesa's Turnip driver for Adreno GPUs: with the system's driver the lighting is "
-                            "broken. Choose a Turnip driver package (.zip, as for adrenotools).");
+        ImGui::TextDisabled("The game runs on the system's driver, lighting included. On Adreno GPUs, Mesa's Turnip "
+                            "driver runs it at 60 fps: choose a Turnip driver package (.zip, as for adrenotools).");
         ImGui::PopTextWrapPos();
         if (ImGui::Button("Choose driver")) android_call("pickDriver");
         pthread_mutex_lock(&g_lock);
