@@ -1,5 +1,7 @@
 # LAS Recomp for Android
 
+**English** | [Português](README.pt-BR.md)
+
 An Android port of **[LAS Recomp](https://github.com/peiikai/LASRecomp)** by peiikai: a static recompilation of
 *The Legend of Zelda: Link's Awakening* (Nintendo Switch, 2019). As in the original project, this is **not
 emulation**: the Switch code becomes native ARM64 code, and the game's graphics (NVN) are translated to Vulkan.
@@ -30,8 +32,8 @@ Tested on a **POCO F7 Ultra** (Snapdragon 8 Elite / Adreno 830, Android 16) with
   overworld views still drop to the game's 30 fps mode. The game picks between the two, as it does on the Switch,
   from each frame's GPU time (about 9 ms per overworld frame now, down from ~18.5 ms);
 - **touch controls**: a floating stick, A / B / X / Y, L / R / ZL / ZR, Minus / Plus and a menu button, shown while
-  no controller is connected (they hide as soon as one is). Their layout can be edited (drag them where you like, size, opacity) in the
-  in-game menu's Controls tab; the Android back button opens the menu;
+  no controller is connected (they hide as soon as one is). Their layout can be edited (drag them where you like,
+  size, opacity) in the in-game menu's Controls tab; the Android back button opens the menu;
 - Bluetooth controllers (tested with a GameSir X4 Aileron), remappable in the Controls tab;
 - a frame rate setting (Video tab): Auto (the game's own 30 / 60 choice), 30 fps or 60 fps;
 - a performance overlay (fps, frame time, CPU, GPU, temperature, battery), and no black screen after the app comes
@@ -80,8 +82,8 @@ with that driver.
 ## Installing
 
 You need a phone with a Snapdragon (Adreno) GPU, Android 11 or newer, a Turnip driver package (the adrenotools
-`.zip`, as used by other emulators; the game runs without it, but the lighting only shows up with it), and your own extracted v1.0.0 game files (the folders `exefs` and `romfs`)
-copied somewhere on the phone.
+`.zip`, as used by other emulators; the game runs without it, but the lighting only shows up with it), and your own
+extracted v1.0.0 game files (the folders `exefs` and `romfs`) copied somewhere on the phone.
 
 1. Install the APK from the [Releases](https://github.com/mamcjr/LASRecompAndroid/releases) page.
 2. Open the app, tap **Game files folder** and pick the folder that holds `exefs` and `romfs` (or the folder above

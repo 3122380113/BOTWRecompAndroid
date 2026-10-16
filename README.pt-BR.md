@@ -1,0 +1,158 @@
+# LAS Recomp para Android
+
+[English](README.md) | **Português**
+
+Um port para Android do **[LAS Recomp](https://github.com/peiikai/LASRecomp)**, de peiikai: uma recompilação
+estática de *The Legend of Zelda: Link's Awakening* (Nintendo Switch, 2019). Como no projeto original, isto **não é
+emulação**: o código do Switch vira código ARM64 nativo, e os gráficos do jogo (NVN) são traduzidos para Vulkan.
+Para as versões de PC (Windows, macOS, Linux), os recursos e o randomizer, veja o
+[repositório original](https://github.com/peiikai/LASRecomp).
+
+> [!IMPORTANT]
+> Assim como o original, este port foi feito quase inteiramente com IA: o trabalho de portabilidade foi escrito pelo
+> Claude (Opus 5.5, da Anthropic, via Claude Code), dirigido, testado e revisado por uma pessoa. Você executa o código
+> por sua conta.
+
+> [!WARNING]
+> **Experimental.** Baixe o APK na página de [Releases](https://github.com/mamcjr/LASRecompAndroid/releases): todo o
+> resto (os seus arquivos do jogo, o código do jogo, o driver) é configurado pelo próprio app, no celular. O plano
+> completo, o estado de cada fase e as medições estão em [docs/ANDROID-PORT.md](docs/ANDROID-PORT.md).
+
+> [!NOTE]
+> **Nenhum arquivo do jogo está incluído**, e o app não contém nada do jogo. Você precisa da sua própria cópia,
+> obtida legalmente, dos arquivos extraídos de *Link's Awakening* **v1.0.0**. Não serão dadas instruções de como
+> obtê-los.
+
+## Estado atual
+
+Testado em um **POCO F7 Ultra** (Snapdragon 8 Elite / Adreno 830, Android 16) com o driver **Turnip Gen8 V37**:
+
+- o jogo inicia, os vídeos tocam com som, e os menus, os saves e a jogabilidade funcionam;
+- **60 fps na maior parte do tempo**, inclusive no mapa aberto, na resolução interna padrão de 50% (720p); as vistas
+  mais pesadas do mapa ainda caem para o modo de 30 fps do jogo. O jogo escolhe entre os dois, como faz no Switch, a
+  partir do tempo de GPU de cada quadro (cerca de 9 ms por quadro no mapa aberto agora, antes ~18,5 ms);
+- **controles de toque**: um analógico flutuante, A / B / X / Y, L / R / ZL / ZR, Menos / Mais e um botão de menu,
+  exibidos enquanto nenhum controle está conectado (somem assim que um é conectado). O layout pode ser editado
+  (arrastar para onde quiser, tamanho, opacidade) na aba Controls do menu do jogo; o botão voltar do Android abre o
+  menu;
+- controles Bluetooth (testado com um GameSir X4 Aileron), com botões remapeáveis na aba Controls;
+- uma opção de taxa de quadros (aba Video): Auto (a escolha de 30 / 60 do próprio jogo), 30 fps ou 60 fps;
+- um overlay de desempenho (fps, tempo de quadro, CPU, GPU, temperatura, bateria), e sem tela preta quando o app
+  volta do segundo plano. O menu do jogo deixa de fora as opções do desktop (tela cheia, 4K / 8K, randomizer).
+
+### O que deixou rápido
+
+Os shaders do jogo são traduzidos do código da GPU do Switch para GLSL em tempo de execução. No Adreno os shaders
+traduzidos eram o gargalo, então no Android o tradutor agora:
+
+- resolve as pilhas de controle de fluxo na tradução, em vez de mantê-las como arrays em cada shader;
+- transforma desvios, laços e tabelas de salto (lidas das constantes do próprio shader) em código estruturado
+  `if` / `for` / `switch`, em vez de uma máquina de estados `switch (pc)`, que o compilador mobile lidava mal (o
+  shader de iluminação do mapa aberto foi de 24 para 16-19 registradores e de 2884 para 1717 instruções);
+- converte valores de meia precisão com as instruções da própria GPU nos shaders de fragmento e de compute.
+
+No lado da CPU, o runtime é compilado com otimização, os fences de GPU do jogo não esperam mais o compositor, e o
+trabalho por draw é guardado em cache.
+
+## Por que a iluminação precisa do driver Turnip
+
+**O jogo funciona sem o Turnip**, com o driver Qualcomm do próprio celular: ele inicia, roda e salva. Mas a
+**iluminação só aparece com o Turnip**. Sem ele, as cenas são desenhadas sem as luzes dinâmicas do jogo.
+
+Os shaders do jogo leem e escrevem diretamente na memória do jogo, nos mesmos endereços que a CPU usa: por exemplo, a
+lista de luzes de cada quadro é montada por um compute shader e depois lida pelos shaders de pixel. No PC, a memória
+do jogo é importada para a GPU com `VK_EXT_external_memory_host`. Nem o driver da Qualcomm nem o Turnip têm essa
+extensão.
+
+O **Turnip** (o driver Vulkan de código aberto do Mesa para Adreno) tem `VK_EXT_map_memory_placed`: a memória da GPU
+é alocada exatamente no endereço do heap do jogo, então CPU e GPU compartilham a mesma memória, sem cópias. Com o
+driver da Qualcomm, o app recorre a cópias pela CPU. Isso é mais lento, e o que um compute shader escreve só volta
+para a memória do jogo depois que a GPU termina, tarde demais para o mesmo quadro. É por isso que **a iluminação
+falha** com esse driver.
+
+## Limitações atuais
+
+- Feito para Snapdragon (GPU Adreno) com Turnip. O jogo também roda com o driver do próprio celular, mas sem a
+  iluminação. O app carrega o Turnip com [libadrenotools](https://github.com/bylaws/libadrenotools); o driver não está
+  incluído, você fornece o seu. Outras GPUs (Mali, Xclipse, ...) não foram testadas.
+- Você precisa do seu próprio dump v1.0.0 e de cerca de **12 GB livres** para a configuração (o app guarda a sua
+  própria cópia dos arquivos do jogo mais uma imagem de dados gerada a partir deles); o dump pode ser apagado depois.
+- A primeira configuração compila o código do jogo no celular: cerca de 20 minutos em um Snapdragon 8 Elite.
+- Mudar a resolução com o jogo rodando pode fechar o app. Mude na tela de título.
+- Ainda sem randomizer no celular.
+
+## Instalação
+
+Você precisa de um celular com GPU Snapdragon (Adreno), Android 11 ou mais novo, um pacote do driver Turnip (o
+`.zip` do adrenotools, o mesmo usado por outros emuladores; o jogo roda sem ele, mas a iluminação só aparece com ele)
+e os seus próprios arquivos extraídos da v1.0.0 (as pastas `exefs` e `romfs`) copiados em alguma pasta do celular.
+
+1. Instale o APK da página de [Releases](https://github.com/mamcjr/LASRecompAndroid/releases).
+2. Abra o app, toque em **Game files folder** e escolha a pasta que contém `exefs` e `romfs` (ou a pasta acima dela).
+   O Android pede permissão de acesso a ela: o app copia os arquivos para a sua própria pasta.
+3. Aguarde a configuração: a cópia, a imagem de dados do jogo e o código do jogo (cerca de 20 minutos na primeira
+   vez; mantenha a tela ligada).
+4. **Settings > Prelaunch > Vulkan driver > Choose driver**: escolha o `.zip` do Turnip e depois **Restart now**. Sem
+   esse passo o jogo ainda roda, no driver do próprio celular, mas sem a iluminação.
+5. **Play**, com os controles de toque ou um controle. O botão de menu na tela, o botão voltar ou Menos + Mais no
+   controle abrem o menu do jogo.
+
+O app guarda tudo em `Android/data/com.lasrecomp.android/files/`: saves, configurações, o cache de pipelines e os
+arquivos do jogo. Desinstalar o app apaga essa pasta, inclusive os saves: copie a pasta `save` para fora antes.
+
+## Compilando a partir do código
+
+No Windows com Git Bash, o Android SDK com **NDK 30.0.16248370** e **CMake 3.30.4**, um celular com depuração USB e
+Python 3.12. No Linux os mesmos passos devem funcionar com bash, mas não foram testados.
+
+1. As dependências do app (SDL3, shaderc, Vulkan-Headers, VMA, volk e a fonte DejaVu):
+   `bash android/deps/build_deps.sh`.
+2. Opcional: FFmpeg, para os vídeos e o fundo da tela inicial. O `configure` dele exige um shell Unix, então no
+   Windows rode no WSL: `wsl -- bash android/deps/build_ffmpeg.sh`.
+3. O compilador do código do jogo que o app carrega (Python 3.14 para Android, capstone, lz4, zig):
+   `bash android/deps/build_gen_deps.sh`; o unicorn também exige um shell Unix:
+   `wsl -- bash android/deps/build_unicorn.sh`.
+4. O app: `cd android/lasrecomp && ./gradlew assembleRelease` (assinado com a sua chave de
+   `~/.lasrecomp/keystore.properties` se ela existir, senão com a chave de debug), depois
+   `adb install -r app/build/outputs/apk/release/app-release.apk`, e configure como em [Instalação](#instalação).
+
+Para desenvolvimento, o código do jogo ainda pode ser compilado no PC e enviado:
+`bash android/build_gamelib.sh <dump>/exefs` (com `python -m venv tools/venv` e `pip install lz4 capstone unicorn`),
+depois `bash android/push_game.sh <pasta com exefs/ e romfs/>`.
+
+## Créditos
+
+- **[LAS Recomp](https://github.com/peiikai/LASRecomp)**, de peiikai: o recompilador, o runtime, o renderizador Vulkan
+  e o tradutor de shaders sobre os quais este port foi feito. O README dele dá os créditos a todos os envolvidos,
+  incluindo o LAS-Randomizer e os mods da comunidade que as opções dele reimplementam.
+- [SDL 3](https://libsdl.org) (zlib): janela, entrada, áudio e a activity do Android.
+- [libadrenotools](https://github.com/bylaws/libadrenotools), de bylaws (BSD 2-Clause): carrega um driver Vulkan
+  personalizado.
+- [Mesa Turnip](https://docs.mesa3d.org/drivers/freedreno.html) (MIT): o driver Vulkan para o qual o app foi feito
+  (não incluído).
+- [shaderc](https://github.com/google/shaderc) (Apache 2.0), [Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers)
+  (Apache 2.0 / MIT), [volk](https://github.com/zeux/volk) (MIT) e
+  [Vulkan Memory Allocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator) (MIT).
+- [FFmpeg](https://ffmpeg.org) (LGPL 2.1+, opcional, ligado dinamicamente): reprodução dos vídeos.
+- O compilador do código do jogo, executado no celular: [Python](https://www.python.org) 3.14 (licença PSF),
+  [Zig](https://ziglang.org) 0.17 (MIT), [Capstone](https://github.com/capstone-engine/capstone) 5.0.9 (BSD 3-Clause),
+  [Unicorn](https://github.com/unicorn-engine/unicorn) 2.1.4 (GPL 2.0; o código-fonte sem modificações:
+  [2.1.4](https://github.com/unicorn-engine/unicorn/archive/refs/tags/2.1.4.tar.gz), compilado por
+  `android/deps/build_unicorn.sh`) e [LZ4](https://github.com/lz4/lz4) 1.10.0 (BSD 2-Clause).
+- [Dear ImGui](https://github.com/ocornut/imgui) (MIT): o menu sobreposto e a tela inicial.
+- [SMAA](https://github.com/iryoku/smaa) e [AMD FidelityFX Super Resolution 1](https://github.com/GPUOpen-Effects/FidelityFX-FSR)
+  (MIT): as opções de anti-aliasing e de upscaler, embutidas no renderizador.
+- [Fontes DejaVu](https://dejavu-fonts.github.io) (licença Bitstream Vera): substituta da fonte de sistema do Switch.
+
+## Aviso legal
+
+Este é um projeto de fã. Não tem afiliação, endosso nem patrocínio da Nintendo. *The Legend of Zelda* e *Link's
+Awakening* são marcas registradas da Nintendo. Nenhum arquivo, código, recurso ou fonte do jogo está incluído, neste
+repositório ou em qualquer build. Você precisa fornecer a sua própria cópia, obtida legalmente, dos arquivos do jogo
+para jogar.
+
+## Licença
+
+O código é aberto sob a [Licença MIT](LICENSE), como no projeto original. Os componentes de terceiros mantêm as suas
+próprias licenças (acima, e no [README original](https://github.com/peiikai/LASRecomp#license)). A licença cobre
+apenas o código deste projeto: ela não concede nada sobre o jogo da Nintendo, que você mesmo precisa fornecer.
