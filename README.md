@@ -26,10 +26,30 @@ For the PC versions (Windows, macOS, Linux), features and the randomizer, see th
 Tested on a **POCO F7 Ultra** (Snapdragon 8 Elite / Adreno 830, Android 16) with the **Turnip Gen8 V37** driver:
 
 - the game boots, the movies play with sound, and the menus, saves and gameplay work;
-- **a steady 30 fps in the overworld** and 60 fps in lighter areas. The game itself picks between the two modes,
-  as it does on the Switch, from each frame's GPU time;
-- Bluetooth controllers (tested with a GameSir X4 Aileron), a performance overlay (fps, frame time, CPU, GPU,
-  temperature, battery), and no black screen after the app comes back from the background.
+- **60 fps most of the time**, the overworld included, at the default 50% internal resolution (720p); the heaviest
+  overworld views still drop to the game's 30 fps mode. The game picks between the two, as it does on the Switch,
+  from each frame's GPU time (about 9 ms per overworld frame now, down from ~18.5 ms);
+- **touch controls**: a floating stick, A / B / X / Y, L / R / ZL / ZR, Minus / Plus and a menu button, shown while
+  no controller is connected. Their layout can be edited (drag them where you like, size, opacity) in the
+  in-game menu's Controls tab; the Android back button opens the menu;
+- Bluetooth controllers (tested with a GameSir X4 Aileron), remappable in the Controls tab;
+- a frame rate setting (Video tab): Auto (the game's own 30 / 60 choice), 30 fps or 60 fps;
+- a performance overlay (fps, frame time, CPU, GPU, temperature, battery), and no black screen after the app comes
+  back from the background. The in-game menu leaves out the desktop's options (fullscreen, 4K / 8K, randomizer).
+
+### What made it fast
+
+The game's shaders are translated from the Switch GPU's code to GLSL at run time. On Adreno the translated shaders
+were the bottleneck, so on Android the translator now:
+
+- resolves the control-flow stacks at translation time instead of keeping them as arrays in every shader;
+- turns branches, loops and jump tables (read from the shader's own constants) into structured `if` / `for` /
+  `switch` code instead of a `switch (pc)` state machine, which the mobile compiler handled poorly (the overworld's
+  lighting shader went from 24 to 16-19 registers and from 2884 to 1717 instructions);
+- converts half-precision values with the GPU's own instructions in fragment and compute shaders.
+
+On the CPU side, the runtime is built optimized, the game's GPU fences no longer wait for the compositor, and
+per-draw work is cached.
 
 ## Why it needs the Turnip driver
 
@@ -48,7 +68,6 @@ with that driver.
 - Snapdragon (Adreno GPU) with Turnip only. The app loads the driver with
   [libadrenotools](https://github.com/bylaws/libadrenotools); the driver is not included, you provide your own.
 - You need your own v1.0.0 dump. The game code is generated and compiled **on a PC** from it.
-- No touch controls: a physical controller is required.
 - Changing the resolution while the game is running can close the app. Change it on the title screen.
 - No randomizer on the phone yet.
 
@@ -71,7 +90,8 @@ debugging, and Python 3.12. On Linux the same steps should work with bash, but t
 7. The driver: copy Turnip (the adrenotools `.zip` or the `.so`) to
    `Android/data/com.lasrecomp.android/files/drivers/` on the phone. Without it the app uses the system driver, and
    the lighting is broken.
-8. Open the app, connect a controller and play. Minus + Plus opens the in-game menu.
+8. Open the app and play with the touch controls or a controller. The on-screen menu button, the back button or
+   Minus + Plus on a controller opens the in-game menu.
 
 The app keeps everything in `Android/data/com.lasrecomp.android/files/`: saves, settings, the pipeline cache and the
 game files.
