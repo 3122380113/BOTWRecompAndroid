@@ -106,6 +106,8 @@ extern bool maxwell_static_stacks;
 extern bool maxwell_structured;
 // (maxwell_structured) no GLSL switch for a jump table: such a shader keeps its state machine (Qualcomm's compiler)
 extern bool maxwell_no_switch;
+// (maxwell_structured) a shader with local memory keeps its state machine (Qualcomm's compiler crashed on one)
+extern bool maxwell_no_local_struct;
 // (GLSL) fragment and compute shaders convert halves with unpackHalf2x16 instead of the bitwise h2f (vertex shaders
 // keep it: NVIDIA ran math after unpacked halves in fp16, and depth passes disagreed). Set by the Android backend.
 extern bool maxwell_native_half;

@@ -1070,7 +1070,14 @@ static void begin_pass(void) {
         // (~6 + ~11 ms) was the frame's critical path: the game waits on the previous frame's fence.
         extern bool vk_async_on(void);
         static long chunk = -1;
-        if (chunk < 0) { const char *e = getenv("LARECOMP_VK_CHUNK_US"); chunk = e ? atol(e) : 2000; }
+        if (chunk < 0) {
+            // (not on Qualcomm's driver: its render thread is slow - ~12 ms a frame in the copy mode - so the GPU sat
+            // idle between the chunks, and the game, timing its frames on the GPU from start to end, saw the gaps as
+            // GPU time and stayed at 30 even indoors; a whole frame at once, it chose 60 there)
+            extern bool vk_driver_is_qualcomm(void);
+            const char *e = getenv("LARECOMP_VK_CHUNK_US");
+            chunk = e ? atol(e) : vk_driver_is_qualcomm() ? 0 : 2000;
+        }
         if (chunk > 0 && vk_async_on() && last_submit_ns && SDL_GetTicksNS() - last_submit_ns > (uint64_t)chunk * 1000)
             renderer_submit();
     }
@@ -1471,6 +1478,7 @@ static void translate_program(void *arg) {
     maxwell_static_stacks = !getenv("LARECOMP_DYN_STACKS");
     maxwell_structured = structure_on();
     maxwell_no_switch = qcom_no_switch();
+    maxwell_no_local_struct = qcom_no_switch() && !getenv("LARECOMP_QCOM_LOCAL");
     maxwell_native_half = !getenv("LARECOMP_BITWISE_HALF");
     maxwell_fast_minmax = !getenv("LARECOMP_SAFE_MATH");
 #endif
@@ -2595,11 +2603,13 @@ static uint64_t ga_ring(uint64_t size) {
 }
 
 // The CPU's writes to a resident range since its last upload, into its slot (by the GPU, first thing in the
-// submission: once per submission, before any of its uses)
+// submission: once per frame - its first submission using the range - before any of its uses; once per submission
+// compared the learned ranges, hundreds of KB, ~6 times a frame with the chunked submissions: memcmp was ~8% of
+// the render thread)
 static void gres_sync(GaRes *e) {
-    uint64_t pend = vk_pending_seq();
-    if (e->checked == pend) return;
-    e->checked = pend;
+    uint64_t pend = vk_pending_seq(), frame = renderer_present_count() + 1;
+    if (e->checked == frame) return;
+    e->checked = frame;
     const uint8_t *g = (const uint8_t *)(uintptr_t)(HEAP_BASE + e->lo);
     uint64_t len = e->hi - e->lo;
     for (uint64_t b = 0; b < len;) {
@@ -2648,7 +2658,7 @@ static GaRes *gres_get(uint64_t lo, uint64_t hi, bool create) {
     uint64_t *bseq = calloc((len + 255) / 256, sizeof *bseq);
     if (!shadow || !bseq) { free(shadow); free(bseq); return NULL; }
     const uint8_t *g = (const uint8_t *)(uintptr_t)(HEAP_BASE + ulo);
-    *n = (GaRes){ulo, uhi, ga_res_top, vk_pending_seq(), shadow, true, bseq};
+    *n = (GaRes){ulo, uhi, ga_res_top, renderer_present_count() + 1, shadow, true, bseq};  // (synced: this frame)
     ga_res_top += (len + 255) & ~255ull;
     memcpy(shadow, g, len);
     memcpy(ga_ptr + n->off, g, len);  // (a new slot: nothing on the GPU uses it yet)
@@ -3360,6 +3370,7 @@ static CsProg *compute_program(NvnProgram *np) {
     maxwell_static_stacks = !getenv("LARECOMP_DYN_STACKS");
     maxwell_structured = structure_on();
     maxwell_no_switch = qcom_no_switch();
+    maxwell_no_local_struct = qcom_no_switch() && !getenv("LARECOMP_QCOM_LOCAL");
     maxwell_native_half = !getenv("LARECOMP_BITWISE_HALF");
     maxwell_fast_minmax = !getenv("LARECOMP_SAFE_MATH");
 #endif
@@ -3849,6 +3860,16 @@ static void draw_(CmdRec *r, bool indexed) {
                 scan_src = src; scan_isz = isz; scan_restart = restart;  // max_index only if a stream gets copied
             } else {
                 ib = vk_transient_copy(src, (uint64_t)count * isz + 4, 4);
+#ifdef __ANDROID__
+                // (no primitive restart - most draws: a plain maximum, which the compiler vectorizes; the scalar
+                // loop with the restart test was ~9% of the render thread in the copy mode, every indexed draw)
+                if (!st.prim_restart) {
+                    uint32_t m = 0;
+                    if (isz == 2) { const uint16_t *s = src; for (uint32_t i = 0; i < count; i++) m = s[i] > m ? s[i] : m; }
+                    else { const uint32_t *s = src; for (uint32_t i = 0; i < count; i++) m = s[i] > m ? s[i] : m; }
+                    if (m > max_index) max_index = m;
+                } else
+#endif
                 if (isz == 2) { const uint16_t *s = src; for (uint32_t i = 0; i < count; i++) if (s[i] > max_index && s[i] != (uint16_t)restart) max_index = s[i]; }
                 else { const uint32_t *s = src; for (uint32_t i = 0; i < count; i++) if (s[i] > max_index && s[i] != restart) max_index = s[i]; }
             }
