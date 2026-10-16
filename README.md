@@ -38,9 +38,9 @@ On a POCO F7 Ultra with Turnip: the touch controls on screen, the performance ov
 Tested on a **POCO F7 Ultra** (Snapdragon 8 Elite / Adreno 830, Android 16) with the **Turnip Gen8 V37** driver:
 
 - the game boots, the movies play with sound, and the menus, saves and gameplay work;
-- **60 fps most of the time**, the overworld included, at the default 50% internal resolution (720p); the heaviest
-  overworld views still drop to the game's 30 fps mode. The game picks between the two, as it does on the Switch,
-  from each frame's GPU time (about 9 ms per overworld frame now, down from ~18.5 ms);
+- **a steady 60 fps**, the overworld included, at the default 50% internal resolution (720p): 98% of the time at 60
+  in our overworld measurements, with no frame over 18 ms. The game still has its own 30 fps mode, as on the Switch,
+  for when a frame can't fit;
 - **touch controls**: a floating stick, A / B / X / Y, L / R / ZL / ZR, Minus / Plus and a menu button, shown while
   no controller is connected (they hide as soon as one is). Their layout can be edited (drag them where you like,
   size, opacity) in the in-game menu's Controls tab; the Android back button opens the menu;
@@ -60,8 +60,18 @@ were the bottleneck, so on Android the translator now:
   lighting shader went from 24 to 16-19 registers and from 2884 to 1717 instructions);
 - converts half-precision values with the GPU's own instructions in fragment and compute shaders.
 
-On the CPU side, the runtime is built optimized, the game's GPU fences no longer wait for the compositor, and
-per-draw work is cached.
+On the CPU side:
+
+- **a render thread**: the game's command lists are translated to Vulkan on a thread of their own while the game
+  works on its next frame, and handed to the GPU in chunks so it starts before the whole frame is translated. The
+  game's thread went from ~11.4 to ~7.4 ms of work a frame;
+- **the Switch's core 0, emulated**: the game runs some of its job threads on the same core as its main thread, where
+  they take turns; truly parallel, a faster main thread exposed a race in its job system (a crash). Those threads now
+  take turns here too, while the game's other cores stay parallel;
+- **frame pacing** that tells the game's own 30 fps frames from a 60 fps frame that ran late, Android's performance
+  hints aimed at 60 fps for both threads, and fixes to three thread-synchronization races in the emulated kernel;
+- the runtime is built optimized, the game's GPU fences no longer wait for the compositor, and per-draw work is
+  cached.
 
 ## Why the lighting needs the Turnip driver
 

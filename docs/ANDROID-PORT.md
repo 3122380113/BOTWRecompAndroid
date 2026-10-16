@@ -345,10 +345,14 @@ escolhido pelo app. Os botões de toque somem sempre que há um controle conecta
 
 Depois, nesta ordem:
 
-1. **60 fps sustentados, como no PC:** hoje o campo fica a 60 em ~55% do tempo; os frames que estouram vêm da lógica
-   do jogo (uma thread) e da gravação de comandos nas vistas com muitos draws. Candidatos: dynamic offsets nos
-   uniforms (reaproveitar descriptor sets), gravação de comandos em outra thread, rastreamento de escrita nas
-   texturas.
+1. **60 fps sustentados (feito, 2026-10-16, v0.2.0):** no mapa aberto, 98% do tempo a 60 e nenhum quadro acima de
+   18 ms (antes ~55-70%). O que mudou: uma thread de renderização traduz as listas de comandos enquanto o jogo faz o
+   quadro seguinte, e entrega à GPU em partes nos fins de pass (`runtime/nvn/vulkan/async.c`; LARECOMP_VK_ASYNC=0
+   desliga); o núcleo 0 do Switch emulado (as threads desse núcleo se revezam, como no console: o sistema de tarefas
+   do jogo tinha uma condição de corrida que uma thread principal mais rápida expunha - `runtime/kernel.c`); o pacer
+   distingue os quadros de 2 passos do próprio jogo de um quadro de 60 que atrasou; ADPF mirando 60 fps nas duas
+   threads; três correções de sincronização no kernel (condvar, árbitro, timeout). Fixar a thread principal nos
+   núcleos mais rápidos (LARECOMP_PIN) ficou desligado: expunha a mesma condição de corrida.
 2. **Geração de quadros (adiada):** o lsfg-vk mudou de licença (MIT na v1, GPLv3 na v2, agora CC BY-NC-ND 4.0, que
    proíbe obras derivadas) por causa de forks gerados por IA; só a v1 continua MIT, e usá-la iria contra o pedido
    explícito do autor. Decisão (2026-10-16): primeiro os 60 fps sustentados; depois, se ainda fizer sentido, geração

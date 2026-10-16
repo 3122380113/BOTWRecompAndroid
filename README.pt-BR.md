@@ -38,9 +38,9 @@ Em um POCO F7 Ultra com Turnip: os controles de toque na tela e o overlay de des
 Testado em um **POCO F7 Ultra** (Snapdragon 8 Elite / Adreno 830, Android 16) com o driver **Turnip Gen8 V37**:
 
 - o jogo inicia, os vídeos tocam com som, e os menus, os saves e a jogabilidade funcionam;
-- **60 fps na maior parte do tempo**, inclusive no mapa aberto, na resolução interna padrão de 50% (720p); as vistas
-  mais pesadas do mapa ainda caem para o modo de 30 fps do jogo. O jogo escolhe entre os dois, como faz no Switch, a
-  partir do tempo de GPU de cada quadro (cerca de 9 ms por quadro no mapa aberto agora, antes ~18,5 ms);
+- **60 fps estáveis**, inclusive no mapa aberto, na resolução interna padrão de 50% (720p): 98% do tempo a 60 nas
+  nossas medições no mapa aberto, sem nenhum quadro acima de 18 ms. O jogo ainda tem o seu próprio modo de 30 fps,
+  como no Switch, para quando um quadro não cabe;
 - **controles de toque**: um analógico flutuante, A / B / X / Y, L / R / ZL / ZR, Menos / Mais e um botão de menu,
   exibidos enquanto nenhum controle está conectado (somem assim que um é conectado). O layout pode ser editado
   (arrastar para onde quiser, tamanho, opacidade) na aba Controls do menu do jogo; o botão voltar do Android abre o
@@ -61,8 +61,20 @@ traduzidos eram o gargalo, então no Android o tradutor agora:
   shader de iluminação do mapa aberto foi de 24 para 16-19 registradores e de 2884 para 1717 instruções);
 - converte valores de meia precisão com as instruções da própria GPU nos shaders de fragmento e de compute.
 
-No lado da CPU, o runtime é compilado com otimização, os fences de GPU do jogo não esperam mais o compositor, e o
-trabalho por draw é guardado em cache.
+No lado da CPU:
+
+- **uma thread de renderização**: as listas de comandos do jogo são traduzidas para Vulkan numa thread própria
+  enquanto o jogo trabalha no quadro seguinte, e entregues à GPU em partes, para ela começar antes de o quadro inteiro
+  estar traduzido. A thread do jogo passou de ~11,4 para ~7,4 ms de trabalho por quadro;
+- **o núcleo 0 do Switch, emulado**: o jogo roda algumas das suas threads de tarefas no mesmo núcleo da thread
+  principal, onde elas se revezam; em paralelo de verdade, uma thread principal mais rápida expunha uma condição de
+  corrida no sistema de tarefas (um crash). Agora essas threads se revezam aqui também, e os outros núcleos do jogo
+  seguem em paralelo;
+- **controle de ritmo de quadros** que distingue os quadros de 30 fps do próprio jogo de um quadro de 60 fps que
+  atrasou, as dicas de desempenho do Android mirando 60 fps nas duas threads, e correções de três condições de
+  corrida de sincronização no kernel emulado;
+- o runtime é compilado com otimização, os fences de GPU do jogo não esperam mais o compositor, e o trabalho por draw
+  é guardado em cache.
 
 ## Por que a iluminação precisa do driver Turnip
 

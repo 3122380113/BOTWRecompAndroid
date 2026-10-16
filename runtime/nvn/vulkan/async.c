@@ -1,4 +1,4 @@
-// Android: the game's command lists translated on a render thread of their own (LARECOMP_VK_ASYNC=1).
+// Android: the game's command lists translated on a render thread of their own (LARECOMP_VK_ASYNC=0: off).
 //
 // The game's thread records its commands into its own command memory (cmdbuf.c) and, at submit, used to translate
 // them to Vulkan right there: 3.5-5.5 ms of each frame, a third of a 60 fps frame on top of the game's own work. Here
@@ -54,8 +54,8 @@ uint64_t renderer_fence_seq(void);
 
 bool vk_async_on(void) {
     if (on < 0) {
-        const char *e = getenv("LARECOMP_VK_ASYNC");
-        on = e && atoi(e) != 0;
+        const char *e = getenv("LARECOMP_VK_ASYNC");  // (on by default: =0 turns it off)
+        on = !e || atoi(e) != 0;
         const char *a = getenv("LARECOMP_VK_ASYNC_AHEAD");
         if (a && atoi(a) > 0) ahead = atoi(a);
         if (on) LOG("[vk] async: command lists translated on a render thread (%d frame%s ahead)\n", ahead, ahead > 1 ? "s" : "");
