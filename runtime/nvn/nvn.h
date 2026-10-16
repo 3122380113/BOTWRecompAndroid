@@ -83,6 +83,9 @@ typedef struct NvnWindow {
 typedef struct NvnSync {
     volatile int signaled;
     volatile uint64_t seq;  // GPU submission this fence belongs to (renderer_fence_seq), 0 = none
+#ifdef __ANDROID__
+    volatile uint64_t lseq;  // (LARECOMP_VK_ASYNC) the render thread's request that sets seq: wait for it first
+#endif
 } NvnSync;
 
 // ---- command recording (stored in guest command memory)

@@ -105,6 +105,13 @@ public class LASRecompActivity extends SDLActivity {
                     } else if (name != null) value += "," + kv;
                 }
                 if (name != null) setenv(name, value);
+                // (debugging) the game code built on the phone, out where adb can read it: a crash's host addresses
+                if (env.contains("LARECOMP_EXPORT_GAMELIB")) {
+                    File lib = new File(res, "lasgame.so");
+                    if (lib.exists()) try (InputStream in = new FileInputStream(lib)) {
+                        copy(in, new File(getExternalFilesDir(null), "lasgame-export.so"));
+                    }
+                }
             }
         } catch (IOException | ErrnoException e) {
             Log.e(TAG, "setup: " + e);

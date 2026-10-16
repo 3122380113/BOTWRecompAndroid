@@ -43,6 +43,7 @@ struct KThread {
     KThread *anext;        // every thread of this boot (g_klock)
 #ifdef __ANDROID__
     void *dcache;          // dispatch.c: this thread's guest -> host function cache (TLS is slow in a dlopened library)
+    bool core0_held;       // kernel.c: this thread has core 0 (it runs; the others of core 0 wait)
 #endif
 };
 

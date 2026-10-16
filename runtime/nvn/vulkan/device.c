@@ -580,7 +580,18 @@ uint64_t renderer_present_count(void);
 void renderer_save_texture_tex(TexBackend *b, const char *path);
 
 static uint64_t frames, total_frames, g_frame_counter;
+#ifdef __ANDROID__
+// LARECOMP_VK_ASYNC (vulkan/async.c): the game's threads count the presents they queued, the render thread the ones
+// it ran - each side's "this frame" stays its own
+static uint64_t g_game_frames;
+bool vk_async_on(void);
+bool vk_async_is_render_thread(void);
+void vk_async_present(NvnTexture *t);
+void vk_async_drain(void);
+uint64_t renderer_present_count(void) { return vk_async_on() && !vk_async_is_render_thread() ? g_game_frames : total_frames; }
+#else
 uint64_t renderer_present_count(void) { return total_frames; }
+#endif
 uint64_t vk_frame_counter(void) { return g_frame_counter; }
 static float g_shot_crop[4] = {0, 0, 1, 1};
 static double last_fps_time;
@@ -589,12 +600,49 @@ static NvnTexture *g_last_presented;
 const float *vk_shot_crop(void) { return g_shot_crop; }
 
 void backend_present(NvnTexture *t);
+#ifdef __ANDROID__
+// The game's half of a present: pacing, input, tests - on the game's thread (its frame: renderer_present_count)
+static void present_game_half(void) {
+    extern void vk_pace_frame(void);
+    vk_pace_frame();  // (exec.c: the game's 30 fps mode when frames don't fit 60)
+    extern void input_frame(uint64_t frame);
+    input_frame(renderer_present_count());
+    static long slow_ms = -1;
+    if (slow_ms < 0) slow_ms = getenv("LARECOMP_SLOW_FRAME_MS") ? atol(getenv("LARECOMP_SLOW_FRAME_MS")) : 0;
+    static long slow_until = -1;  // LARECOMP_SLOW_FRAME_UNTIL=<frame>: the stall ends there (frame pacing recovery tests)
+    if (slow_until < 0) slow_until = getenv("LARECOMP_SLOW_FRAME_UNTIL") ? atol(getenv("LARECOMP_SLOW_FRAME_UNTIL")) : 0;
+    if (slow_ms > 0 && renderer_present_count() > 2600 && (!slow_until || (long)renderer_present_count() < slow_until)) SDL_Delay((Uint32)slow_ms);
+    extern void fnprof_frame(uint64_t frame);
+    fnprof_frame(renderer_present_count());
+    extern void warp_frame(uint64_t frame);
+    warp_frame(renderer_present_count());
+    extern void reboot_test_frame(uint64_t frame);  // runtime/main.c (LARECOMP_REBOOT_AT)
+    reboot_test_frame(renderer_present_count());
+    extern void save_editor_frame(uint64_t frame);
+    save_editor_frame(renderer_present_count());
+}
+
+void vk_present_now(NvnTexture *t);
+void backend_present(NvnTexture *t) {
+    if (!vk_async_on()) {
+        vk_present_now(t);
+        return;
+    }
+    g_game_frames++;
+    vk_async_present(t);  // (the window's half, on the render thread: vk_present_now)
+    present_game_half();
+}
+#endif
 void backend_represent(void) {
     if (g_last_presented) backend_present(g_last_presented);
     else SDL_Delay(16);
 }
 
+#ifdef __ANDROID__
+void vk_present_now(NvnTexture *t) {  // (the window's half of backend_present)
+#else
 void backend_present(NvnTexture *t) {
+#endif
     g_last_presented = t;
     TexBackend *b = vk_tex(t, true);
     b->presented = true;
@@ -645,6 +693,9 @@ void backend_present(NvnTexture *t) {
     frames++;
     total_frames++;
     g_frame_counter++;
+#ifdef __ANDROID__
+    if (!vk_async_on()) present_game_half();  // (same place as before; LARECOMP_VK_ASYNC: on the game's thread)
+#else
     extern void vk_pace_frame(void);
     vk_pace_frame();  // (exec.c: the game's 30 fps mode when frames don't fit 60)
     extern void input_frame(uint64_t frame);
@@ -662,6 +713,7 @@ void backend_present(NvnTexture *t) {
     reboot_test_frame(total_frames);
     extern void save_editor_frame(uint64_t frame);
     save_editor_frame(total_frames);
+#endif
     extern void vk_level_change_check(void);
     vk_level_change_check();
     static long shot_every = -1;
@@ -825,6 +877,9 @@ void backend_init(void) {
 // ---- in-place reboot (runtime/main.c teardown; main thread, guest threads stopped)
 void backend_reset(void) {
     if (!g_vk.dev) return;
+#ifdef __ANDROID__
+    vk_async_drain();
+#endif
     vkDeviceWaitIdle(g_vk.dev);
     extern void vk_textures_reset(void);
     extern void vk_exec_reset(void);
@@ -835,6 +890,9 @@ void backend_reset(void) {
 void backend_guest_memory_reset(void) {}  // (exec.c re-imports the heap on first use)
 void backend_clear_window(void) {
     static const float black[4] = {0, 0, 0, 1};
+#ifdef __ANDROID__
+    vk_async_drain();
+#endif
     if (g_vk.dev && vk_frame_begin(black)) vk_frame_end(NULL);
 }
 

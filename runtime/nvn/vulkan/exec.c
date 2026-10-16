@@ -41,7 +41,11 @@ void vk_collect_dead(void);
 
 // ================================================================== submissions
 // A submission = optional upload command buffer + the main one, signalling the timeline with its number.
+#ifdef __ANDROID__
+#define SUBS 16  // (LARECOMP_VK_ASYNC submits a frame in chunks: more submissions in flight)
+#else
 #define SUBS 8
+#endif
 typedef struct {
     VkCommandBuffer main, upload;
     bool main_begun, upload_begun, ts;  // ts: GPU timestamps written (profiling)
@@ -60,6 +64,7 @@ static uint64_t submit_seq;  // last submitted
 // GPU work, all of which is ahead of the present in the queue. LARECOMP_FENCE_PRESENT=1: as before.
 static uint64_t work_seq;
 static bool game_pending;
+static uint64_t last_submit_ns;  // (begin_pass: LARECOMP_VK_CHUNK_US)
 #endif
 static pthread_mutex_t seq_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool in_pass;
@@ -176,6 +181,14 @@ void vk_pace_frame(void) {
     if (first || p > 100000000ull) return;  // (loading, a hitch: not a pace)
     double busy = (p > wt ? p - wt : 0) / 1e6;
 #ifdef __ANDROID__
+    // LARECOMP_VK_ASYNC: the frame is two threads' work - the game's (busy) and the render thread's (its last frame)
+    extern bool vk_async_on(void);
+    extern uint64_t vk_async_frame_work_ns(void);
+    double render_busy = vk_async_on() ? vk_async_frame_work_ns() / 1e6 : 0;
+    double game_busy = busy;
+    if (render_busy > busy) busy = render_busy;
+#endif
+#ifdef __ANDROID__
     // (ADPF: clocks for 60 fps even in the 30 fps mode - with that mode's 33 ms as the target, a 21 ms frame looked
     // comfortable, the clocks stayed low and so did the mode)
     static int follow = -1;  // LARECOMP_ADPF_FOLLOW=1: the old target (the mode's own)
@@ -203,8 +216,9 @@ void vk_pace_frame(void) {
         static uint64_t le, lu;
 #ifdef __ANDROID__
         extern int g_present_interval;
-        LOG("[pace] period %.2f blocked %.2f busy %.2f ms exec %.2f tex %.2f interval %d slow %d\n", p / 1e6, wt / 1e6,
-            busy, (cum_exec - le) / 1e6, (prof_up_cum - lu) / 1e6, g_present_interval, pace_slow);
+        LOG("[pace] period %.2f blocked %.2f busy %.2f ms exec %.2f tex %.2f interval %d slow %d game %.2f render %.2f\n",
+            p / 1e6, wt / 1e6, busy, (cum_exec - le) / 1e6, (prof_up_cum - lu) / 1e6, g_present_interval, pace_slow,
+            game_busy, render_busy);
 #else
         LOG("[pace] period %.2f blocked %.2f busy %.2f ms exec %.2f tex %.2f\n", p / 1e6, wt / 1e6, busy,
             (cum_exec - le) / 1e6, (prof_up_cum - lu) / 1e6);
@@ -212,7 +226,9 @@ void vk_pace_frame(void) {
         le = cum_exec, lu = prof_up_cum;
     }
 #ifdef __ANDROID__
-    int o = steps == 1 && busy > 16.2;
+    // (or one that missed its vsync, whatever held it: with the render thread both halves can fit and the frame still
+    // take two vsyncs - slow motion all the same)
+    int o = steps == 1 && (busy > 16.2 || p > 20000000ull);
 #else
     int o = busy > 16.2;
 #endif
@@ -507,6 +523,7 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
     pthread_mutex_lock(&seq_lock);
     submit_seq++;
 #ifdef __ANDROID__
+    last_submit_ns = SDL_GetTicksNS();
     if (game_pending) work_seq = submit_seq;  // (cleared when backend_execute is done: flushes inside it come first)
 #endif
     pthread_mutex_unlock(&seq_lock);
@@ -1024,6 +1041,18 @@ static uint32_t level_extent(uint32_t v, uint32_t lv) { v >>= lv; return v ? v :
 static void begin_pass(void) {
     if (in_pass && !st.rt_dirty) return;
     vk_end_pass();
+#ifdef __ANDROID__
+    {   // LARECOMP_VK_ASYNC: the GPU starts on a frame while the render thread still translates the rest of it - a
+        // submission at a pass boundary (no pass split: on a tiler that would store and reload its tiles) once
+        // LARECOMP_VK_CHUNK_US of translation has gone by. Translating a whole frame and then running it on the GPU
+        // (~6 + ~11 ms) was the frame's critical path: the game waits on the previous frame's fence.
+        extern bool vk_async_on(void);
+        static long chunk = -1;
+        if (chunk < 0) { const char *e = getenv("LARECOMP_VK_CHUNK_US"); chunk = e ? atol(e) : 2000; }
+        if (chunk > 0 && vk_async_on() && last_submit_ns && SDL_GetTicksNS() - last_submit_ns > (uint64_t)chunk * 1000)
+            renderer_submit();
+    }
+#endif
     if (dl_on == 2) renderer_flush();  // (LARECOMP_VK_DEVLOST_TRACE=2: each pass its own submission)
     st.rt_dirty = false;
     VkCommandBuffer cb = vk_cmd();
@@ -2184,6 +2213,10 @@ static uint64_t gmem_tried;  // heap size the import was last attempted for (gme
 // draw reads (the game's lighting: lights listed by compute, read by the fragment shaders). Freed on reset (vkFreeMemory
 // unmaps it; runtime/main.c then remaps the whole window). LARECOMP_VK_NO_PLACED=1: off (CPU copies).
 bool vk_heap_place(uint64_t size) {
+#ifdef __ANDROID__
+    extern void vk_async_drain(void);
+    vk_async_drain();  // (the render thread idle: vulkan/async.c)
+#endif
     if (!size) return false;
     vk_wait_ready();
     if (gmem_buf) return true;
@@ -4295,7 +4328,19 @@ static void exec_list(uint64_t handle, int depth) {
     }
 }
 
+#ifdef __ANDROID__
+// LARECOMP_VK_ASYNC=1: queued for the render thread (vulkan/async.c), which runs vk_execute_now
+bool vk_async_on(void);
+void vk_async_execute(uint64_t handle);
+void vk_execute_now(uint64_t handle);
 void backend_execute(uint64_t handle) {
+    if (vk_async_on()) vk_async_execute(handle);
+    else vk_execute_now(handle);
+}
+void vk_execute_now(uint64_t handle) {
+#else
+void backend_execute(uint64_t handle) {
+#endif
     PROF_T0();
 #ifdef __ANDROID__
     game_pending = true;  // (renderer_fence_seq)

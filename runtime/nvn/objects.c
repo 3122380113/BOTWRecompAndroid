@@ -118,7 +118,23 @@ NVN(nvnQueueSubmitCommands) {
     for (int i = 0; i < n; i++) backend_execute(handles[i]);
 }
 NVN(nvnQueueFlush) { (void)c; }
+#ifdef __ANDROID__
+bool vk_async_on(void);
+void vk_async_drain(void);
+uint64_t vk_async_fence(uint64_t guest_sync);
+void vk_async_wait_id(uint64_t id);
+void kernel_blocking_begin(void);
+void kernel_blocking_end(void);
+NVN(nvnQueueFinish) {
+    (void)c;
+    kernel_blocking_begin();  // (a long wait: core 0 to the game's other threads, kernel.c)
+    if (vk_async_on()) vk_async_drain();  // (the render thread's translation first: vulkan/async.c)
+    renderer_sync();
+    kernel_blocking_end();
+}
+#else
 NVN(nvnQueueFinish) { (void)c; renderer_sync(); }
+#endif
 
 static NvnSync *sync_of(uint64_t guest) {
     NvnSync *s = HOST(NvnSync, guest);
@@ -127,7 +143,16 @@ static NvnSync *sync_of(uint64_t guest) {
 }
 uint64_t renderer_fence_seq(void);
 void renderer_wait_seq(uint64_t seq);
+#ifdef __ANDROID__
+NVN(nvnQueueFenceSync) {
+    NvnSync *s = sync_of(A(1));
+    s->signaled = 1;
+    if (vk_async_on()) s->lseq = vk_async_fence(A(1));  // (its submission is known once the render thread gets there)
+    else s->seq = renderer_fence_seq();
+}
+#else
 NVN(nvnQueueFenceSync) { NvnSync *s = sync_of(A(1)); s->signaled = 1; s->seq = renderer_fence_seq(); }
+#endif
 void nvn_sync_set_seq(uint64_t guest, uint64_t seq) { NvnSync *s = sync_of(guest); s->signaled = 1; s->seq = seq; }
 NVN(nvnQueueWaitSync) { RET(1); }
 
@@ -143,9 +168,19 @@ NVN(nvnSyncWait) {  // NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED
     if (getenv("LARECOMP_LOG_SYNC") && n++ % 60 == 0) LOG("[nvn] SyncWait #%llu (lr %llx)\n", (unsigned long long)n, c->x[30]);
     static int whole = -1;  // LARECOMP_SYNC_ALL=1: old behaviour, wait for all submitted work
     if (whole < 0) whole = getenv("LARECOMP_SYNC_ALL") ? 1 : 0;
+#ifdef __ANDROID__
+    kernel_blocking_begin();  // (a long wait: core 0 to the game's other threads, kernel.c)
+    if (vk_async_on()) {  // the render thread's translation of the fence first (vulkan/async.c)
+        if (flush || whole) vk_async_drain();
+        else vk_async_wait_id(sync_of(A(0))->lseq);
+    }
+#endif
     if (flush) renderer_flush();
     else if (whole) renderer_sync();
     else renderer_wait_seq(sync_of(A(0))->seq);  // only the submission that holds this fence
+#ifdef __ANDROID__
+    kernel_blocking_end();
+#endif
     RET(0);
 }
 NVN(nvnSyncCreateGLSync) { RET(0); }

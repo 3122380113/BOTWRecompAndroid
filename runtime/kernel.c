@@ -188,6 +188,66 @@ void rt_unwind_point(void) {
     if (__builtin_expect(g_rt_unwind, 0) && t_cur) longjmp(t_cur->unwind, 1);
 }
 
+#ifdef __ANDROID__
+// ---- core 0, one thread at a time (LARECOMP_NO_CORE0=1: off)
+// On the Switch the threads of one core take turns: one runs until it blocks in the kernel (a wait, a sleep, a yield,
+// an IPC request), and only then does another of that core run. The game relies on it. Its job workers are created
+// for the main thread's core (core -2: the process's, 0) at the main thread's priority, so to the main thread a
+// worker's "run the job, then tell its owner" is one step - here, with every thread truly parallel, the main thread
+// sometimes moved on between the two and the worker told an owner that was gone (2026-10-16: crashes, and a hang
+// when the notification was skipped instead: hle/job_race.c). So the threads of core 0 take turns here too: a ticket
+// lock, held while the thread runs and handed on at its blocking SVCs (and around the host's long waits for the
+// renderer: kernel_blocking_begin / _end). Cores 1-3 stay parallel, as on the Switch.
+static pthread_mutex_t c0_m = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t c0_cv = PTHREAD_COND_INITIALIZER;
+static uint64_t c0_next, c0_serving;
+static int c0_on = -1;
+
+static void core0_acquire(KThread *t) {
+    if (c0_on < 0) c0_on = !getenv("LARECOMP_NO_CORE0");
+    if (!t || !c0_on || t->core != 0 || t->core0_held) return;
+    pthread_mutex_lock(&c0_m);
+    uint64_t my = c0_next++;
+    if (c0_serving != my) {  // (waiting for core 0 is time off the core: blocked, as a kernel wait - frame pacing)
+        uint64_t t0 = plat_now_ns();
+        while (c0_serving != my) pthread_cond_wait(&c0_cv, &c0_m);
+        g_blocked_ns += plat_now_ns() - t0;
+    }
+    pthread_mutex_unlock(&c0_m);
+    t->core0_held = true;
+}
+
+static void core0_release(KThread *t) {
+    if (!t || !t->core0_held) return;
+    t->core0_held = false;
+    pthread_mutex_lock(&c0_m);
+    c0_serving++;
+    pthread_cond_broadcast(&c0_cv);
+    pthread_mutex_unlock(&c0_m);
+}
+
+// The SVCs a thread blocks in on the Switch (the core goes to another of its threads meanwhile)
+static bool svc_blocks(uint32_t imm) {
+    switch (imm) {
+    case 0x0A: case 0x0B: case 0x18: case 0x1A: case 0x1C: case 0x21: case 0x22: case 0x34: case 0x43: return true;
+    default: return false;
+    }
+}
+
+// The host's own long waits on a guest thread (the GPU, the render thread): core 0 goes to its other threads meanwhile
+// (the wait counts as blocked, as a kernel wait: the frame pacer measures the presenting thread's own work)
+static __thread uint64_t blocking_t0;
+void kernel_blocking_begin(void) {
+    blocking_t0 = plat_now_ns();
+    core0_release(t_cur);
+}
+void kernel_blocking_end(void) {
+    core0_acquire(t_cur);
+    if (blocking_t0) g_blocked_ns += plat_now_ns() - blocking_t0;
+    blocking_t0 = 0;
+}
+#endif
+
 static void *thread_main(void *arg) {
     KThread *t = arg;
     t_cur = t;
@@ -196,7 +256,15 @@ static void *thread_main(void *arg) {
 #endif
     crash_handler_install();
     rt_set_fpcr(0);
+#ifdef __ANDROID__
+    if (!setjmp(t->unwind)) {
+        core0_acquire(t);
+        guest_call(&t->cpu, t->entry);
+    }
+    core0_release(t);
+#else
     if (!setjmp(t->unwind)) guest_call(&t->cpu, t->entry);
+#endif
     pthread_mutex_lock(&g_klock);
     t->finished = true;
     kernel_signal(&t->obj);
@@ -561,7 +629,14 @@ static int prof_svc = -1;
 static void svc_entry(Cpu *c, uint32_t imm, uint64_t pc);
 void rt_svc(Cpu *c, uint32_t imm, uint64_t pc) {
     rt_unwind_point();
+#ifdef __ANDROID__
+    bool blocks = svc_blocks(imm);
+    if (blocks) core0_release(t_cur);
     svc_entry(c, imm, pc);
+    if (blocks) core0_acquire(t_cur);
+#else
+    svc_entry(c, imm, pc);
+#endif
     rt_unwind_point();
 }
 
@@ -647,7 +722,12 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
     case 0x08: {  // CreateThread(_, entry, arg, stack_top, prio, core)
         KThread *t = thread_new(x[1], x[2], x[3], (int)x[4], (int)(int32_t)x[5]);
         t->handle = kernel_new_handle(&t->obj);
+#ifdef __ANDROID__
+        LOG("[kernel] CreateThread entry=%llx arg=%llx stack=%llx prio=%d core=%d -> %x (by %x)\n", x[1], x[2], x[3],
+            (int)x[4], (int)(int32_t)x[5], t->handle, t_cur ? t_cur->handle : 0);
+#else
         LOG("[kernel] CreateThread entry=%llx stack=%llx prio=%d -> %x\n", x[1], x[3], (int)x[4], t->handle);
+#endif
         x[0] = R_OK;
         x[1] = t->handle;
         break;

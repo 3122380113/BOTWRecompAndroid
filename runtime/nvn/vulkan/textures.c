@@ -412,6 +412,10 @@ static TexBackend *tex_backend(NvnTexture *t) {
 }
 
 void backend_texture_destroyed(NvnTexture *t) {
+#ifdef __ANDROID__
+    extern void vk_async_drain(void);
+    vk_async_drain();  // (the render thread idle: vulkan/async.c)
+#endif
     TexBackend *b = t->backend;
     if (b) {
         extern void vk_alias_texture_destroyed(NvnTexture *t);  // (exec.c copy aliases: a source's contents handed over)
@@ -622,6 +626,10 @@ void backend_pool_written(uint64_t addr, uint64_t size) { (void)addr; (void)size
 
 // Host-produced texel data (decoded video, any thread): applied on the render thread at the texture's next use.
 void renderer_upload_rgba(NvnTexture *t, const void *rgba, uint32_t w, uint32_t h, uint32_t stride) {
+#ifdef __ANDROID__
+    extern void vk_async_drain(void);
+    vk_async_drain();  // (the render thread idle: vulkan/async.c)
+#endif
     TexBackend *b = t->backend;
     if (!b) return;  // the game binds the texture before decoding into it; first frames may arrive earlier
     void *copy = malloc((size_t)stride * h);

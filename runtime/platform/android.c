@@ -418,17 +418,21 @@ static void pin_to_fastest_cores(void) {
     LOG("[android] presenting thread on the %d fastest cores (%ld MHz): %s\n", k, best / 1000, r ? strerror(errno) : "ok");
 }
 
-void plat_frame_work(uint64_t work_ns, uint64_t target_ns) {
-    static int state;  // 0 untried, 1 on, -1 off
+// One session per thread that reports (slot 0: the presenting thread, plat_frame_work; slot 1: the render thread,
+// plat_render_work - LARECOMP_VK_ASYNC, which the system otherwise left on a middling clock: its translation took
+// twice as long as on the game's thread)
+static void adpf_work(int slot, uint64_t work_ns, uint64_t target_ns) {
+    static int loaded;  // 0 untried, 1 on, -1 off
     static APerformanceHintManager *(*get_manager)(void);
     static APerformanceHintSession *(*create)(APerformanceHintManager *, const int32_t *, size_t, int64_t);
     static int (*report)(APerformanceHintSession *, int64_t);
     static int (*retarget)(APerformanceHintSession *, int64_t);
-    static APerformanceHintSession *session;
-    static uint64_t target;
-    if (state < 0) return;
-    if (!state) {
-        state = -1;
+    static int state[2];  // per slot: 0 untried, 1 on, -1 off
+    static APerformanceHintSession *session[2];
+    static uint64_t target[2];
+    if (loaded < 0 || state[slot] < 0) return;
+    if (!loaded) {
+        loaded = -1;
         if (getenv("LARECOMP_NO_ADPF")) return;
         void *lib = dlopen("libandroid.so", RTLD_NOW);
         if (!lib) return;
@@ -437,15 +441,24 @@ void plat_frame_work(uint64_t work_ns, uint64_t target_ns) {
             dlsym(lib, "APerformanceHint_createSession");
         report = (int (*)(APerformanceHintSession *, int64_t))dlsym(lib, "APerformanceHint_reportActualWorkDuration");
         retarget = (int (*)(APerformanceHintSession *, int64_t))dlsym(lib, "APerformanceHint_updateTargetWorkDuration");
-        APerformanceHintManager *m = get_manager && create && report && retarget ? get_manager() : NULL;
-        pin_to_fastest_cores();
-        int32_t tid = (int32_t)gettid();
-        session = m ? create(m, &tid, 1, (int64_t)target_ns) : NULL;
-        LOG("[android] performance hint session: %s\n", session ? "on" : "not available");
-        if (!session) return;
-        target = target_ns;
-        state = 1;
+        if (!get_manager || !create || !report || !retarget) return;
+        loaded = 1;
     }
-    if (target_ns != target) { retarget(session, (int64_t)target_ns); target = target_ns; }
-    if (work_ns) report(session, (int64_t)work_ns);
+    if (!state[slot]) {
+        state[slot] = -1;
+        APerformanceHintManager *m = get_manager();
+        if (slot == 0) pin_to_fastest_cores();
+        int32_t tid = (int32_t)gettid();
+        session[slot] = m ? create(m, &tid, 1, (int64_t)target_ns) : NULL;
+        LOG("[android] performance hint session (%s thread): %s\n", slot ? "render" : "presenting",
+            session[slot] ? "on" : "not available");
+        if (!session[slot]) return;
+        target[slot] = target_ns;
+        state[slot] = 1;
+    }
+    if (target_ns != target[slot]) { retarget(session[slot], (int64_t)target_ns); target[slot] = target_ns; }
+    if (work_ns) report(session[slot], (int64_t)work_ns);
 }
+
+void plat_frame_work(uint64_t work_ns, uint64_t target_ns) { adpf_work(0, work_ns, target_ns); }
+void plat_render_work(uint64_t work_ns, uint64_t target_ns) { adpf_work(1, work_ns, target_ns); }
