@@ -338,24 +338,23 @@ exatamente igual).
 
 ## Próximos passos
 
-Em andamento (2026-10-16): a release do APK com tudo no celular (Fases 5 e 6). O app escolhe a pasta do jogo pelo
-seletor do Android (SAF), copia `exefs/` e `romfs/`, gera o `romfs.bin` e compila o código do jogo no próprio aparelho
-(`runtime/gamebuild.c`, com o Python 3.14 oficial para Android e o Zig: `android/deps/build_gen_deps.sh`); o driver
-Turnip também é escolhido pelo app. Falta testar o fluxo completo no aparelho.
+Feito (2026-10-16): a release do APK com tudo no celular (Fases 5 e 6), publicada como v0.1.0 e v0.1.1 no GitHub:
+o app escolhe a pasta do jogo pelo seletor do Android (SAF), copia `exefs/` e `romfs/`, gera o `romfs.bin` e compila
+o código do jogo no próprio aparelho (`runtime/gamebuild.c`, ~20 min no Snapdragon 8 Elite); o driver Turnip também é
+escolhido pelo app. Os botões de toque somem sempre que há um controle conectado (item 1 da lista anterior).
 
 Depois, nesta ordem:
 
-1. **Botões na tela com controle conectado:** esconder o controle de toque sempre que houver um controle conectado
-   (inclusive quando ele já estava conectado ao abrir o app).
-2. **Geração de quadros opcional (LSFG):** integrar o lsfg-vk direto no present do renderer (o Vulkan é nosso: não
-   precisa capturar a tela), com os shaders da Lossless.dll fornecida pelo próprio usuário (não pode ser distribuída).
-   Encaixa na folga da GPU (~9-13 ms por frame no modo 30): o jogo segue a 30 nas áreas pesadas e a tela mostra 60.
-   Conferir a licença do lsfg-vk antes (GPL afetaria a licença MIT do projeto).
-3. **60 fps sustentados, como no PC:** hoje o campo fica a 60 em ~55% do tempo; os frames que estouram vêm da lógica
+1. **60 fps sustentados, como no PC:** hoje o campo fica a 60 em ~55% do tempo; os frames que estouram vêm da lógica
    do jogo (uma thread) e da gravação de comandos nas vistas com muitos draws. Candidatos: dynamic offsets nos
    uniforms (reaproveitar descriptor sets), gravação de comandos em outra thread, rastreamento de escrita nas
    texturas.
-4. **Além do Turnip:** rodar em outras GPUs (Mali, Xclipse, Adreno com o driver da Qualcomm). O bloqueio é a memória
+2. **Geração de quadros (adiada):** o lsfg-vk mudou de licença (MIT na v1, GPLv3 na v2, agora CC BY-NC-ND 4.0, que
+   proíbe obras derivadas) por causa de forks gerados por IA; só a v1 continua MIT, e usá-la iria contra o pedido
+   explícito do autor. Decisão (2026-10-16): primeiro os 60 fps sustentados; depois, se ainda fizer sentido, geração
+   de quadros própria com o AMD FidelityFX FSR 3 (MIT), sem Lossless.dll (o jogo não dá vetores de movimento: a
+   qualidade é a dúvida).
+3. **Além do Turnip:** rodar em outras GPUs (Mali, Xclipse, Adreno com o driver da Qualcomm). O bloqueio é a memória
    global dos shaders sem `VK_EXT_map_memory_placed`: hoje o fallback por cópias da CPU quebra a iluminação (o
    compute escreve e o fragment lê no mesmo frame). Caminhos: cópias de volta pela GPU no mesmo frame,
    `VK_EXT_external_memory_host` onde existir, ou `adrenotools_import_user_mem` no driver da Qualcomm.
