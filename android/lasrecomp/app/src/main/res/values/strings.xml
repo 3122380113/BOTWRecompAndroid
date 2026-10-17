@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="shortcut_system_driver">System driver</string>
+    <string name="shortcut_system_driver_long">Start with the system driver</string>
+</resources>

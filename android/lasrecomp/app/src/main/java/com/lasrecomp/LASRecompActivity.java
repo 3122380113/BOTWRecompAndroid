@@ -88,6 +88,7 @@ public class LASRecompActivity extends SDLActivity {
             File gen = new File(getFilesDir(), "gen");
             unpackGen(gen);
             setenv("LARECOMP_GEN_DIR", gen.getAbsolutePath());
+            if (getIntent() != null && SYSTEM_DRIVER.equals(getIntent().getAction())) dropCustomDriver();
             File driver = customDriver();
             setenv("LARECOMP_VK_DRIVER", driver != null ? driver.getAbsolutePath() : "");
             // testing: the runtime's LARECOMP_* switches from the launch intent, separated by commas (adb shell drops
@@ -223,10 +224,29 @@ public class LASRecompActivity extends SDLActivity {
     // Back to the system's Vulkan driver: the chosen package and its unpacked copy go (from the next start on)
     public static void useSystemDriver() {
         new Thread(() -> {
-            deleteTree(new File(self.getExternalFilesDir(null), "drivers"));
-            deleteTree(new File(self.getFilesDir(), "drivers"));
+            self.dropCustomDriver();
             nativeDriverPicked("-");
         }, "driver").start();
+    }
+
+    private void dropCustomDriver() {
+        deleteTree(new File(getExternalFilesDir(null), "drivers"));
+        deleteTree(new File(getFilesDir(), "drivers"));
+    }
+
+    // The app icon's long-press shortcut (res/xml/shortcuts.xml): the system driver, settings out of reach or not - a
+    // custom driver that draws garbage (Turnip_v26.3.0-R6 on an Adreno 830: stripes, the menus unreadable) or crashes.
+    // Before the driver loads when it starts the app; a running one (a single instance) drops it and starts again.
+    static final String SYSTEM_DRIVER = "com.lasrecomp.action.SYSTEM_DRIVER";
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        if (intent != null && SYSTEM_DRIVER.equals(intent.getAction())) {
+            Log.i(TAG, "shortcut: back to the system driver");
+            dropCustomDriver();
+            restartApp();
+        }
     }
 
     // a new process: the driver is loaded once, at start
