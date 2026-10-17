@@ -139,8 +139,15 @@ folders `exefs` and `romfs`) copied somewhere on the phone, and, for 60 fps on a
 4. Optional, for 60 fps on Adreno: **Settings > Prelaunch > Vulkan driver > Choose driver**, pick the Turnip `.zip`,
    then **Restart now**. Without it the game runs on the phone's own driver, lighting included, at 30 fps.
    If a driver leaves the screen garbled or the app won't open, long-press the app icon and choose
-   **System driver**: the app goes back to the phone's own driver. Tested: **Turnip Gen8 V37** works;
-   **Turnip v26.3.0-R6** draws garbage on the Adreno 830.
+   **System driver**: the app goes back to the phone's own driver. Tested on the Adreno 830 (Snapdragon 8 Elite):
+
+   | Driver | Result |
+   | --- | --- |
+   | Turnip Gen8 V37 | works, 60 fps |
+   | [whitebelyash](https://github.com/whitebelyash/freedreno_turnip-CI/releases) Stable Turnip V2, Mainline Turnip V32, A8XX Turnip V29 | work, 60 fps |
+   | Turnip v26.3.0-R6 | garbled screen, then a crash in game |
+   | [K11MCH1](https://github.com/K11MCH1/AdrenoToolsDrivers/releases) Turnip A8XX Draft (`turnip_a8xx.zip`) | the GPU stops responding (device lost) |
+   | K11MCH1 Turnip v26.0.0 R8 | built for the A7xx: no GPU here, so the app uses the phone's own driver |
 5. **Play**, with the touch controls or a controller. The on-screen menu button, the back button or Minus + Plus on a
    controller opens the in-game menu.
 
