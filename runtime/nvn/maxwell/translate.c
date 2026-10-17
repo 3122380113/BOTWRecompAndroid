@@ -25,6 +25,8 @@
 uint64_t maxwell_gmem_base, maxwell_gmem_size;
 bool maxwell_gmem_map_all;
 bool maxwell_gmem_miss_log;
+unsigned maxwell_gmem_miss_stages = ~0u;
+#define GMISS_ON(st) (maxwell_gmem_miss_log && (maxwell_gmem_miss_stages >> (st) & 1u))
 bool maxwell_brx_window;
 bool maxwell_static_stacks;
 bool maxwell_structured;
@@ -1438,7 +1440,7 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
                     if (d != RZ) {
                         char fast[160], slow[160];
                         snprintf(fast, sizeof fast, gl_small[size], "gfast_.w[fw]");
-                        snprintf(slow, sizeof slow, gl_small[size], maxwell_gmem_miss_log ? "gmiss(ga)" : "gmem_.w[uint(ga >> 2)]");
+                        snprintf(slow, sizeof slow, gl_small[size], GMISS_ON(c->stage) ? "gmiss(ga)" : "gmem_.w[uint(ga >> 2)]");
                         c->reg_used[d] = 1;
                         sp(&c->body, "      r%d = fw != 0xFFFFFFFFu ? %s : ok ? %s : 0u;\n", d, fast, slow);
                     }
@@ -1446,7 +1448,7 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
                     for (int k = 0; k < nw; k++)
                         if (d != RZ && d + k < RZ) {
                             c->reg_used[d + k] = 1;
-                            if (maxwell_gmem_miss_log)
+                            if (GMISS_ON(c->stage))
                                 sp(&c->body, "      r%d = fw != 0xFFFFFFFFu ? gfast_.w[fw + %du] : ok ? gmiss(ga) : 0u;\n", d + k, k);
                             else
                                 sp(&c->body, "      r%d = fw != 0xFFFFFFFFu ? gfast_.w[fw + %du] : ok ? gmem_.w[uint(ga >> 2) + %du] : 0u;\n",
@@ -2236,19 +2238,25 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     if (info->uses_gmem_map) {  // (compute) the dispatch's storage buffers, device-local: gmap[i] = heap offset, size, word
         sp(&s, "layout(std140, set = %d, binding = %d) uniform GMap { uvec4 gmap[%d]; };\n", set, GMAP_BUFFER_INDEX, GMAP_MAX + 1);
         sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GFast { uint w[]; } gfast_;\n", set, GFAST_BUFFER_INDEX,
-           c->uses_gmem_store || maxwell_gmem_miss_log ? "" : "readonly ");
+           c->uses_gmem_store ? "" : "readonly ");
         if (maxwell_gmem_map_all)  // (Android's copy mode: the tables are sorted by address and grew with the ranges
                                    // learned from misses - a binary search: the lighting reads the light list in its
                                    // inner loop, every read through here)
-            sp(&s, "uint gfind(uint g) { uint lo = 0u, hi = gmap[%d].x; while (lo < hi) { uint m = (lo + hi) >> 1; "
-                   "if (gmap[m].x <= g) lo = m + 1u; else hi = m; } if (lo == 0u) return 0xFFFFFFFFu; uint o = g - gmap[lo - 1u].x; "
-                   "return o < gmap[lo - 1u].y ? gmap[lo - 1u].z + (o >> 2) : 0xFFFFFFFFu; }\n", GMAP_MAX);
+            sp(&s, "uvec3 gc_ = uvec3(0u, 0u, 0u);\n"  // (the entry last found: the next read nearly always hits it - the
+                                                        // lighting's loop over the light list; the copy mode's lit pass ran
+                                                        // ~9x slower per pixel than Turnip's, every read searching the table)
+                   "uint gfind(uint g) { uint o = g - gc_.x; if (o < gc_.y) return gc_.z + (o >> 2); "
+                   "uint lo = 0u, hi = gmap[%d].x; while (lo < hi) { uint m = (lo + hi) >> 1; "
+                   "if (gmap[m].x <= g) lo = m + 1u; else hi = m; } if (lo == 0u) return 0xFFFFFFFFu; uvec4 e = gmap[lo - 1u]; "
+                   "o = g - e.x; if (o >= e.y) return 0xFFFFFFFFu; gc_ = e.xyz; return e.z + (o >> 2); }\n", GMAP_MAX);
         else
         sp(&s, "uint gfind(uint g) { uint n = gmap[%d].x; for (uint i = 0u; i < n; i++) { uint o = g - gmap[i].x; "
                "if (g >= gmap[i].x && o < gmap[i].y) return gmap[i].z + (o >> 2); } return 0xFFFFFFFFu; }\n", GMAP_MAX);
-        if (maxwell_gmem_miss_log)
-            sp(&s, "uint gmiss(uint64_t ga) { if (uint(gfast_.w.length()) > %uu + 65u) { uint k = atomicAdd(gfast_.w[%uu], 1u); "
-                   "if (k < 64u) gfast_.w[%uu + 1u + k] = uint(ga); } return 0u; }\n", GMISS_WORD, GMISS_WORD, GMISS_WORD);
+        if (GMISS_ON(stage)) {
+            sp(&s, "layout(std430, set = %d, binding = %d) buffer GMiss { uint w[]; } gmiss_;\n", set, GMISS_BUFFER_INDEX);
+            sp(&s, "uint gmiss(uint64_t ga) { uint k = atomicAdd(gmiss_.w[0], 1u); if (k < 64u) gmiss_.w[1u + k] = uint(ga); "
+                   "return 0u; }\n");
+        }
     }
     if (c->uses_rscale && stage != STAGE_VERTEX) {
         sp(&s, "layout(std140, set = %d, binding = 18) uniform RScale { vec4 rscale[%d]; };\n", set,
@@ -2296,6 +2304,13 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
             sp(&s, "layout(location = %d) out %s c%d;\n", rt, kind == 1 ? "ivec4" : kind == 2 ? "uvec4" : "vec4", rt);
         }
         if (c->omap_depth) info->writes_depth = true;
+        // (Android's copy mode: the miss log's store, even never run, made the depth test late - every hidden pixel
+        // shaded, the lit pass ~2x slower; with no discard, depth write or store of its own the shader's depth test
+        // is early anyway - and with a discard too when the draw writes no depth / stencil: the alpha-tested lit
+        // shaders, after the depth prepass)
+        if (GMISS_ON(stage) && info->uses_gmem_map && !c->uses_gmem_store && !c->omap_depth &&
+            (!info->uses_discard || (key && key->no_ds_write)))
+            sp(&s, "layout(early_fragment_tests) in;\n");
     } else {
         sp(&s, "layout(local_size_x_id = 0, local_size_y_id = 1, local_size_z_id = 2) in;\n");
     }

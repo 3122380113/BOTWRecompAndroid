@@ -421,7 +421,8 @@ static void pin_to_fastest_cores(void) {
 // One session per thread that reports (slot 0: the presenting thread, plat_frame_work; slot 1: the render thread,
 // plat_render_work - LARECOMP_VK_ASYNC, which the system otherwise left on a middling clock: its translation took
 // twice as long as on the game's thread)
-static void adpf_work(int slot, uint64_t work_ns, uint64_t target_ns) {
+typedef struct AWorkDuration AWorkDuration;
+static void adpf_work(int slot, uint64_t work_ns, uint64_t target_ns, uint64_t gpu_ns) {
     static int loaded;  // 0 untried, 1 on, -1 off
     static APerformanceHintManager *(*get_manager)(void);
     static APerformanceHintSession *(*create)(APerformanceHintManager *, const int32_t *, size_t, int64_t);
@@ -430,6 +431,12 @@ static void adpf_work(int slot, uint64_t work_ns, uint64_t target_ns) {
     static int state[2];  // per slot: 0 untried, 1 on, -1 off
     static APerformanceHintSession *session[2];
     static uint64_t target[2];
+    // (API 35+: a work duration with the GPU's time - the governor then raises the GPU's clock too)
+    static AWorkDuration *(*wd_create)(void);
+    static void (*wd_start)(AWorkDuration *, int64_t), (*wd_total)(AWorkDuration *, int64_t), (*wd_cpu)(AWorkDuration *, int64_t),
+        (*wd_gpu)(AWorkDuration *, int64_t);
+    static int (*report2)(APerformanceHintSession *, AWorkDuration *);
+    static AWorkDuration *wd;
     if (loaded < 0 || state[slot] < 0) return;
     if (!loaded) {
         loaded = -1;
@@ -442,6 +449,14 @@ static void adpf_work(int slot, uint64_t work_ns, uint64_t target_ns) {
         report = (int (*)(APerformanceHintSession *, int64_t))dlsym(lib, "APerformanceHint_reportActualWorkDuration");
         retarget = (int (*)(APerformanceHintSession *, int64_t))dlsym(lib, "APerformanceHint_updateTargetWorkDuration");
         if (!get_manager || !create || !report || !retarget) return;
+        wd_create = (AWorkDuration * (*)(void)) dlsym(lib, "AWorkDuration_create");
+        wd_start = (void (*)(AWorkDuration *, int64_t))dlsym(lib, "AWorkDuration_setWorkPeriodStartTimestampNanos");
+        wd_total = (void (*)(AWorkDuration *, int64_t))dlsym(lib, "AWorkDuration_setActualTotalDurationNanos");
+        wd_cpu = (void (*)(AWorkDuration *, int64_t))dlsym(lib, "AWorkDuration_setActualCpuDurationNanos");
+        wd_gpu = (void (*)(AWorkDuration *, int64_t))dlsym(lib, "AWorkDuration_setActualGpuDurationNanos");
+        report2 = (int (*)(APerformanceHintSession *, AWorkDuration *))dlsym(lib, "APerformanceHint_reportActualWorkDuration2");
+        if (wd_create && wd_start && wd_total && wd_cpu && wd_gpu && report2) wd = wd_create();
+        LOG("[android] performance hints with the GPU's time: %s\n", wd ? "yes" : "no (API < 35)");
         loaded = 1;
     }
     if (!state[slot]) {
@@ -457,8 +472,20 @@ static void adpf_work(int slot, uint64_t work_ns, uint64_t target_ns) {
         state[slot] = 1;
     }
     if (target_ns != target[slot]) { retarget(session[slot], (int64_t)target_ns); target[slot] = target_ns; }
+    if (gpu_ns && wd) {
+        int64_t now = (int64_t)plat_now_ns(), cpu = (int64_t)(work_ns ? work_ns : 1), gpu = (int64_t)gpu_ns;
+        wd_start(wd, now - (cpu > gpu ? cpu : gpu));
+        wd_total(wd, cpu > gpu ? cpu : gpu);
+        wd_cpu(wd, cpu);
+        wd_gpu(wd, gpu);
+        int r = report2(session[slot], wd);
+        static bool told;
+        if (r && !told) { told = true; LOG("[android] performance hint with the GPU's time: error %d\n", r); }
+        if (!r) return;
+    }
     if (work_ns) report(session[slot], (int64_t)work_ns);
 }
 
-void plat_frame_work(uint64_t work_ns, uint64_t target_ns) { adpf_work(0, work_ns, target_ns); }
-void plat_render_work(uint64_t work_ns, uint64_t target_ns) { adpf_work(1, work_ns, target_ns); }
+void plat_frame_work(uint64_t work_ns, uint64_t target_ns) { adpf_work(0, work_ns, target_ns, 0); }
+void plat_frame_work_gpu(uint64_t cpu_ns, uint64_t gpu_ns, uint64_t target_ns) { adpf_work(0, cpu_ns, target_ns, gpu_ns); }
+void plat_render_work(uint64_t work_ns, uint64_t target_ns) { adpf_work(1, work_ns, target_ns, 0); }

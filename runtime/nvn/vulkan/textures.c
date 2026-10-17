@@ -250,9 +250,20 @@ typedef struct { VkImage img; VmaAllocation mem; VkImageView view; uint64_t seq;
 static Dead *dead;
 static int ndead, cap_dead;
 static void views_forget(TexBackend *b);
+#ifdef __ANDROID__
+// (the render thread (vulkan/async.c) collects and defers too, the game thread meanwhile: the list grew under a
+// collection - a crash in free() after a level change)
+static pthread_mutex_t dead_lock = PTHREAD_MUTEX_INITIALIZER;
+#define DEAD_LOCK() pthread_mutex_lock(&dead_lock)
+#define DEAD_UNLOCK() pthread_mutex_unlock(&dead_lock)
+#else
+#define DEAD_LOCK() ((void)0)
+#define DEAD_UNLOCK() ((void)0)
+#endif
 
 void vk_collect_dead(void) {
     uint64_t done = vk_completed_seq();
+    DEAD_LOCK();
     int k = 0;
     for (int i = 0; i < ndead; i++) {
         if (dead[i].seq > done) { dead[k++] = dead[i]; continue; }
@@ -260,6 +271,7 @@ void vk_collect_dead(void) {
         else vmaDestroyImage(g_vk.vma, dead[i].img, dead[i].mem);
     }
     ndead = k;
+    DEAD_UNLOCK();
 }
 
 static void create_image(NvnTexture *t, TexBackend *b) {
@@ -357,9 +369,11 @@ static void create_image(NvnTexture *t, TexBackend *b) {
 }
 
 static void defer(Dead d) {
-    if (ndead == cap_dead) { cap_dead = cap_dead ? cap_dead * 2 : 256; dead = realloc(dead, cap_dead * sizeof *dead); }
     d.seq = vk_pending_seq();
+    DEAD_LOCK();
+    if (ndead == cap_dead) { cap_dead = cap_dead ? cap_dead * 2 : 256; dead = realloc(dead, cap_dead * sizeof *dead); }
     dead[ndead++] = d;
+    DEAD_UNLOCK();
 }
 
 void vk_defer_image(VkImage img, VmaAllocation mem) { defer((Dead){.img = img, .mem = mem}); }

@@ -83,6 +83,7 @@ typedef struct {
 void plat_device_stats(PlatDeviceStats *out);
 // ADPF: the calling thread's work for a frame (busy, ns) and its target (the frame time it must fit)
 void plat_frame_work(uint64_t work_ns, uint64_t target_ns);
+void plat_frame_work_gpu(uint64_t cpu_ns, uint64_t gpu_ns, uint64_t target_ns);  // (Android: the GPU's time too, API 35+)
 #ifdef __ANDROID__
 // A new thread back on every core: threads inherit the creating thread's affinity, and the presenting thread is
 // pinned to the fastest cores (platform/android.c)

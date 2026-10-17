@@ -132,7 +132,19 @@ uint64_t vk_pending_seq(void) { return submit_seq + 1; }
 // done). LARECOMP_VK_COUNTER=cpu: host clock only; =frozen: one value per presented frame (test); =legacy: the host
 // clock in ns instead of GPU ticks, as before (test: reproduces the locked 30).
 #define CQ_MAX 64
-typedef struct { VkQueryPool pool; uint32_t n; uint64_t seq; uint64_t *out[CQ_MAX]; } CounterQ;
+#ifdef __ANDROID__
+// (Android) The game's pair of counters spans several of our submissions, and the GPU idles between them while the
+// CPU translates the next: that idle counted as GPU time (copy mode outdoors: ~15 ms a pair, the game's 30 fps
+// mode). So each submission's start and end are timestamped too (queries CQ_MAX, CQ_MAX + 1), and a pair's end
+// counter gets its start's value plus the GPU's busy time in between - the time the Switch's GPU would show. Our
+// own slowness is the pacer's business (vk_pace_frame: busy time per presented frame). LARECOMP_COUNTER_IDLE=1: as
+// before.
+#define CQ_QUERIES (CQ_MAX + 2)
+static _Atomic uint64_t gpu_busy_total;  // (GPU ns working, all submissions so far: ADPF's GPU time per frame)
+#else
+#define CQ_QUERIES CQ_MAX
+#endif
+typedef struct { VkQueryPool pool; uint32_t n; uint64_t seq; uint64_t *out[CQ_MAX]; bool ts; } CounterQ;
 static CounterQ cq[SUBS];
 static pthread_mutex_t cq_lock = PTHREAD_MUTEX_INITIALIZER;
 static int64_t cq_offset;  // host ns - GPU ns (the smallest seen)
@@ -194,7 +206,17 @@ void vk_pace_frame(void) {
     // comfortable, the clocks stayed low and so did the mode)
     static int follow = -1;  // LARECOMP_ADPF_FOLLOW=1: the old target (the mode's own)
     if (follow < 0) follow = getenv("LARECOMP_ADPF_FOLLOW") != NULL;
-    plat_frame_work((uint64_t)(busy * 1e6), follow && pace_slow ? 33333333ull : 16666667ull);
+    {   // LARECOMP_ADPF_GPU=1 (a test): the GPU's time too (API 35+), so its governor would raise its clock for 60 fps
+        // as well. Accepted on the Snapdragon 8 Elite (2026-10-16) but nothing measurable changed: off by default.
+        static int no_gpu = -1;
+        if (no_gpu < 0) no_gpu = getenv("LARECOMP_ADPF_GPU") == NULL;
+        static uint64_t last_busy;
+        uint64_t total = gpu_busy_total, gpu = total - last_busy;
+        last_busy = total;
+        // (per presented frame, against 60 fps's budget in either mode: a 30 fps frame renders one image too - its GPU
+        // time is what a 60 fps frame would take, and halved it looked comfortable: the clock stayed low)
+        plat_frame_work_gpu((uint64_t)(busy * 1e6), no_gpu ? 0 : gpu, follow && pace_slow ? 33333333ull : 16666667ull);
+    }
 #endif
 #ifdef __ANDROID__
     // Per world step: the game picks its present interval frame by frame (1: one step, 60 fps; 2: two steps, 30 fps),
@@ -307,8 +329,8 @@ static uint64_t pace_end_counter(const uint64_t *start_entry, const uint64_t *en
     if (!start_entry || (const uint8_t *)entry - (const uint8_t *)start_entry != 16) return value;
 #ifdef __ANDROID__
     static int fast = -1;
-    if (fast < 0) fast = getenv("LARECOMP_FAST_COUNTERS") != NULL;
-    if (!pace_slow && pace_on > 0 && (fast || g_settings.fps_mode == 2)) {
+    if (fast < 0) fast = getenv("LARECOMP_FAST_COUNTERS") ? atoi(getenv("LARECOMP_FAST_COUNTERS")) : 0;
+    if ((!pace_slow && pace_on > 0 && (fast || g_settings.fps_mode == 2)) || fast == 2) {  // (2: with LARECOMP_PACE=0 too, a test)
         uint64_t max = start_entry[1] + ns_to_gpu_ticks(PACE_FAST_NS);
         return value > max ? max : value;
     }
@@ -320,6 +342,22 @@ static uint64_t pace_end_counter(const uint64_t *start_entry, const uint64_t *en
 
 static void cq_resolve(int i) {  // (cq_lock held) submission slot i is done: its counters get their GPU times
     CounterQ *q = &cq[i];
+#ifdef __ANDROID__
+    static int keep_idle = -1;
+    if (keep_idle < 0) keep_idle = getenv("LARECOMP_COUNTER_IDLE") != NULL;
+    static int64_t last_end = -1, idle;  // (GPU ns: the previous submission's end; the idle between submissions so far)
+    if (q->ts) {
+        q->ts = false;
+        uint64_t se[2];
+        if (vkGetQueryPoolResults(g_vk.dev, q->pool, CQ_MAX, 2, sizeof se, se, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
+            double per = g_vk.props.limits.timestampPeriod;
+            int64_t s0 = (int64_t)((double)se[0] * per), s1 = (int64_t)((double)se[1] * per);
+            if (last_end >= 0 && s0 > last_end) idle += s0 - last_end;
+            if (s1 > s0) gpu_busy_total += (uint64_t)(s1 - (s0 > last_end ? s0 : last_end > s1 ? s1 : last_end));
+            if (s1 > last_end) last_end = s1;
+        }
+    }
+#endif
     if (!q->n) return;
     uint64_t t[CQ_MAX];
     if (vkGetQueryPoolResults(g_vk.dev, q->pool, 0, q->n, sizeof t, t, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
@@ -330,9 +368,30 @@ static void cq_resolve(int i) {  // (cq_lock held) submission slot i is done: it
         if (log < 0) log = getenv("LARECOMP_LOG_COUNTER") != NULL;
         for (uint32_t k = 0; k < q->n; k++) {
             uint64_t gpu = ns_to_gpu_ticks((uint64_t)((int64_t)((double)t[k] * per) + cq_offset));
+            const uint64_t *start = k ? q->out[k - 1] : NULL;
+#ifdef __ANDROID__
+            {   // a pair's end (16 bytes after a start seen before): the start's value + the busy time in between
+                static struct { uint64_t *out; uint64_t val; int64_t raw, idle; } seen[4];
+                static int nseen;
+                int64_t raw = (int64_t)((double)t[k] * per);
+                for (int j = 0; j < 4 && !keep_idle; j++)
+                    if (seen[j].out && seen[j].out + 2 == q->out[k]) {
+                        int64_t busy = raw - seen[j].raw - (idle - seen[j].idle);
+                        uint64_t v = seen[j].val + ns_to_gpu_ticks((uint64_t)(busy > 0 ? busy : 0));
+                        if (v < gpu) gpu = v;
+                        start = seen[j].out;
+                        break;
+                    }
+                seen[nseen & 3].out = q->out[k];
+                seen[nseen & 3].val = gpu;
+                seen[nseen & 3].raw = raw;
+                seen[nseen & 3].idle = idle;
+                nseen++;
+            }
+#endif
             if (log) LOG("[counter] seq %llu #%u at %llx host %.3f gpu %.3f ms\n", (unsigned long long)q->seq, k,
                          (unsigned long long)(uintptr_t)q->out[k], q->out[k][1] * 625.0 / 384 / 1e6, gpu * 625.0 / 384 / 1e6);
-            q->out[k][1] = pace_end_counter(k ? q->out[k - 1] : NULL, q->out[k], gpu);
+            q->out[k][1] = pace_end_counter(start, q->out[k], gpu);
         }
         stat_counters_gpu += q->n;
     }
@@ -341,7 +400,18 @@ static void cq_resolve(int i) {  // (cq_lock held) submission slot i is done: it
 
 static void cq_resolve_done(uint64_t done) {  // every slot whose submission is done
     pthread_mutex_lock(&cq_lock);
+#ifdef __ANDROID__
+    for (;;) {  // oldest first
+        int best = -1;
+        for (int i = 0; i < SUBS; i++)
+            if ((cq[i].n || cq[i].ts) && cq[i].seq <= done && (best < 0 || cq[i].seq < cq[best].seq)) best = i;
+        if (best < 0) break;
+        cq_resolve(best);
+        cq[best].ts = false;
+    }
+#else
     for (int i = 0; i < SUBS; i++) if (cq[i].n && cq[i].seq <= done) cq_resolve(i);
+#endif
     pthread_mutex_unlock(&cq_lock);
 }
 
@@ -387,14 +457,17 @@ VkCommandBuffer vk_cmd(void) {
             CounterQ *q = &cq[cur_sub];
             if (!q->pool) {
                 VkQueryPoolCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP,
-                                            .queryCount = CQ_MAX};
+                                            .queryCount = CQ_QUERIES};
                 if (vkCreateQueryPool(g_vk.dev, &qi, NULL, &q->pool) != VK_SUCCESS) q->pool = VK_NULL_HANDLE;
             }
             pthread_mutex_lock(&cq_lock);
             q->n = 0;  // (resolved when the slot was freed: sub())
             q->seq = s->seq;
             pthread_mutex_unlock(&cq_lock);
-            if (q->pool) vkCmdResetQueryPool(s->main, q->pool, 0, CQ_MAX);
+            if (q->pool) vkCmdResetQueryPool(s->main, q->pool, 0, CQ_QUERIES);
+#ifdef __ANDROID__
+            if (q->pool) vkCmdWriteTimestamp2(s->main, VK_PIPELINE_STAGE_2_NONE, q->pool, CQ_MAX);  // (the start)
+#endif
         }
         gp_mark(s->main, "(submission start; includes GPU idle before it)");
         if (prof && prof_qp) {
@@ -433,8 +506,13 @@ void vc_flush(void);
 bool g_gpuprof_frame;
 static VkQueryPool gp_qp;
 static int gp_n;
-static char gp_label[512][112];
-static uint32_t gp_draws[512];
+#ifdef __ANDROID__
+#define GP_MAX 2048  // (LARECOMP_GPUPROF_DRAWS=1: a mark after every draw too - its shaders, size and GPU time)
+#else
+#define GP_MAX 512
+#endif
+static char gp_label[GP_MAX][112];
+static uint32_t gp_draws[GP_MAX];
 // LARECOMP_VK_DEVLOST_TRACE=1: the last 64 GPU operations, dumped on device loss (with LARECOMP_SYNC_SUBMIT=1 the
 // dump ends with the command list that faulted).
 static char dl_ring[64][128];
@@ -455,12 +533,12 @@ void vk_devlost_dump(void) {
     for (unsigned i = dl_n > 64 ? dl_n - 64 : 0; i < dl_n; i++) LOG("[vk]   %s\n", dl_ring[i & 63]);
 }
 static void gp_mark(VkCommandBuffer cb, const char *fmt, ...) {
-    if (!g_gpuprof_frame || gp_n >= 511) return;
+    if (!g_gpuprof_frame || gp_n >= GP_MAX - 1) return;
     if (!gp_qp) {
-        VkQueryPoolCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP, .queryCount = 512};
+        VkQueryPoolCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP, .queryCount = GP_MAX};
         if (vkCreateQueryPool(g_vk.dev, &qi, NULL, &gp_qp) != VK_SUCCESS) { g_gpuprof_frame = false; return; }
     }
-    if (!gp_n) vkCmdResetQueryPool(cb, gp_qp, 0, 512);
+    if (!gp_n) vkCmdResetQueryPool(cb, gp_qp, 0, GP_MAX);
     vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, gp_qp, (uint32_t)gp_n);
     va_list ap;
     va_start(ap, fmt);
@@ -473,7 +551,7 @@ void renderer_flush(void);
 void vk_gpuprof_report(void) {
     if (!gp_n) return;
     renderer_flush();
-    uint64_t t[512];
+    static uint64_t t[GP_MAX];
     if (vkGetQueryPoolResults(g_vk.dev, gp_qp, 0, (uint32_t)gp_n, sizeof t, t, 8, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT) == VK_SUCCESS) {
         double per = g_vk.props.limits.timestampPeriod / 1e6, total = (t[gp_n - 1] - t[0]) * per;
         LOG("[gpuprof] %d marks, %.2f ms first to last (rows: the work after each mark, until the next)\n", gp_n, total);
@@ -501,6 +579,14 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
         cbs[n++] = (VkCommandBufferSubmitInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = s->upload};
     }
     vk_cmd();  // (an empty main buffer still carries the semaphores)
+#ifdef __ANDROID__
+    if (vk_counter_mode() == 2 && cq[cur_sub].pool) {  // the submission's end (cq_resolve: the idle between submissions)
+        vkCmdWriteTimestamp2(s->main, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, cq[cur_sub].pool, CQ_MAX + 1);
+        pthread_mutex_lock(&cq_lock);
+        cq[cur_sub].ts = true;
+        pthread_mutex_unlock(&cq_lock);
+    }
+#endif
     if (s->ts) vkCmdWriteTimestamp2(s->main, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, prof_qp, (uint32_t)cur_sub * 2 + 1);
     VK_CHECK(vkEndCommandBuffer(s->main));
     cbs[n++] = (VkCommandBufferSubmitInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = s->main};
@@ -1474,6 +1560,8 @@ static void translate_program(void *arg) {
 #ifdef __ANDROID__
     maxwell_gmem_map_all = gcopy_mode;
     maxwell_gmem_miss_log = gcopy_mode && !getenv("LARECOMP_NO_GMISS");
+    if (getenv("LARECOMP_GMISS_STAGES"))  // (a test: which stages log misses - 1 vertex, 2 fragment, 32 compute)
+        maxwell_gmem_miss_stages = (unsigned)strtoul(getenv("LARECOMP_GMISS_STAGES"), NULL, 0);
     maxwell_brx_window = !getenv("LARECOMP_BRX_ALL_LABELS");
     maxwell_static_stacks = !getenv("LARECOMP_DYN_STACKS");
     maxwell_structured = structure_on();
@@ -1535,6 +1623,9 @@ static Prog *get_program(NvnProgram *np, ShaderKey *vkey, ShaderKey *fkey) {
     const uint8_t *vb = (const uint8_t *)vkey;
     for (size_t i = 0; i < sizeof *vkey; i++) { h ^= vb[i]; h *= 0x100000001B3ull; }
     for (int i = 0; i < 8; i++) { h ^= fkey->rt_kind[i]; h *= 0x100000001B3ull; }
+#ifdef __ANDROID__
+    if (fkey->no_ds_write) { h ^= 0xE1; h *= 0x100000001B3ull; }  // (keys without it hash as before)
+#endif
     if (!h) h = 1;
     uint32_t slot = (uint32_t)(h ^ (h >> 31)) & (PROG_TAB - 1);
     while (prog_tab[slot].key && prog_tab[slot].key != h) slot = (slot + 1) & (PROG_TAB - 1);
@@ -2573,7 +2664,9 @@ static bool gres_init(void) {
                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
-                                  .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT};  // (read back)
+                                  .flags = (getenv("LARECOMP_GA_UNCACHED") ? VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+                                                                           : VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT) |
+                                           VMA_ALLOCATION_CREATE_MAPPED_BIT};  // (cached: read back; LARECOMP_GA_UNCACHED=1, a test)
     VmaAllocationInfo inf;
     if (vmaCreateBuffer(g_vk.vma, &bi, &ai, &ga_buf, &ga_mem, &inf) != VK_SUCCESS || !inf.pMappedData) {
         LOG("[vk] global memory arena: not available\n");
@@ -2814,6 +2907,14 @@ static bool gres_prepare(const GcRange *r, int m, bool store) {
     gc_span = (VkSpan){.buf = ga_buf, .off = 0, .ptr = ga_ptr};
     gc_size = GA_SIZE;
     return true;
+}
+
+// The shaders' miss log (binding GMISS_BUFFER_INDEX): the arena's last 4 KB, else (no arena) a scratch buffer
+static VkDescriptorBufferInfo gmiss_info(void) {
+    if (gres_init()) return (VkDescriptorBufferInfo){ga_buf, (uint64_t)GMISS_WORD * 4, 4096};
+    static const uint32_t zero[1024];
+    VkSpan sp = vk_transient_copy(zero, sizeof zero, 256);
+    return (VkDescriptorBufferInfo){sp.buf, sp.off, sizeof zero};
 }
 
 static void gres_reset(void) {
@@ -3245,10 +3346,14 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
             bi[n] = cbuf_info(stage, si, (int)b->binding, gx, gy, gz);
             w[n].pBufferInfo = &bi[n];
         } else if (b->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
+#ifdef __ANDROID__
+            if (b->binding == GMISS_BUFFER_INDEX) bi[n] = gmiss_info();
+            else
+#endif
             bi[n] = b->binding == GFAST_BUFFER_INDEX ? gfast_info() : gmem_info();
             w[n].pBufferInfo = &bi[n];
 #ifdef __ANDROID__
-            if (!gmem_buf && b->binding != GFAST_BUFFER_INDEX) {  // (diagnostic: global memory without the heap import)
+            if (!gmem_buf && b->binding != GFAST_BUFFER_INDEX && b->binding != GMISS_BUFFER_INDEX) {  // (diagnostic: global memory without the heap import)
                 static const void *seen[256];
                 static int nseen;
                 bool known = false;
@@ -3366,6 +3471,8 @@ static CsProg *compute_program(NvnProgram *np) {
 #ifdef __ANDROID__
     maxwell_gmem_map_all = gcopy_mode;
     maxwell_gmem_miss_log = gcopy_mode && !getenv("LARECOMP_NO_GMISS");
+    if (getenv("LARECOMP_GMISS_STAGES"))  // (a test: which stages log misses - 1 vertex, 2 fragment, 32 compute)
+        maxwell_gmem_miss_stages = (unsigned)strtoul(getenv("LARECOMP_GMISS_STAGES"), NULL, 0);
     maxwell_brx_window = !getenv("LARECOMP_BRX_ALL_LABELS");
     maxwell_static_stacks = !getenv("LARECOMP_DYN_STACKS");
     maxwell_structured = structure_on();
@@ -3495,6 +3602,10 @@ static void draw_(CmdRec *r, bool indexed) {
     vkey.depth_minus_one = nvn_depth_mode() == 0;
     for (int i = 0; i < st.nattrib; i++) vkey.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
     for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) fkey.rt_kind[i] = (uint8_t)rt_kind(st.rt.color[i]->format);
+#ifdef __ANDROID__
+    if (maxwell_gmem_miss_log)  // (copy mode: early depth tests for the shaders that log misses - ShaderKey)
+        fkey.no_ds_write = !st.rt.depth || !((st.ds[0] && st.ds[1]) || (st.ds[3] && ((st.stencil_mask[0] | st.stencil_mask[1]) & 0xFF)));
+#endif
     Prog *pr = get_program(st.program, &vkey, &fkey);
     if (!pr || atomic_load(&pr->state) != 1) { stat_skipped++; return; }
     g_mirror_w = 0;
@@ -3978,6 +4089,13 @@ static void draw_(CmdRec *r, bool indexed) {
             snprintf(gp_label[gp_n - 1] + l, sizeof gp_label[0] - l, ", first fs %016llx", (unsigned long long)g_cur_fs_hash);
         }
         gp_draws[gp_n - 1]++;
+#ifdef __ANDROID__
+        static int per_draw = -1;
+        if (per_draw < 0) per_draw = getenv("LARECOMP_GPUPROF_DRAWS") != NULL;
+        if (per_draw)
+            gp_mark(cb, "draw vs %llx fs %llx n %u inst %u%s", (unsigned long long)pr->code[0], (unsigned long long)pr->code[1],
+                    use_index ? icount : count, inst, use_index ? " idx" : "");
+#endif
     }
 }
 

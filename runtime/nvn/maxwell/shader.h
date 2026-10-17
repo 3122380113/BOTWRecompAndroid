@@ -43,6 +43,8 @@ typedef struct {
     bool flip_y;            // lower-left window origin
     bool flip_x;            // mirror the image left to right (mirror mode's scene composite). (In the padding
                             // after flip_y: keys without it hash as before - shader caches stay valid.)
+    bool no_ds_write;       // (Android's copy mode, fragment) the draw writes no depth / stencil: early depth tests are
+                            // exact even with a discard (in the padding too)
     uint32_t vs_out_mask;   // fragment: varyings the vertex shader provides
     uint8_t glsl;           // emit Vulkan GLSL (see the contract above) instead of MSL
 } ShaderKey;
@@ -93,7 +95,11 @@ extern bool maxwell_gmem_map_all;
 // (diagnostics, Android copy mode) a mapped access outside the table records its heap offset at the end of the gfast_
 // buffer (the arena: exec.c) instead of reading the heap binding, which isn't there
 extern bool maxwell_gmem_miss_log;
+extern unsigned maxwell_gmem_miss_stages;  // (the stages that log: bit = STAGE_*; a store in a shader costs - Adreno)
 #define GMISS_WORD ((128u << 20) / 4u - 1024u)  // (the arena's last 4 KB: count, then up to 64 offsets)
+// ... through a binding of their own, writable (GMiss: those 4 KB): the arena (GFast) stays readonly in a shader that
+// only reads - writable, Adreno's fast read path was gone (the lit pass ~4x slower per pixel)
+#define GMISS_BUFFER_INDEX 22
 // A BRX (jump table) labels only the instructions up to the join pushed before it, not the whole shader (set by the
 // Android backend: Adreno's compiler turns every label into a block boundary)
 extern bool maxwell_brx_window;
