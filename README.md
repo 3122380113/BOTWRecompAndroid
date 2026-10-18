@@ -10,8 +10,18 @@ It is built on the engine of **[LAS Recomp](https://github.com/peiikai/LASRecomp
 *Link's Awakening*) and its Android port, **[LASRecompAndroid](https://github.com/mamcjr/LASRecompAndroid)**.
 
 > [!WARNING]
-> **Early work in progress: the game does not run yet.** The plan, what is known about the game files and the state
-> of each phase are in [docs/BOTW-PORT.md](docs/BOTW-PORT.md) (in Portuguese).
+> **Early work in progress: not playable.** The plan, what is known about the game files and the state of each phase
+> are in [docs/BOTW-PORT.md](docs/BOTW-PORT.md) (in Portuguese).
+
+## Status
+
+- **Recompilation:** the whole game code (main: 104,671 functions; sdk: 17,689) is lifted to C with no unsupported
+  instruction and builds for Android (NDK).
+- **Android (first tests on a POCO F7 Ultra, Qualcomm driver):** the game boots through the 2017 SDK's startup, sets
+  up graphics (NVN 52 to Vulkan), audio, input and saves, loads its data and **presents its first frames**. It still
+  crashes after a few seconds: the order between threads that share the Switch's core 0 is the current work.
+- **Not done yet:** a picture on screen to look at, shaders using Maxwell instructions the translator doesn't know,
+  the desktop build (Windows / Linux / macOS), movies.
 
 > [!IMPORTANT]
 > Like LAS Recomp, this project is made almost entirely with AI (Claude, by Anthropic, through Claude Code), directed,
@@ -20,6 +30,17 @@ It is built on the engine of **[LAS Recomp](https://github.com/peiikai/LASRecomp
 > [!NOTE]
 > **No game files are included.** You need your own legally obtained dump of *Breath of the Wild* v1.0.0
 > (`exefs` and `romfs`). Instructions on how to obtain it will not be provided.
+
+## Testing on Android (developers)
+
+With the Android SDK / NDK, a phone on adb and your dump in `Dump/`:
+
+```bash
+cd android/botwrecomp && ./gradlew assembleDebug    # the app
+android/build_gamelib.sh Dump/01007EF00011E000/exefs  # the game code (about an hour)
+android/push_game.sh Dump/01007EF00011E000           # game files and game code onto the phone
+android/run_boot.sh 120                               # start the game, log to android/out/boot.log
+```
 
 ## Checking your dump
 

@@ -10,8 +10,19 @@ O projeto parte do motor do **[LAS Recomp](https://github.com/peiikai/LASRecomp)
 *Link's Awakening*), e do seu porte para Android, o **[LASRecompAndroid](https://github.com/mamcjr/LASRecompAndroid)**.
 
 > [!WARNING]
-> **Em estágio inicial: o jogo ainda não roda.** O plano, o que se sabe dos arquivos do jogo e o estado de cada fase
+> **Em estágio inicial: ainda não é jogável.** O plano, o que se sabe dos arquivos do jogo e o estado de cada fase
 > estão em [docs/BOTW-PORT.md](docs/BOTW-PORT.md).
+
+## Estado
+
+- **Recompilação:** todo o código do jogo (main: 104.671 funções; sdk: 17.689) vira C sem nenhuma instrução não
+  suportada e compila para Android (NDK).
+- **Android (primeiros testes num POCO F7 Ultra, driver da Qualcomm):** o jogo passa pelo boot do SDK de 2017,
+  inicializa os gráficos (NVN 52 para Vulkan), o áudio, a entrada e os saves, carrega seus dados e **apresenta os
+  primeiros quadros**. Ainda cai depois de alguns segundos: a ordem entre as threads que dividem o núcleo 0 do Switch é
+  o trabalho atual.
+- **Ainda não:** uma imagem na tela para ver, shaders com instruções Maxwell que o tradutor não conhece, o build
+  desktop (Windows / Linux / macOS), os vídeos.
 
 > [!IMPORTANT]
 > Como o LAS Recomp, este projeto é feito quase todo com IA (Claude, da Anthropic, pelo Claude Code), dirigido,
@@ -20,6 +31,17 @@ O projeto parte do motor do **[LAS Recomp](https://github.com/peiikai/LASRecomp)
 > [!NOTE]
 > **Nenhum arquivo do jogo vem incluído.** Você precisa do seu próprio dump, obtido legalmente, de *Breath of the
 > Wild* v1.0.0 (`exefs` e `romfs`). Não serão dadas instruções de como obtê-lo.
+
+## Testando no Android (desenvolvedores)
+
+Com o Android SDK / NDK, um celular no adb e o seu dump em `Dump/`:
+
+```bash
+cd android/botwrecomp && ./gradlew assembleDebug    # o app
+android/build_gamelib.sh Dump/01007EF00011E000/exefs  # o código do jogo (cerca de uma hora)
+android/push_game.sh Dump/01007EF00011E000           # arquivos e código do jogo para o celular
+android/run_boot.sh 120                               # abre o jogo, log em android/out/boot.log
+```
 
 ## Conferindo o dump
 
