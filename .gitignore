@@ -1,6 +1,8 @@
 # your own game files and what's made from them (building from source puts them here)
 input/
 /ROM/
+# the BOTW dump (exefs/ + romfs/ under Dump/<title id>/): never committed
+/Dump/
 /drivers/
 extracted/
 generated/
