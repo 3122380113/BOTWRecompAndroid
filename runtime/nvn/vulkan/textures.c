@@ -163,6 +163,67 @@ static bool format_supports(VkFormat f, VkFormatFeatureFlags want) {
     return (p.optimalTilingFeatures & want) == want;
 }
 
+#ifdef __ANDROID__
+// BC textures on a GPU without BC (Mali, and others outside Adreno): decoded on the CPU at upload (bcdec, MIT /
+// Unlicense) into the smallest plain format that holds them - BC4 R8, BC5 RG8 (2x the size), BC1/2/3/7 RGBA8 (4-8x),
+// BC6H RGBA16F. They used to become RGBA8 images left unwritten: colored 4x4 garbage on every BC texture (a
+// Mali-G615, 2026-10-17).
+#define BCDEC_STATIC
+#define BCDEC_IMPLEMENTATION
+#define BCDEC_BC4BC5_PRECISE  // (signed BC4 / BC5: the game's normal maps)
+#include "../bcdec.h"
+
+static VkFormat bc_target(VkFormat bc, uint32_t *bpp) {
+    switch (bc) {
+    case VK_FORMAT_BC4_UNORM_BLOCK: *bpp = 1; return VK_FORMAT_R8_UNORM;
+    case VK_FORMAT_BC4_SNORM_BLOCK: *bpp = 1; return VK_FORMAT_R8_SNORM;
+    case VK_FORMAT_BC5_UNORM_BLOCK: *bpp = 2; return VK_FORMAT_R8G8_UNORM;
+    case VK_FORMAT_BC5_SNORM_BLOCK: *bpp = 2; return VK_FORMAT_R8G8_SNORM;
+    case VK_FORMAT_BC6H_UFLOAT_BLOCK: case VK_FORMAT_BC6H_SFLOAT_BLOCK: *bpp = 8; return VK_FORMAT_R16G16B16A16_SFLOAT;
+    case VK_FORMAT_BC1_RGB_SRGB_BLOCK: case VK_FORMAT_BC1_RGBA_SRGB_BLOCK: case VK_FORMAT_BC2_SRGB_BLOCK:
+    case VK_FORMAT_BC3_SRGB_BLOCK: case VK_FORMAT_BC7_SRGB_BLOCK: *bpp = 4; return VK_FORMAT_R8G8B8A8_SRGB;
+    default: *bpp = 4; return VK_FORMAT_R8G8B8A8_UNORM;
+    }
+}
+
+static bool is_bc(VkFormat f) { return f >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && f <= VK_FORMAT_BC7_SRGB_BLOCK; }
+
+// wb x hb blocks (bsize bytes each, rows of blocks) -> texels, rows of wb * 4 texels of bpp bytes
+static void bc_decode(VkFormat bc, const uint8_t *blocks, uint32_t wb, uint32_t hb, uint32_t bsize, uint8_t *out, uint32_t bpp) {
+    int pitch = (int)(wb * 4 * bpp);
+    for (uint32_t y = 0; y < hb; y++)
+        for (uint32_t x = 0; x < wb; x++) {
+            const uint8_t *b = blocks + ((uint64_t)y * wb + x) * bsize;
+            uint8_t *o = out + (uint64_t)y * 4 * (uint64_t)pitch + (uint64_t)x * 4 * bpp;
+            switch (bc) {
+            case VK_FORMAT_BC1_RGB_UNORM_BLOCK: case VK_FORMAT_BC1_RGB_SRGB_BLOCK:
+            case VK_FORMAT_BC1_RGBA_UNORM_BLOCK: case VK_FORMAT_BC1_RGBA_SRGB_BLOCK: bcdec_bc1(b, o, pitch); break;
+            case VK_FORMAT_BC2_UNORM_BLOCK: case VK_FORMAT_BC2_SRGB_BLOCK: bcdec_bc2(b, o, pitch); break;
+            case VK_FORMAT_BC3_UNORM_BLOCK: case VK_FORMAT_BC3_SRGB_BLOCK: bcdec_bc3(b, o, pitch); break;
+            case VK_FORMAT_BC4_UNORM_BLOCK: bcdec_bc4(b, o, pitch, 0); break;
+            case VK_FORMAT_BC4_SNORM_BLOCK: bcdec_bc4(b, o, pitch, 1); break;
+            case VK_FORMAT_BC5_UNORM_BLOCK: bcdec_bc5(b, o, pitch, 0); break;
+            case VK_FORMAT_BC5_SNORM_BLOCK: bcdec_bc5(b, o, pitch, 1); break;
+            case VK_FORMAT_BC6H_UFLOAT_BLOCK: case VK_FORMAT_BC6H_SFLOAT_BLOCK: {  // (RGB halves -> RGBA, alpha 1)
+                uint16_t rgb[16 * 3];
+                bcdec_bc6h_half(b, rgb, 4 * 3, bc == VK_FORMAT_BC6H_SFLOAT_BLOCK);
+                for (int py = 0; py < 4; py++) {
+                    uint16_t *d = (uint16_t *)(o + (uint64_t)py * (uint64_t)pitch);
+                    for (int px = 0; px < 4; px++) {
+                        d[px * 4 + 0] = rgb[(py * 4 + px) * 3 + 0];
+                        d[px * 4 + 1] = rgb[(py * 4 + px) * 3 + 1];
+                        d[px * 4 + 2] = rgb[(py * 4 + px) * 3 + 2];
+                        d[px * 4 + 3] = 0x3C00;
+                    }
+                }
+                break;
+            }
+            default: bcdec_bc7(b, o, pitch); break;
+            }
+        }
+}
+#endif
+
 // ================================================================== output resolution / per-frame clears
 // Same rules as metal.m (see the comments there).
 static float g_rs_x = 1, g_rs_y = 1;
@@ -307,9 +368,26 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     VkFormat vf = mf.vf;
     VkFormatFeatureFlags need = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
     b->astc_bw = b->astc_bh = 0;
+#ifdef __ANDROID__
+    b->bc_vf = VK_FORMAT_UNDEFINED;
+    static int no_bc = -1;  // LARECOMP_NO_BC=1 (a test): as a GPU without BC - the CPU decode on an Adreno
+    if (no_bc < 0) no_bc = getenv("LARECOMP_NO_BC") != NULL;
+    if (!format_supports(vf, need) || (no_bc && is_bc(vf))) {
+#else
     if (!format_supports(vf, need)) {
+#endif
         bool astc = vf >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && vf <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK;
         const FormatInfo *fi = t->layout.fmt;
+#ifdef __ANDROID__
+        uint32_t bpp;
+        if (is_bc(vf) && fi && (fi->bpb == 8 || fi->bpb == 16) && fi->bw == 4 && fi->bh == 4 &&
+            format_supports(bc_target(vf, &bpp), need)) {
+            static bool told;
+            if (!told) { told = true; LOG("[vk] no BC textures on this GPU: decoded on the CPU at upload\n"); }
+            b->bc_vf = vf;
+            vf = bc_target(vf, &bpp);
+        } else
+#endif
         if (astc && fi && fi->bpb == 16) {  // desktop GPUs: decoded on the CPU into an RGBA8 image of the same colour space
             b->astc_bw = fi->bw;
             b->astc_bh = fi->bh;
@@ -553,7 +631,11 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     if (b->tp > 0) b->tp_gen = texpatch_generation();
     b->data_hash = h;
     b->uploaded = true;
+#ifdef __ANDROID__
+    if (b->format != mf.vf && !b->astc_bw && !b->bc_vf) return;  // unsupported format: nothing sensible to copy
+#else
     if (b->format != mf.vf && !b->astc_bw) return;  // unsupported format: nothing sensible to copy
+#endif
     VkCommandBuffer cb = vk_upload_cmd();
     uint32_t layers = t->layout.layers ? t->layout.layers : 1;
     if (layers > b->layers && b->depth == 1) layers = b->layers;
@@ -579,6 +661,26 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
                 vkCmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
                 continue;
             }
+#ifdef __ANDROID__
+            if (b->bc_vf) {  // blocks -> linear block rows -> texels (bc_decode)
+                uint32_t bsize = fi->bpb, bpp;
+                bc_target(b->bc_vf, &bpp);
+                const uint8_t *src = (const uint8_t *)(uintptr_t)t->addr + layer * layer_size + l.offset;
+                uint8_t *blocks = malloc((uint64_t)l.wb * l.hb * bsize);
+                if (linear) for (uint32_t y = 0; y < l.hb; y++) memcpy(blocks + (uint64_t)y * l.wb * bsize, src + (uint64_t)y * t->stride, l.wb * bsize);
+                else tegra_deswizzle(src, blocks, l.wb, l.hb, 1, bsize, l.block_height_log2, l.block_depth_log2);
+                if (b->tp > 0 && layer == 0) texpatch_apply(b->tp - 1, lv, blocks, l.w, l.h, l.wb * bsize);
+                VkSpan s = vk_transient((uint64_t)l.wb * 4 * l.hb * 4 * bpp, 16);
+                bc_decode(b->bc_vf, blocks, l.wb, l.hb, bsize, s.ptr, bpp);
+                free(blocks);
+                VkBufferImageCopy rg = {.bufferOffset = s.off, .bufferRowLength = l.wb * 4, .bufferImageHeight = l.hb * 4,
+                                        .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, layer, 1},
+                                        .imageExtent = {l.w < level_w(b, lv) ? l.w : level_w(b, lv), l.h < level_h(b, lv) ? l.h : level_h(b, lv), 1}};
+                vk_dl_note_upload((void *)b->image, rg.imageExtent.width, rg.imageExtent.height, rg.imageSubresource.mipLevel);
+                vkCmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+                continue;
+            }
+#endif
             uint32_t row = l.wb * fi->bpb;
             uint64_t sz = (uint64_t)row * l.hb * l.d;
             bool expand = mf.expand_rgb && fi->bpb == 3;
@@ -721,6 +823,9 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
     if (v && (v->setmask & 4) && !(b->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))) {
         VkFormat vf = fmt_of(v->format).vf;
         if (vk_format(t->format) == b->format) fmt = vf;  // (fallback images keep their own format)
+#ifdef __ANDROID__
+        else if (b->bc_vf && is_bc(vf)) { uint32_t bpp; fmt = bc_target(vf, &bpp); }  // (decoded BC: its sRGB / UNORM view)
+#endif
     }
     uint32_t lv0 = v && (v->setmask & 1) ? v->base_level : 0;
     uint32_t nlv = v && (v->setmask & 1) && v->num_levels ? v->num_levels : b->levels - (lv0 < b->levels ? lv0 : 0);
