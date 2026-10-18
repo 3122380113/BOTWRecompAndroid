@@ -513,6 +513,15 @@ RT_ON_RESET(textures_reset) {
 }
 
 NVN(nvnTextureInitialize) {
+    // An object initialized again without nvnTextureFinalize (BOTW streams textures so: a texture object is just a
+    // description on NVN): its previous texture goes, as at a finalize. (live_remove: only a texture of ours - the
+    // object's first initialize finds whatever its memory held.)
+    NvnTexture *old = HOST(NvnTexture, A(0));
+    if (old && live_remove(old)) {
+        static uint64_t n;
+        if (ENV("LARECOMP_LOG_TEXINIT") && n++ < 20) LOG("[nvn] TextureInitialize %llx again: previous texture retired\n", (unsigned long long)A(0));
+        texture_retire(old);
+    }
     NvnTexture *t = texture_from_builder(A(1));
     live_add(t);
     if (t->flags & 2)

@@ -985,6 +985,17 @@ const char *renderer_stats(void) {
              (unsigned long long)stat_dispatches, (unsigned long long)stat_flushes, (double)stat_wait_ns / 1e6,
              atomic_exchange(&stat_compiles, 0), (unsigned long long)stat_feedback_copies, (double)stat_upload_bytes / 1048576.0);
     stat_feedback_copies = stat_upload_bytes = 0;
+    {   // (GPU memory in use, every heap, and the game's textures with an image)
+        VmaBudget bud[VK_MAX_MEMORY_HEAPS];
+        vmaGetHeapBudgets(g_vk.vma, bud);
+        const VkPhysicalDeviceMemoryProperties *mp;
+        vmaGetMemoryProperties(g_vk.vma, &mp);
+        uint64_t used = 0;
+        for (uint32_t i = 0; i < mp->memoryHeapCount; i++) used += bud[i].usage;
+        extern int vk_texture_count(void);
+        size_t n = strlen(stats_text);
+        snprintf(stats_text + n, sizeof stats_text - n, ", gpu mem %.0fMB, %d textures", (double)used / 1048576.0, vk_texture_count());
+    }
     {
         extern void vk_alias_stats(void);
         vk_alias_stats();

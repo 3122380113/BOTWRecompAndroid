@@ -183,6 +183,26 @@ Próximos problemas vistos:
   em vez da fatia de tempo, que deve ser desligada (`LARECOMP_C0_SLICE_MS=0`) quando isso estiver certo.
 - Diagnóstico novo: `LARECOMP_WATCH=<offset no main>[,<bytes>]` (quem acessa a memória, com a thread).
 
+**Terceira rodada (2026-10-18, depois das mudanças do Astra, commit `164a1a6`, validadas):**
+
+- O Astra implementou `svcSetThreadCoreMask` / `GetThreadCoreMask` (migração entre núcleos virtuais num ponto seguro),
+  trocou o lock de tickets do núcleo 0 por uma fila e **desligou a fatia de tempo por padrão**; `MapVirtual` para o
+  heap virtual de texturas de 120 MiB; contagem de referências das texturas (os descritores as mantêm vivas). Os
+  testes `tools/test_android_runtime.ps1` (afinidade, ciclo de vida do NVN) passam no celular.
+- **Confirmado:** o BOTW chama `SetThreadCoreMask` e põe threads nos núcleos 1 e 2 (era o que travava a thread
+  principal). Com isso o jogo passa a **renderizar cenas de verdade**: até ~20.000 draws e ~7.700 passes por intervalo
+  de 2 s, ~5.000 texturas, centenas de MB enviados.
+- **Turnip funciona:** `files/drivers/Turnip_Gen8_V37.zip` (copiado do LAS) carrega; a memória do jogo vira memória
+  da GPU (placed). Sem ele, o modo de cópia da Qualcomm é muito mais lento.
+- **Onde parei — memória da GPU:** ela cresce ~0,5–0,8 GB/s até ~7 GB e o Android mata o app (lowmemorykiller). O
+  número de texturas com imagem (`gpu mem`/`textures` agora no log de fps) só sobe. Não é reinicialização de objetos
+  (`LARECOMP_LOG_TEXINIT` não achou nenhuma): o jogo cria mesmo milhares de texturas que, no Switch, são só
+  descrições sobre a memória dos pools dele. O runtime cria uma `VkImage` própria (e cópia) para cada uma.
+  **Próximo passo:** com Turnip, criar as imagens das texturas sobre a própria memória do pool do jogo (aliasing na
+  memória placed) em vez de alocar e copiar; e/ou compartilhar a imagem entre texturas da mesma memória/formato.
+  Também ver `[tex] type mismatch: want 6 have 3` (cubemap 64×64×6) e as instruções Maxwell `0xc838`/`0xdf00`.
+- Custo a observar: `register_texture` agora espera a thread de render (`vk_async_drain`) a cada registro.
+
 Falta (precisa rodar o jogo):
 
 - Rodar: no PC (falta o MSYS2, ver Fase 1) ou no celular (`android/push_game.sh`, com o celular no adb).
