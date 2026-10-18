@@ -75,7 +75,7 @@ static void *render_main(void *arg) {
         Req r = q[q_head % QN];
         pthread_mutex_unlock(&q_lock);
         uint64_t t0 = plat_now_ns();
-        if (r.type == REQ_EXEC) vk_execute_now(r.a);
+        if (r.type == REQ_EXEC) { vk_execute_now(r.a); free(r.p); }  // (r.p: the list copy, vk_async_execute)
         else if (r.type == REQ_PRESENT) vk_present_now((NvnTexture *)r.p);
         else if (r.type == REQ_FENCE) nvn_sync_set_seq(r.a, renderer_fence_seq());
         frame_work += plat_now_ns() - t0;
@@ -155,13 +155,49 @@ static void mark_fences(uint64_t p, uint64_t id, int depth) {
     }
 }
 
+// A copy of a submitted list, the lists it calls inlined: NVN reads the lists (in control memory) when they are
+// submitted, so a game may record over them right after (BOTW does), while the render thread runs them later.
+typedef struct { uint8_t *b; size_t n, cap; } Snap;
+static void snap_add(Snap *s, uint64_t p, int depth) {
+    for (int guard = 0; guard < 10000000; guard++) {
+        const CmdRec *r = (const CmdRec *)(uintptr_t)p;
+        if (r->op == CMD_END) return;
+        if (r->op == CMD_JUMP) { p = r->x[0]; continue; }
+        if (!r->size) return;
+        if (r->op == CMD_CALL && depth < 8) {
+            const uint64_t *h = (const uint64_t *)r->extra;
+            for (uint64_t i = 0; i < r->x[0]; i++) snap_add(s, h[i], depth + 1);
+        } else {
+            if (s->n + r->size > s->cap) {
+                s->cap = (s->n + r->size) * 2 > 0x10000 ? (s->n + r->size) * 2 : 0x10000;
+                s->b = realloc(s->b, s->cap);
+                if (!s->b) FATAL("vk: out of memory for a command list copy\n");
+            }
+            memcpy(s->b + s->n, r, r->size);
+            s->n += r->size;
+        }
+        p += r->size;
+    }
+}
+static uint8_t *snap_list(uint64_t handle) {
+    Snap s = {0};
+    snap_add(&s, handle, 0);
+    s.b = realloc(s.b, s.n + sizeof(CmdRec));
+    if (!s.b) FATAL("vk: out of memory for a command list copy\n");
+    memset(s.b + s.n, 0, sizeof(CmdRec));  // CMD_END
+    ((CmdRec *)(s.b + s.n))->size = sizeof(CmdRec);
+    return s.b;
+}
+
 void vk_async_execute(uint64_t handle) {
+    uint8_t *copy = getenv("LARECOMP_NO_LIST_COPY") ? NULL : snap_list(handle);
+    if (copy) handle = (uint64_t)(uintptr_t)copy;
     pthread_mutex_lock(&p_lock);
     pthread_mutex_lock(&q_lock);
     uint64_t next = q_tail + 1;  // (the id the push gets: the list's fences carry it before the render thread sees them)
     pthread_mutex_unlock(&q_lock);
     mark_fences(handle, next, 0);
-    push(REQ_EXEC, handle, NULL);
+    push(REQ_EXEC, handle, copy);  // (the render thread frees the copy once run)
     pthread_mutex_unlock(&p_lock);
 }
 

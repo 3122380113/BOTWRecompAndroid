@@ -176,10 +176,43 @@ NVN(nvnCommandBufferBeginRecording) {
     cb->recording = true;
     cb->start = (uint64_t)(uintptr_t)rec(c, cb, CMD_BARRIER, 0);  // makes sure memory exists; the list starts here
 }
+// LARECOMP_CHECK_HANDLES: the last lists recorded (where they start and end in the shadow, by whom, from which game
+// memory), to tell who recorded over a list that is called later
+typedef struct { uint64_t start, end, cb, gmem, gused, lr, seq; } ListRec;
+enum { HIST = 1 << 16 };
+static ListRec g_hist[HIST];
+static _Atomic uint64_t g_hist_n;
+static void hist_report(uint64_t h) {
+    uint64_t n = g_hist_n, found = ~0ull;
+    for (uint64_t k = n; k-- > (n > HIST ? n - HIST : 0);)
+        if (g_hist[k % HIST].start == h) { found = k; break; }
+    if (found == ~0ull) { LOG("[nvn]   %llx: not among the last lists recorded\n", (unsigned long long)h); return; }
+    const ListRec *l = &g_hist[found % HIST];
+    LOG("[nvn]   %llx: list #%llu by %llx (lr %llx), game memory %llx+%llx, %llu lists ago; recorded over by:\n",
+        (unsigned long long)h, (unsigned long long)found, (unsigned long long)l->cb, (unsigned long long)l->lr,
+        (unsigned long long)l->gmem, (unsigned long long)l->gused, (unsigned long long)(n - found));
+    int shown = 0;
+    for (uint64_t k = found + 1; k < n && shown < 6; k++) {
+        const ListRec *o = &g_hist[k % HIST];
+        if (o->start < l->end && o->end > l->start) {
+            LOG("[nvn]     #%llu by %llx (lr %llx): %llx-%llx, game memory %llx+%llx\n", (unsigned long long)k,
+                (unsigned long long)o->cb, (unsigned long long)o->lr, (unsigned long long)o->start, (unsigned long long)o->end,
+                (unsigned long long)o->gmem, (unsigned long long)o->gused);
+            shown++;
+        }
+    }
+}
+
 NVN(nvnCommandBufferEndRecording) {
     NvnCmdBuf *cb = cb_of(A(0));
     rec(c, cb, CMD_END, 0);
     cb->recording = false;
+    if (ENV("LARECOMP_CHECK_HANDLES")) {
+        uint64_t k = g_hist_n++;
+        ListRec *l = &g_hist[k % HIST];
+        l->start = cb->start, l->end = write_at(cb), l->cb = cb->guest, l->gmem = cb->gmem, l->gused = cb->used;
+        l->lr = c->x[30], l->seq = k;
+    }
     if (ENV("LARECOMP_CHECK_HANDLES")) {
         static int n;
         if (n++ < 400) LOG("[nvn] EndRecording %llx -> %llx (lr %llx)\n", (unsigned long long)cb->guest,
@@ -564,9 +597,11 @@ void nvn_check_handles(Cpu *c, const char *what, int n, const uint64_t *h) {
         bool host = h[i] >= 0x6000000000ull;  // (malloc'd overflow memory: high host addresses)
         if ((!guest && !host) || ((const CmdRec *)(uintptr_t)h[i])->op != CMD_BARRIER) {
             static int n_logged;
-            if (n_logged++ < 20)
+            if (n_logged++ < 20) {
                 LOG("[nvn] %s: handle %d of %d is %llx, not a command list (lr %llx)\n", what, i, n,
                     (unsigned long long)h[i], (unsigned long long)c->x[30]);
+                hist_report(h[i]);
+            }
         }
     }
 }
@@ -604,10 +639,6 @@ void nvn_check_list(uint64_t h, int depth) {
     }
 }
 
-NVN(nvnCommandBufferCallCommands) {
-    nvn_check_handles(c, "CallCommands", (int)A(1), AP(2));
-    record_copy(c, CMD_CALL, 2, (uint32_t)A(1) * 8);
-}
 // CopyCommands copies the lists' commands into this one: the game may reuse their memory right away (BOTW does).
 // (CallCommands above only refers to them.) The lists' leading barrier (nvnCommandBufferBeginRecording) is left out.
 static void copy_list(Cpu *c, NvnCmdBuf *cb, uint64_t p) {
@@ -625,6 +656,17 @@ static void copy_list(Cpu *c, NvnCmdBuf *cb, uint64_t p) {
         first = false;
         p += size;
     }
+}
+// CallCommands too: the lists it calls live in control memory, which NVN reads as this is recorded; BOTW records
+// over them before this list is submitted. (LARECOMP_CALL_REFS=1: refer to them, as before)
+NVN(nvnCommandBufferCallCommands) {
+    int n = (int)A(1);
+    nvn_check_handles(c, "CallCommands", n, AP(2));
+    if (ENV("LARECOMP_CALL_REFS")) { record_copy(c, CMD_CALL, 2, (uint32_t)n * 8); return; }
+    uint64_t self = A(0), handles[64];
+    if (n > 64) n = 64;
+    memcpy(handles, AP(2), n * sizeof *handles);
+    for (int i = 0; i < n; i++) copy_list(c, cb_of(self), handles[i]);
 }
 NVN(nvnCommandBufferCopyCommands) {
     int n = (int)A(1);

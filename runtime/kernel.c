@@ -205,10 +205,13 @@ static int c0_on = -1;
 static KThread *c0_holder;  // (c0_m) the thread that has core 0, since c0_since
 static uint64_t c0_since;
 
-// Time slices: a thread that keeps core 0 for C0_SLICE_NS without blocking while others wait for it loses it - it
-// goes on running, as if preempted, until its next blocking SVC, where it queues for core 0 again. BOTW's main thread
-// spins until another thread of core 0 has made something (main+0x8551a8): with core 0 never handed on, that thread
-// never ran. (LARECOMP_C0_SLICE_MS: the slice; 0: none)
+// Time slices: a thread that keeps core 0 for C0_SLICE_NS without blocking while others wait for it loses it, as if
+// preempted: it waits for core 0 again at its next function entry (FN_ENTER calls fnprof_hit while g_fnprof's bit 1
+// is set: kernel_preempt_point) or blocking SVC. BOTW's main thread spins until another thread of core 0 has made
+// something (main+0x8551a8, a loop without calls): with core 0 never handed on, that thread never ran.
+// (LARECOMP_C0_SLICE_MS: the slice; 0: none)
+extern volatile int g_fnprof;  // runtime/fnprof.c
+static int c0_nevicted;  // (c0_m)
 static uint64_t c0_slice_ns = 8000000;
 static void *core0_slicer(void *arg) {
     (void)arg;
@@ -222,6 +225,8 @@ static void *core0_slicer(void *arg) {
                 LOG("[kernel] core 0: t%llu ran %llums without blocking, preempted\n", (unsigned long long)c0_holder->id,
                     (unsigned long long)((plat_now_ns() - c0_since) / 1000000));
             c0_holder->core0_held = false;
+            c0_holder->core0_evicted = true;
+            if (c0_nevicted++ == 0) __atomic_fetch_or(&g_fnprof, 2, __ATOMIC_SEQ_CST);
             c0_holder = NULL;
             c0_serving++;
             pthread_cond_broadcast(&c0_cv);
@@ -244,6 +249,10 @@ static void core0_acquire(KThread *t) {
     }
     if (!t || !c0_on || t->core != 0 || t->core0_held) return;
     pthread_mutex_lock(&c0_m);
+    if (t->core0_evicted) {
+        t->core0_evicted = false;
+        if (--c0_nevicted == 0) __atomic_fetch_and(&g_fnprof, ~2, __ATOMIC_SEQ_CST);
+    }
     uint64_t my = c0_next++;
     if (c0_serving != my) {  // (waiting for core 0 is time off the core: blocked, as a kernel wait - frame pacing)
         uint64_t t0 = plat_now_ns();
@@ -254,6 +263,12 @@ static void core0_acquire(KThread *t) {
     c0_holder = t;
     c0_since = plat_now_ns();
     pthread_mutex_unlock(&c0_m);
+}
+
+// A function entry of a thread whose time slice on core 0 ran out: it waits for core 0 here
+void kernel_preempt_point(void) {
+    KThread *t = t_cur;
+    if (t && t->core0_evicted) core0_acquire(t);
 }
 
 static void core0_release(KThread *t) {

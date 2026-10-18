@@ -425,6 +425,30 @@ static bool live_remove(NvnTexture *t) {
     return found;
 }
 
+// Finalized textures go away a few presented frames later: lists the render thread hasn't run yet (it is a frame
+// ahead) may still name them.
+enum { RETIRE_FRAMES = 4, RETIRE_MAX = 4096 };
+static struct { NvnTexture *t; uint64_t frame; } g_retired[RETIRE_MAX];
+static int g_nretired;
+static void texture_retire(NvnTexture *t) {
+    extern uint64_t renderer_present_count(void);
+    uint64_t now = renderer_present_count();
+    pthread_mutex_lock(&g_live_lock);
+    int k = 0;
+    for (int i = 0; i < g_nretired; i++) {
+        if (g_retired[i].frame + RETIRE_FRAMES <= now || g_nretired == RETIRE_MAX) {
+            backend_texture_destroyed(g_retired[i].t);
+            free(g_retired[i].t);
+        } else {
+            g_retired[k++] = g_retired[i];
+        }
+    }
+    g_nretired = k;
+    g_retired[g_nretired].t = t, g_retired[g_nretired].frame = now;
+    g_nretired++;
+    pthread_mutex_unlock(&g_live_lock);
+}
+
 NVN(nvnTextureInitialize) {
     NvnTexture *t = texture_from_builder(A(1));
     live_add(t);
@@ -436,7 +460,7 @@ NVN(nvnTextureInitialize) {
 }
 NVN(nvnTextureFinalize) {
     NvnTexture *t = HOST(NvnTexture, A(0));
-    if (t && live_remove(t)) { backend_texture_destroyed(t); free(t); }
+    if (t && live_remove(t)) texture_retire(t);
     else if (t) {
         static int n;
         if (n++ < 5) LOG("[nvn] TextureFinalize %llx: not a live texture (%p), ignored (lr %llx)\n",

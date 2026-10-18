@@ -43,7 +43,10 @@ static void bt_check(uint64_t a, uint64_t lr, uint64_t x0) {
         }
 }
 
+// (g_fnprof bit 0: profiling; bit 1: a thread of core 0 was preempted - runtime/kernel.c)
 void fnprof_hit(uint64_t a, uint64_t lr, uint64_t x0) {
+    if (g_fnprof & 2) { extern void kernel_preempt_point(void); kernel_preempt_point(); }
+    if (!(g_fnprof & 1)) return;
     if (bt_n) bt_check(a, lr, x0);
     uint32_t h = (uint32_t)((a >> 2) * 0x9E3779B1u) & (NSLOT - 1);
     for (int n = 0; n < NSLOT; n++, h = (h + 1) & (NSLOT - 1)) {
@@ -68,9 +71,9 @@ void fnprof_frame(uint64_t frame) {
         if (e && sscanf(e, "%ld:%ld", &from, &to) != 2) from = -1;
     }
     if (from < 0) return;
-    if ((long)frame == from) { g_fnprof = 1; LOG("[fnprof] on at frame %llu\n", (unsigned long long)frame); }
+    if ((long)frame == from) { __atomic_fetch_or(&g_fnprof, 1, __ATOMIC_SEQ_CST); LOG("[fnprof] on at frame %llu\n", (unsigned long long)frame); }
     if ((long)frame != to) return;
-    g_fnprof = 0;
+    __atomic_fetch_and(&g_fnprof, ~1, __ATOMIC_SEQ_CST);
     uint64_t (*rows)[2] = malloc(sizeof(uint64_t[2]) * NSLOT);
     int n = 0;
     for (int i = 0; i < NSLOT; i++)
@@ -88,5 +91,5 @@ void fnprof_frame(uint64_t frame) {
 // LARECOMP_FNPROF=0:<to>: profile from process start (threads the game starts before the first frame)
 __attribute__((constructor)) static void fnprof_early(void) {
     const char *e = getenv("LARECOMP_FNPROF");
-    if (e && e[0] == '0' && e[1] == ':') g_fnprof = 1;
+    if (e && e[0] == '0' && e[1] == ':') __atomic_fetch_or(&g_fnprof, 1, __ATOMIC_SEQ_CST);
 }

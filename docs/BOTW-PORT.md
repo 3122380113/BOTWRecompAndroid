@@ -169,6 +169,20 @@ Próximos problemas vistos:
 - Crash em `renderer_mark_gpu_owned` (acesso a `0xa3`) depois de ~9 s.
 - Ainda não vi a imagem: os testes foram com o celular em uso.
 
+**Segunda rodada de testes (2026-10-18):**
+
+- Corrigido: texturas finalizadas são liberadas 4 quadros depois (a thread de render ainda as usava); listas enviadas
+  são copiadas no `SubmitCommands` (o jogo regrava a memória de controle logo depois, como o NVN permite);
+  `CallCommands` também copia as sublistas na gravação.
+- **Onde parei:** a fatia de tempo do núcleo 0 (8 ms) destrava a thread principal, mas quebra a ordem entre threads
+  que o jogo assume: uma thread de trabalho grava listas no anel de memória de controle e a principal reinicia o anel
+  por cima (visto com `LARECOMP_CHECK_HANDLES=1`). Quem libera o laço da principal (`main+0x8551a8`, espera a global
+  `main+0x22df9e8`) é a thread t110, de prioridade 46 (menor que a da principal, 44): no Switch ela não poderia
+  preemptá-la no mesmo núcleo, então deve rodar **em outro núcleo** no console. Próximo passo: ver em que núcleo cada
+  thread do BOTW roda de verdade (`svcCreateThread` com núcleo -2 / `svcSetThreadCoreMask`, que o runtime ignora)
+  em vez da fatia de tempo, que deve ser desligada (`LARECOMP_C0_SLICE_MS=0`) quando isso estiver certo.
+- Diagnóstico novo: `LARECOMP_WATCH=<offset no main>[,<bytes>]` (quem acessa a memória, com a thread).
+
 Falta (precisa rodar o jogo):
 
 - Rodar: no PC (falta o MSYS2, ver Fase 1) ou no celular (`android/push_game.sh`, com o celular no adb).

@@ -4,6 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#ifndef _WIN32
+#include <dlfcn.h>
+#endif
 
 #include "gamelib.h"
 #include "hle.h"
@@ -325,6 +328,18 @@ static void *watch_thread(void *a) {
     return NULL;
 }
 void watch_arm(void) {
+    static int env_done;
+    if (!env_done) {  // LARECOMP_WATCH=<offset in main, hex>[,<length>]: watch those bytes of main's image
+        env_done = 1;
+        const char *e = getenv("LARECOMP_WATCH");
+        if (e && !g_watch_lo) {
+            char *q;
+            uint64_t off = strtoull(e, &q, 16), len = *q == ',' ? strtoull(q + 1, NULL, 0) : 8;
+            g_watch_lo = MAIN_BASE + off, g_watch_hi = g_watch_lo + len;
+            LOG("[watch] main+%llx (%llu bytes) at %llx\n", (unsigned long long)off, (unsigned long long)len,
+                (unsigned long long)g_watch_lo);
+        }
+    }
     if (!g_watch_lo || watch_page) return;
     watch_page = g_watch_lo & ~(PLAT_PAGE - 1);
     pthread_t t;
@@ -344,7 +359,14 @@ bool rt_fault_watch(uint64_t fa, uint64_t pc) {
         for (int i = 0; i < nseen; i++) found |= !strcmp(seen[i], key);
         if (!found && nseen < 64) {
             snprintf(seen[nseen++], 48, "%s", key);
-            fprintf(stderr, "[watch] +%#llx by %s\n", fa - g_watch_lo, nm);
+            KThread *kt = kernel_current_thread();
+            uint64_t lib = 0;
+#ifndef _WIN32
+            Dl_info di;
+            if (dladdr((void *)(uintptr_t)pc, &di)) lib = pc - (uint64_t)(uintptr_t)di.dli_fbase;
+#endif
+            LOG("[watch] +%#llx by %s (host pc %llx, library +%llx) thread t%llu\n", (unsigned long long)(fa - g_watch_lo), nm,
+                (unsigned long long)pc, (unsigned long long)lib, (unsigned long long)(kt ? kt->id : 0));
         }
     }
     plat_protect(watch_page, PLAT_PAGE, PLAT_PROT_RW);

@@ -64,6 +64,7 @@ static void rtld_start_legacy(Cpu *c) {
     call_sym(c, "nninitStartup", true);
     call_sym(c, "__nnDetailInitLibc2", true);
     for (int i = 0; i < g_nmodules; i++) module_init(c, &g_modules[i]);
+    { extern void watch_arm(void); watch_arm(); }  // (LARECOMP_WATCH from the start)
     call_sym(c, "nnMain", true);
     call_sym(c, "nninitFinalizeSdkModule", false);
     call_sym(c, "nnosQuickExit", true);

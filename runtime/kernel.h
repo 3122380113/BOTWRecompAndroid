@@ -47,6 +47,7 @@ struct KThread {
 #ifdef __ANDROID__
     void *dcache;          // dispatch.c: this thread's guest -> host function cache (TLS is slow in a dlopened library)
     bool core0_held;       // kernel.c: this thread has core 0 (it runs; the others of core 0 wait)
+    bool core0_evicted;    // kernel.c: its time slice ran out: it waits for core 0 at its next function entry
 #endif
 };
 
