@@ -1,9 +1,10 @@
-// On-screen controls on Android (docs/las/ANDROID-PORT.md, Fase 4): a left stick, A / B / X / Y, L / R / ZL / ZR,
-// Minus / Plus and a button for the in-game menu, drawn over the game with ImGui (ui/menu.mm menu_render) while no
-// controller is connected. Fingers come from SDL's touch events (ui_run, runtime/nvn/vulkan/device.c); what they hold
-// joins the controller's buttons and stick in runtime/hle/input.c (g_touch_buttons, g_touch_lx / ly). The stick is
-// floating: it starts where a finger lands in the left part of the screen. With the menu or the name entry up,
-// touches stay mouse clicks for the menu. The Android back button opens the menu too.
+// On-screen controls on Android (docs/las/ANDROID-PORT.md, Fase 4): both sticks, A / B / X / Y, L / R / ZL / ZR,
+// L3 / R3 (the sticks' clicks), the d-pad, Minus / Plus and a button for the in-game menu, drawn over the game with
+// ImGui (ui/menu.mm menu_render) while no controller is connected. Fingers come from SDL's touch events (ui_run,
+// runtime/nvn/vulkan/device.c); what they hold joins the controller's buttons and sticks in runtime/hle/input.c
+// (g_touch_buttons, g_touch_lx / ly, g_touch_rx / ry). Both sticks float: the left one starts where a finger lands in
+// the left part of the screen, the right one (BOTW's camera) where it lands on the right, off the buttons. With the
+// menu or the name entry up, touches stay mouse clicks for the menu. The Android back button opens the menu too.
 // The layout is the player's (the Controls tab, ui/controls_ui.mm): each control's place (g_settings.touch_pos, a
 // share of the screen; negative: the default), their size and opacity. Editing it (touch_edit_begin) closes the menu
 // and lets the controls be dragged; a bar on the screen saves, resets or cancels.
@@ -24,13 +25,16 @@ void menu_test_open(void);       // ui/menu.mm: opens the in-game menu
 void menu_request_close(void);   // ui/menu.mm
 _Atomic uint64_t g_touch_buttons;  // (runtime/hle/input.c) Switch button bits held on the screen
 _Atomic int32_t g_touch_lx, g_touch_ly;  // left stick, -32767..32767, y up
+_Atomic int32_t g_touch_rx, g_touch_ry;  // right stick
 }
 
 // the Switch button bits (runtime/hle/input.c)
-enum { TB_A = 0, TB_B, TB_X, TB_Y, TB_LSTICK, TB_RSTICK, TB_L, TB_R, TB_ZL, TB_ZR, TB_PLUS, TB_MINUS };
-enum { C_NONE = -1, C_STICK = 100, C_MENU = 101, C_DONE = 102, C_RESET = 103, C_CANCEL = 104 };
-// the controls, in g_settings.touch_pos order (TOUCH_NCTL entries)
-enum { K_A, K_B, K_X, K_Y, K_L, K_ZL, K_R, K_ZR, K_MINUS, K_PLUS, K_MENU, K_STICK, K_N };
+enum { TB_A = 0, TB_B, TB_X, TB_Y, TB_LSTICK, TB_RSTICK, TB_L, TB_R, TB_ZL, TB_ZR, TB_PLUS, TB_MINUS,
+       TB_LEFT, TB_UP, TB_RIGHT, TB_DOWN };
+enum { C_NONE = -1, C_STICK = 100, C_MENU = 101, C_DONE = 102, C_RESET = 103, C_CANCEL = 104, C_RSTICK = 105 };
+// the controls, in g_settings.touch_pos order (TOUCH_NCTL entries; LAS's first twelve keep their places in saved layouts)
+enum { K_A, K_B, K_X, K_Y, K_L, K_ZL, K_R, K_ZR, K_MINUS, K_PLUS, K_MENU, K_STICK,
+       K_RSTICK, K_LS, K_RS, K_UP, K_DOWN, K_LEFT, K_RIGHT, K_N };
 _Static_assert(K_N == TOUCH_NCTL, "settings.h TOUCH_NCTL");
 
 typedef struct { float x, y, r; int bit; const char *label; bool rect; float w, h; int k; } Ctl;
@@ -38,8 +42,8 @@ typedef struct { float x, y, r; int bit; const char *label; bool rect; float w, 
 static pthread_mutex_t t_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct { SDL_FingerID id; int ctl; float x, y, dx, dy; } fingers[10];
 static int nfingers;
-static float stick_cx, stick_cy, stick_kx, stick_ky;  // where the stick started and where its knob is (pixels)
-static bool stick_on;
+// the sticks (0 left, 1 right): where each started and where its knob is (pixels)
+static struct { bool on; float cx, cy, kx, ky; } stick[2];
 static float disp_w = 1, disp_h = 1;  // the window in pixels (as last drawn)
 static atomic_bool used;  // a touch since the last controller: show the controls
 static atomic_bool hide_auto;  // a controller is connected (as of the last event or check)
@@ -49,6 +53,7 @@ static _Atomic uint64_t last_draw_ms;
 
 static void default_pos(int k, float *x, float *y) {  // in pixels
     float w = disp_w, h = disp_h, u = h / 100.0f, gap = 13.0f * u, fx = w - 20 * u, fy = h - 27 * u, sw = 15 * u;
+    float dx = 15 * u, dy = h - 58 * u, dg = 7.5f * u;  // the d-pad: above the left stick
     switch (k) {
     case K_A: *x = fx + gap, *y = fy; break;  // face buttons: a diamond, Switch layout (A east)
     case K_B: *x = fx, *y = fy + gap; break;
@@ -61,7 +66,14 @@ static void default_pos(int k, float *x, float *y) {  // in pixels
     case K_MINUS: *x = w / 2 - 9 * u, *y = h - 7 * u; break;
     case K_PLUS: *x = w / 2 + 9 * u, *y = h - 7 * u; break;
     case K_MENU: *x = w / 2, *y = 6 * u; break;
-    default: *x = 20 * u, *y = h - 27 * u; break;  // the stick's resting place
+    case K_RSTICK: *x = w - 62 * u, *y = h - 27 * u; break;  // the right stick's resting place
+    case K_LS: *x = 40 * u, *y = h - 8 * u; break;  // the sticks' clicks, under each stick's resting place
+    case K_RS: *x = w - 50 * u, *y = h - 8 * u; break;
+    case K_UP: *x = dx, *y = dy - dg; break;
+    case K_DOWN: *x = dx, *y = dy + dg; break;
+    case K_LEFT: *x = dx - dg, *y = dy; break;
+    case K_RIGHT: *x = dx + dg, *y = dy; break;
+    default: *x = 20 * u, *y = h - 27 * u; break;  // the left stick's resting place
     }
 }
 
@@ -76,17 +88,19 @@ static float stick_radius(void) { return disp_h * 0.13f * size_scale(); }
 
 static int layout(Ctl *c) {  // in pixels of the window (landscape)
     float u = disp_h / 100.0f, z = size_scale();
-    float br = 7.5f * u * z, sw = 15 * u * z, sh = 7 * u * z, sr = 4.5f * u * z;
+    float br = 7.5f * u * z, sw = 15 * u * z, sh = 7 * u * z, sr = 4.5f * u * z, dr = 3.8f * u * z;
     static const struct { int k, bit; const char *label; int shape; } T[] = {
         {K_A, TB_A, "A", 0}, {K_B, TB_B, "B", 0}, {K_X, TB_X, "X", 0}, {K_Y, TB_Y, "Y", 0},
         {K_L, TB_L, "L", 1}, {K_ZL, TB_ZL, "ZL", 1}, {K_R, TB_R, "R", 1}, {K_ZR, TB_ZR, "ZR", 1},
-        {K_MINUS, TB_MINUS, "-", 2}, {K_PLUS, TB_PLUS, "+", 2}, {K_MENU, C_MENU, "=", 2}};
+        {K_MINUS, TB_MINUS, "-", 2}, {K_PLUS, TB_PLUS, "+", 2}, {K_MENU, C_MENU, "=", 2},
+        {K_LS, TB_LSTICK, "L3", 2}, {K_RS, TB_RSTICK, "R3", 2},
+        {K_UP, TB_UP, "^", 3}, {K_DOWN, TB_DOWN, "v", 3}, {K_LEFT, TB_LEFT, "<", 3}, {K_RIGHT, TB_RIGHT, ">", 3}};
     int n = 0;
     for (const auto &t : T) {
         float x, y;
         pos_of(t.k, &x, &y);
         c[n++] = t.shape == 1 ? (Ctl){x, y, 0, t.bit, t.label, true, sw, sh, t.k}
-                              : (Ctl){x, y, t.shape == 2 ? sr : br, t.bit, t.label, false, 0, 0, t.k};
+                              : (Ctl){x, y, t.shape == 2 ? sr : t.shape == 3 ? dr : br, t.bit, t.label, false, 0, 0, t.k};
     }
     if (editing) {  // the bar: save, defaults, cancel
         float bw = 16 * u, bh = 8 * u, y = 30 * u;
@@ -105,26 +119,41 @@ static bool in_ctl(const Ctl *c, float x, float y) {
 }
 
 static int hit(float x, float y, int *k) {  // the control under (x, y) (*k: its layout entry)
-    Ctl c[20];
+    Ctl c[32];
     int n = layout(c);
     for (int i = n; i-- > 0;)  // (the bar first)
         if (in_ctl(&c[i], x, y)) { *k = c[i].k; return c[i].bit; }
-    *k = K_STICK;
-    if (editing) {
-        float sx, sy, R = stick_radius();
-        pos_of(K_STICK, &sx, &sy);
-        return (x - sx) * (x - sx) + (y - sy) * (y - sy) <= R * R ? C_STICK : C_NONE;
+    float R = stick_radius();
+    if (editing) {  // the sticks' resting places can be dragged
+        for (int s = 0; s < 2; s++) {
+            float sx, sy;
+            pos_of(s ? K_RSTICK : K_STICK, &sx, &sy);
+            if ((x - sx) * (x - sx) + (y - sy) * (y - sy) <= R * R) { *k = s ? K_RSTICK : K_STICK; return s ? C_RSTICK : C_STICK; }
+        }
+        *k = -1;
+        return C_NONE;
     }
+    *k = K_STICK;
     if (x < disp_w * 0.45f && y > disp_h * 0.30f) return C_STICK;
+    *k = K_RSTICK;
+    if (x > disp_w * 0.50f && y > disp_h * 0.25f) return C_RSTICK;  // (the camera: any free spot on the right)
+    *k = -1;
     return C_NONE;
 }
 
-static void stick_update(void) {  // (t_lock held)
+static void stick_update(int s) {  // (t_lock held)
     float R = stick_radius();
-    float dx = stick_kx - stick_cx, dy = stick_ky - stick_cy, d = sqrtf(dx * dx + dy * dy);
-    if (d > R) { dx *= R / d, dy *= R / d; stick_kx = stick_cx + dx, stick_ky = stick_cy + dy; }
-    g_touch_lx = (int32_t)(dx / R * 32767);
-    g_touch_ly = (int32_t)(-dy / R * 32767);
+    float dx = stick[s].kx - stick[s].cx, dy = stick[s].ky - stick[s].cy, d = sqrtf(dx * dx + dy * dy);
+    if (d > R) { dx *= R / d, dy *= R / d; stick[s].kx = stick[s].cx + dx, stick[s].ky = stick[s].cy + dy; }
+    int32_t x = (int32_t)(dx / R * 32767), y = (int32_t)(-dy / R * 32767);
+    if (s) g_touch_rx = x, g_touch_ry = y;
+    else g_touch_lx = x, g_touch_ly = y;
+}
+
+static void stick_release(int s) {  // (t_lock held)
+    stick[s].on = false;
+    if (s) g_touch_rx = 0, g_touch_ry = 0;
+    else g_touch_lx = 0, g_touch_ly = 0;
 }
 
 static void recompute(void) {  // (t_lock held)
@@ -137,8 +166,9 @@ static void recompute(void) {  // (t_lock held)
 static void release_all(void) {
     pthread_mutex_lock(&t_lock);
     nfingers = 0;
-    stick_on = false;
-    g_touch_buttons = 0, g_touch_lx = 0, g_touch_ly = 0;
+    stick_release(0);
+    stick_release(1);
+    g_touch_buttons = 0;
     pthread_mutex_unlock(&t_lock);
 }
 
@@ -198,7 +228,7 @@ extern "C" bool touch_controls_event(const SDL_Event *e) {
             if (!menu_input_captured()) { menu_test_open(); return true; }
         }
         return false;
-    case SDL_EVENT_FINGER_DOWN: case SDL_EVENT_FINGER_MOTION: case SDL_EVENT_FINGER_UP: break;
+    case SDL_EVENT_FINGER_DOWN: case SDL_EVENT_FINGER_MOTION: case SDL_EVENT_FINGER_UP: case SDL_EVENT_FINGER_CANCELED: break;
     default: return false;
     }
     if (!editing && (menu_input_captured() || !g_settings.touch_controls || hide_auto)) { release_all(); return false; }  // (the menu's clicks)
@@ -210,13 +240,14 @@ extern "C" bool touch_controls_event(const SDL_Event *e) {
     int act = C_NONE;  // (after the lock: menu / the edit bar)
     if (e->type == SDL_EVENT_FINGER_DOWN && f < 0 && nfingers < 10) {
         int k, ctl = hit(x, y, &k);
-        if (ctl == C_STICK && stick_on && !editing) ctl = C_NONE;  // (one stick)
+        int s = ctl == C_STICK ? 0 : ctl == C_RSTICK ? 1 : -1;
+        if (s >= 0 && stick[s].on && !editing) ctl = C_NONE, s = -1;  // (one finger per stick)
         float cx, cy;
         if (k >= 0) pos_of(k, &cx, &cy); else cx = x, cy = y;
         fingers[nfingers] = {e->tfinger.fingerID, ctl, x, y, cx - x, cy - y};
-        if (editing && k >= 0 && ctl != C_NONE && ctl < C_DONE) fingers[nfingers].ctl = 200 + k;  // (dragging layout entry k)
+        if (editing && k >= 0 && ctl != C_NONE && (ctl < C_DONE || ctl == C_RSTICK)) fingers[nfingers].ctl = 200 + k;  // (dragging layout entry k)
         nfingers++;
-        if (!editing && ctl == C_STICK) { stick_on = true; stick_cx = stick_kx = x, stick_cy = stick_ky = y; stick_update(); }
+        if (!editing && s >= 0) { stick[s].on = true; stick[s].cx = stick[s].kx = x, stick[s].cy = stick[s].ky = y; stick_update(s); }
         if (ctl == C_MENU && !editing) act = C_MENU;
         if (ctl >= C_DONE && ctl <= C_CANCEL) act = ctl;
     } else if (e->type == SDL_EVENT_FINGER_MOTION && f >= 0) {
@@ -226,9 +257,13 @@ extern "C" bool touch_controls_event(const SDL_Event *e) {
             float nx = (x + fingers[f].dx) / disp_w, ny = (y + fingers[f].dy) / disp_h;
             edit_pos[k][0] = nx < 0.02f ? 0.02f : nx > 0.98f ? 0.98f : nx;
             edit_pos[k][1] = ny < 0.03f ? 0.03f : ny > 0.97f ? 0.97f : ny;
-        } else if (fingers[f].ctl == C_STICK && !editing) { stick_kx = x, stick_ky = y; stick_update(); }
-    } else if (e->type == SDL_EVENT_FINGER_UP && f >= 0) {
-        if (fingers[f].ctl == C_STICK && !editing) { stick_on = false; g_touch_lx = 0, g_touch_ly = 0; }
+        } else if ((fingers[f].ctl == C_STICK || fingers[f].ctl == C_RSTICK) && !editing) {
+            int s = fingers[f].ctl == C_RSTICK;
+            stick[s].kx = x, stick[s].ky = y;
+            stick_update(s);
+        }
+    } else if ((e->type == SDL_EVENT_FINGER_UP || e->type == SDL_EVENT_FINGER_CANCELED) && f >= 0) {
+        if ((fingers[f].ctl == C_STICK || fingers[f].ctl == C_RSTICK) && !editing) stick_release(fingers[f].ctl == C_RSTICK);
         fingers[f] = fingers[--nfingers];
     }
     recompute();
@@ -244,7 +279,7 @@ extern "C" void touch_controls_draw(ImVec2 display, ImFont *font) {
     last_draw_ms = SDL_GetTicks();
     if (!touch_controls_visible()) return;
     ImDrawList *dl = ImGui::GetForegroundDrawList();
-    Ctl c[20];
+    Ctl c[32];
     int n = layout(c);
     uint64_t held = g_touch_buttons;
     float u = disp_h / 100.0f;
@@ -277,20 +312,30 @@ extern "C" void touch_controls_draw(ImVec2 display, ImFont *font) {
         if (c[i].bit == C_MENU) {  // three bars
             for (int k = -1; k <= 1; k++)
                 dl->AddLine(ImVec2(c[i].x - 2 * u, c[i].y + k * 1.3f * u), ImVec2(c[i].x + 2 * u, c[i].y + k * 1.3f * u), tx, 0.4f * u);
+        } else if (c[i].bit >= TB_LEFT && c[i].bit <= TB_DOWN) {  // d-pad: a triangle pointing its way
+            static const float dir[4][2] = {{-1, 0}, {0, -1}, {1, 0}, {0, 1}};  // LEFT, UP, RIGHT, DOWN
+            const float *d = dir[c[i].bit - TB_LEFT];
+            float r = c[i].r * 0.5f, px = -d[1], py = d[0];
+            ImVec2 tip(c[i].x + d[0] * r, c[i].y + d[1] * r);
+            ImVec2 b1(c[i].x - d[0] * r * 0.6f + px * r * 0.8f, c[i].y - d[1] * r * 0.6f + py * r * 0.8f);
+            ImVec2 b2(c[i].x - d[0] * r * 0.6f - px * r * 0.8f, c[i].y - d[1] * r * 0.6f - py * r * 0.8f);
+            dl->AddTriangleFilled(tip, b1, b2, tx);
         } else {
             dl->AddText(font, fs, ImVec2(c[i].x - ts.x / 2, c[i].y - ts.y / 2), tx, c[i].label);
         }
     }
-    // the stick: where it started (or its resting place) and the knob
-    pthread_mutex_lock(&t_lock);
-    bool on = stick_on;
-    float rx, ry;
-    pos_of(K_STICK, &rx, &ry);
-    float cx = on ? stick_cx : rx, cy = on ? stick_cy : ry, kx = on ? stick_kx : cx, ky = on ? stick_ky : cy;
-    pthread_mutex_unlock(&t_lock);
+    // the sticks: where each started (or its resting place) and the knob
     float R = stick_radius();
-    dl->AddCircleFilled(ImVec2(cx, cy), R, fill, 48);
-    dl->AddCircle(ImVec2(cx, cy), R, line, 48, 0.3f * u);
-    dl->AddCircleFilled(ImVec2(kx, ky), R * 0.45f, on ? fill_on : IM_COL32(255, 255, 255, (int)(70 * alpha)), 32);
+    for (int s = 0; s < 2; s++) {
+        pthread_mutex_lock(&t_lock);
+        bool on = stick[s].on;
+        float rx, ry;
+        pos_of(s ? K_RSTICK : K_STICK, &rx, &ry);
+        float cx = on ? stick[s].cx : rx, cy = on ? stick[s].cy : ry, kx = on ? stick[s].kx : cx, ky = on ? stick[s].ky : cy;
+        pthread_mutex_unlock(&t_lock);
+        dl->AddCircleFilled(ImVec2(cx, cy), R, fill, 48);
+        dl->AddCircle(ImVec2(cx, cy), R, line, 48, 0.3f * u);
+        dl->AddCircleFilled(ImVec2(kx, ky), R * 0.45f, on ? fill_on : IM_COL32(255, 255, 255, (int)(70 * alpha)), 32);
+    }
 }
 #endif

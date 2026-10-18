@@ -231,8 +231,14 @@ void renderer_get_scale(float *sx, float *sy) { *sx = g_rs_x; *sy = g_rs_y; }
 void renderer_set_scale(float sx, float sy) { g_rs_x = sx; g_rs_y = sy; }
 uint64_t renderer_present_count(void);
 
+// Render targets at the output resolution: LAS's rule (16:9 render targets are the screen's) does not hold for BOTW.
+// With it, BOTW's scene (1600x900) was drawn at 2133x1200 next to unscaled targets of the same size: the image filled
+// 3/4 of the screen, the lens flares grew into blue balls and Link went see-through. Off until BOTW has rules of its
+// own; LARECOMP_SCALE_TARGETS=1 turns LAS's back on (tests), LARECOMP_NO_SCALE still forces it off.
 static bool tex_scalable(const NvnTexture *t) {
-    if (getenv("LARECOMP_NO_SCALE")) return false;
+    static int on = -1;
+    if (on < 0) on = getenv("LARECOMP_SCALE_TARGETS") && !getenv("LARECOMP_NO_SCALE");
+    if (!on) return false;
     if (t->target != 1 || t->samples > 1 || !(t->flags & 8) || t->width < 32 || t->height < 16) return false;
     float a = (float)t->width / (float)t->height;
     return a > 1.74f && a < 1.81f;
@@ -438,6 +444,17 @@ static void create_image(NvnTexture *t, TexBackend *b) {
         VkClearDepthStencilValue zero = {0.0f, 0};
         VkImageSubresourceRange rg = {b->aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
         vkCmdClearDepthStencilImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &rg);
+    }
+    if (depthfmt || (ci.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) {
+        // Render-target-capable color images start zeroed too: BOTW draws its UI layers over what the target held
+        // without clearing it (on the Switch: the memory's old contents, zeros at first), and a new target's
+        // VkImage held whatever memory the driver recycled - colored noise behind the save list (Turnip).
+        VkCommandBuffer cb = vk_upload_cmd();
+        if (!depthfmt) {
+            VkClearColorValue zero = {{0}};
+            VkImageSubresourceRange rg = {VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
+            vkCmdClearColorImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &rg);
+        }
         VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                                .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT, .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                                .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};

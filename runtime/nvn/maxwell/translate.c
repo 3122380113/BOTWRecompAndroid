@@ -929,61 +929,51 @@ static void emit_tld4(Ctx *c, uint64_t w) {
     write_tex_result(c, slot, call, mask, d, RZ, false, false);
 }
 
-// TLD4S (scalar/compact 2D gather, 0xdf00 / mask 0xff40): always writes all 4 gather lanes to d0/d1.
+// TLD4S (scalar/compact 2D gather, 0xdf00 / mask 0xff40): always writes all 4 gather lanes to d0/d0+1, d1/d1+1.
+// Sources (as yuzu's texture_gather_swizzled.cpp): with AOFFI the coordinates are a, a+1, the offset b and the depth
+// reference b+1; with DC only the coordinates are a, a+1 and the reference b; else the coordinates are a, b.
 static void emit_tld4s(Ctx *c, uint64_t w) {
     int d0 = (int)bits(w, 0, 8), a = (int)bits(w, 8, 8), b = (int)bits(w, 20, 8), d1 = (int)bits(w, 28, 8);
     uint32_t index = (uint32_t)bits(w, 36, 13);
     bool dc = bits(w, 50, 1), aoffi = bits(w, 51, 1);
     int comp = (int)bits(w, 52, 2);
     bool f16 = bits(w, 55, 1);  // 0xdf00 = Tld4s (F32), 0xdf80 = Tld4sF16 (F16)
-    char a0[16], a1[16], b0[16], b1[16];
-    const char *A = reg(c, a, a0);
-    const char *A1 = (dc && aoffi) ? reg(c, a + 1, a1) : "0u";
-    const char *Bv = reg(c, b, b0);
-    const char *B1 = (dc || aoffi) ? reg(c, b + 1, b1) : "0u";
+    char xb[16], yb[16], ob[16], rb[16];
+    const char *X = reg(c, a, xb), *Y, *O = NULL, *D = NULL;
+    if (aoffi || dc) Y = reg(c, a == RZ ? RZ : a + 1, yb);
+    else Y = reg(c, b, yb);
+    if (aoffi) {
+        O = reg(c, b, ob);
+        if (dc) D = reg(c, b == RZ ? RZ : b + 1, rb);
+    } else if (dc) {
+        D = reg(c, b, rb);
+    }
     int slot = tex_slot(c, index, TEXTYPE_2D, dc, false);
+    char offv[96] = "", drv[48] = "";
+    if (O) snprintf(offv, sizeof offv, "int2(int(%s << 26) >> 26, int(%s << 18) >> 26)", O, O);
+    if (D) snprintf(drv, sizeof drv, "as_type<float>(%s)", D);
     if (c->glsl) {
-        char cs[2][48], offv[96], drv[48], gcall[4096];
-        const char *co[2] = {cs[0], cs[1]}, *offp = NULL, *drp = NULL;
-        if (!dc && !aoffi) {
-            snprintf(cs[0], sizeof cs[0], "as_type<float>(%s)", A);
-            snprintf(cs[1], sizeof cs[1], "as_type<float>(%s)", Bv);
-        } else if (!dc && aoffi) {
-            snprintf(cs[0], sizeof cs[0], "as_type<float>(%s)", A);
-            snprintf(cs[1], sizeof cs[1], "as_type<float>(%s)", Bv);
-            snprintf(offv, sizeof offv, "int2(int(%s << 26) >> 26, int(%s << 18) >> 26)", B1, B1);
-            offp = offv;
-        } else if (dc && !aoffi) {
-            snprintf(cs[0], sizeof cs[0], "as_type<float>(%s)", A);
-            snprintf(cs[1], sizeof cs[1], "as_type<float>(%s)", Bv);
-            snprintf(drv, sizeof drv, "as_type<float>(%s)", B1);
-            drp = drv;
-        } else {
-            snprintf(cs[0], sizeof cs[0], "as_type<float>(%s)", A);
-            snprintf(cs[1], sizeof cs[1], "as_type<float>(%s)", A1);
-            snprintf(offv, sizeof offv, "int2(int(%s << 26) >> 26, int(%s << 18) >> 26)", Bv, Bv);
-            offp = offv;
-            snprintf(drv, sizeof drv, "as_type<float>(%s)", B1);
-            drp = drv;
-        }
-        glsl_gather(c, gcall, slot, co, NULL, drp, offp, comp);
+        char cs[2][48], gcall[4096];
+        const char *co[2] = {cs[0], cs[1]};
+        snprintf(cs[0], sizeof cs[0], "as_type<float>(%s)", X);
+        snprintf(cs[1], sizeof cs[1], "as_type<float>(%s)", Y);
+        glsl_gather(c, gcall, slot, co, NULL, D ? drv : NULL, O ? offv : NULL, comp);
         write_tex_result(c, slot, gcall, 0xf, d0, d1, true, f16);
         return;
     }
     const char *cname = comp == 1 ? "component::y" : comp == 2 ? "component::z" : comp == 3 ? "component::w" : "component::x";
     char call[1024];
-    if (!dc && !aoffi)
-        sprintf(call, "t%d.gather(s%d, float2(as_type<float>(%s), as_type<float>(%s)), int2(0), %s)", slot, slot, A, Bv, cname);
-    else if (!dc && aoffi)
-        sprintf(call, "t%d.gather(s%d, float2(as_type<float>(%s), as_type<float>(%s)), int2(int(%s << 26) >> 26, int(%s << 18) >> 26), %s)", slot, slot, A, Bv, B1, B1, cname);
-    else if (dc && !aoffi)
-        sprintf(call, "t%d.gather_compare(s%d, float2(as_type<float>(%s), as_type<float>(%s)), as_type<float>(%s))", slot, slot, A, Bv, B1);
+    if (D)
+        sprintf(call, "t%d.gather_compare(s%d, float2(as_type<float>(%s), as_type<float>(%s)), %s%s%s)", slot, slot, X, Y, drv,
+                O ? ", " : "", offv);
     else
-        sprintf(call, "t%d.gather_compare(s%d, float2(as_type<float>(%s), as_type<float>(%s)), as_type<float>(%s), int2(int(%s << 26) >> 26, int(%s << 18) >> 26))", slot, slot, A, A1, B1, Bv, Bv);
+        sprintf(call, "t%d.gather(s%d, float2(as_type<float>(%s), as_type<float>(%s)), %s, %s)", slot, slot, X, Y,
+                O ? offv : "int2(0)", cname);
     write_tex_result(c, slot, call, 0xf, d0, d1, true, f16);
 }
 
-// TMML (Texture MipMap Level, 0xdf60 / 0xdf58): queries computed LOD as 24.8 signed fixed-point in .x/.y.
+// TMML (Texture MipMap Level, 0xdf60 / 0xdf58): .x the mip level accessed, .y the computed LOD (textureQueryLod), as
+// 24.8 fixed point (yuzu: texture_mipmap_level.cpp).
 static void emit_tmml(Ctx *c, uint64_t w, bool bindless) {
     int d = (int)bits(w, 0, 8), a = (int)bits(w, 8, 8);
     uint32_t index = bindless ? 0 : (uint32_t)bits(w, 36, 13);
@@ -1016,7 +1006,7 @@ static void emit_tmml(Ctx *c, uint64_t w, bool bindless) {
     else snprintf(coords, sizeof coords, "float3(%s, %s, %s)", cs[0], cs[1], cs[2]);
     if (c->glsl && c->stage == STAGE_FRAGMENT) {
         sp(&c->body, "    { float2 lod = textureQueryLod(t%d, %s);\n"
-                     "      uint4 q = uint4(uint(int(lod.y * 256.0f)), uint(int(lod.x * 256.0f)), 0u, 0u);\n",
+                     "      uint4 q = uint4(uint(int(lod.x * 256.0f)), uint(int(lod.y * 256.0f)), 0u, 0u);\n",
            slot, coords);
     } else {
         sp(&c->body, "    { uint4 q = uint4(0u, 0u, 0u, 0u);\n");

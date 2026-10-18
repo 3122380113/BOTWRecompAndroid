@@ -30,13 +30,17 @@
 uint64_t g_guest_lo;  // the window's start (rt.h GUEST_LO), set by plat_reserve_guest before main()
 
 // ---- logcat: the runtime logs with fprintf(stderr), as on the desktop; a thread forwards the lines
+// LARECOMP_LOG_FILE=<absolute path>: every line also goes there (logcat drops lines when a debug frame logs thousands)
 static void *log_pump(void *arg) {
     int fd = (int)(intptr_t)arg;
     char buf[4096];
     size_t n = 0;
+    const char *path = getenv("LARECOMP_LOG_FILE");
+    int out = path ? open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644) : -1;
     for (;;) {
         ssize_t r = read(fd, buf + n, sizeof buf - 1 - n);
         if (r <= 0) break;
+        if (out >= 0 && write(out, buf + n, (size_t)r) < 0) { close(out); out = -1; }
         n += (size_t)r;
         char *start = buf, *nl;
         while ((nl = memchr(start, '\n', (size_t)(buf + n - start)))) {

@@ -203,6 +203,35 @@ Próximos problemas vistos:
   Também ver `[tex] type mismatch: want 6 have 3` (cubemap 64×64×6) e as instruções Maxwell `0xc838`/`0xdf00`.
 - Custo a observar: `register_texture` agora espera a thread de render (`vk_async_drain`) a cada registro.
 
+**Quarta rodada (2026-10-18, depois do commit do Gemini `1ab7837`):** o jogo chega ao Santuário da Ressurreição com
+a imagem certa, a tela de título com o menu e os textos, ~35 fps, ~950 texturas e 1 GB de memória da GPU estáveis.
+
+| Problema | Causa | Correção |
+|---|---|---|
+| A cena ocupava 3/4 da tela, lens flares viravam bolas azuis, Link transparente | a regra do LAS para a resolução interna (render targets 16:9 = tela) escalava a cena de 1600x900 do BOTW para 2133x1200 ao lado de alvos do mesmo tamanho sem escala | escala de render targets desligada (`LARECOMP_SCALE_TARGETS=1` volta à do LAS, para testes); a saída continua passando pelo FSR |
+| Nenhum texto (menus, títulos) | os glifos de cada linha de texto ficam num buffer ~2,7 GB dentro do heap de 3 GB; o descritor do heap alcança só `maxStorageBufferRange` (2 GB no Adreno): o vertex shader lia zeros | com o heap na GPU (Turnip) e maior que esse alcance, as draws usam a tabela GMap numa janela do heap que começa nos storage buffers delas (`gwin_prepare`, como o compute já fazia); `LARECOMP_VK_NO_GWIN=1` desliga |
+| Ruído colorido atrás da lista de saves | o jogo desenha as camadas da UI sobre o que o alvo tinha, sem limpar; uma VkImage nova tinha a memória que o driver reciclou | imagens de cor que podem ser render target nascem zeradas (como as de profundidade) |
+| TLD4S (gather compacto) com AOFFI ou DC lia a coordenada Y do registrador errado; TMML com .x/.y trocados | decodificação do commit do Gemini | layout do yuzu (`texture_gather_swizzled.cpp`, `texture_mipmap_level.cpp`) |
+| Texturas liberadas na hora no `Finalize` (sem backend e não registradas) enquanto a thread de render ainda podia usá-las; a deduplicação do Gemini dividia um `NvnTexture` entre objetos sem referência por dono (uso depois de liberar) | ciclo de vida do commit do Gemini | tabela de donos (endereço do objeto do jogo -> textura): cada `Initialize` é um dono com sua referência, só o `Finalize` dele (ou o próximo `Initialize`) a solta; cópias e segundos `Finalize` não fazem nada; texturas com a mesma descrição (memória, formato, tamanho, layout) são uma só, achadas por um hash do endereço; toda referência solta espera 4 quadros. Sem a marca `VIEW_WRAPPER_MAGIC` gravada nos objetos do jogo |
+
+Controles (Android): o overlay de toque ganhou o analógico direito (câmera: flutuante, em qualquer ponto livre da
+metade direita), o d-pad e L3 / R3, todos no editor de layout (`TOUCH_NCTL` 12 -> 19; layouts salvos continuam
+valendo). Todos os controles conectados são abertos e lidos juntos (antes só o primeiro da lista do SDL). **Não
+testado no aparelho:** o MIUI bloqueia injetar toques pelo adb (`INJECT_EVENTS`, opção "Depuração USB (configurações
+de segurança)" desligada).
+
+Ferramentas de diagnóstico novas: `LARECOMP_LOG_FILE=<caminho absoluto>` (o log também num arquivo: o logcat perde
+linhas num debug frame), `LARECOMP_DEBUG_TEXSTATE=1` (no debug frame: de onde vêm os texels de cada textura, view,
+swizzle), `LARECOMP_DEBUG_NO_PASSES=1` (debug frame só com o log: os PNGs esperam a GPU e mudam o timing),
+`LARECOMP_DEBUG_DATA` mostra os storage buffers do vertex shader; os PNGs dos passes agora são do alvo do próprio pass
+e com o alfa; screenshots no Android vão para o diretório de dados (o SDL tratava caminhos relativos como assets).
+Para rodar sem tocar no aparelho: `android/run_boot.sh <s> "LARECOMP_INPUT=700:A:6,..."` (A em 700 abre a lista de
+saves; ~3 As levam ao santuário).
+
+Ainda a ver: o usuário viu vértices "estourando" às vezes no santuário (não reproduzido nas capturas); toque no menu
+de configurações; o controle físico com o BOTW; a miniatura do save na lista não aparece; upload de ~500 MB/s
+(`upload` no log de fps).
+
 Falta (precisa rodar o jogo):
 
 - Rodar: no PC (falta o MSYS2, ver Fase 1) ou no celular (`android/push_game.sh`, com o celular no adb).

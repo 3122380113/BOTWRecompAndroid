@@ -26,7 +26,11 @@ _Static_assert(BTN_DOWN == BIND_DOWN && BTN_ZL == BIND_ZL, "bindings follow the 
 static _Atomic uint64_t key_buttons, pad_buttons;
 static _Atomic int32_t key_lx, key_ly, key_rx, key_ry, pad_lx, pad_ly, pad_rx, pad_ry;
 static uint8_t keys_down[SDL_SCANCODE_COUNT];
-static SDL_Gamepad *pad;
+// Every connected controller is open and read together (a phone may list a built-in device as a gamepad before the
+// player's own: reading only the first one left the real controller unread); pad: the first, for the button prompts.
+#define MAX_PADS 8
+static SDL_Gamepad *pads[MAX_PADS], *pad;
+static int npads;
 static _Atomic int64_t sampling;
 
 // Host keys / buttons held by a test script (LARECOMP_HOST_INPUT, input_frame): they go through the bindings
@@ -52,11 +56,11 @@ static void recompute_keyboard(void) {
 // Controller buttons (and the triggers as buttons) -> Switch buttons through g_bind_pad; the sticks stay the sticks.
 static void recompute_pad(void) {
     uint32_t host = test_pad;
-    if (pad && !host_test) {
+    for (int p = 0; p < npads && !host_test; p++) {
         for (int i = 0; i < SDL_GAMEPAD_BUTTON_COUNT; i++)
-            if (SDL_GetGamepadButton(pad, (SDL_GamepadButton)i)) host |= 1u << i;
-        if (SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 16000) host |= 1u << PADB_LTRIGGER;
-        if (SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 16000) host |= 1u << PADB_RTRIGGER;
+            if (SDL_GetGamepadButton(pads[p], (SDL_GamepadButton)i)) host |= 1u << i;
+        if (SDL_GetGamepadAxis(pads[p], SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 16000) host |= 1u << PADB_LTRIGGER;
+        if (SDL_GetGamepadAxis(pads[p], SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 16000) host |= 1u << PADB_RTRIGGER;
     }
     uint64_t b = 0;
     for (int i = 0; i < BIND_PAD_COUNT; i++)
@@ -69,11 +73,14 @@ static void recompute_pad(void) {
         last_host = host;
     }
     pad_buttons = b;
-    if (!pad || host_test) { pad_lx = test_lx, pad_ly = test_ly, pad_rx = pad_ry = 0; return; }
-    pad_lx = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX);
-    pad_ly = -SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY);
-    pad_rx = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX);
-    pad_ry = -SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY);
+    if (!npads || host_test) { pad_lx = test_lx, pad_ly = test_ly, pad_rx = pad_ry = 0; return; }
+    int32_t ax[4] = {0};  // each stick axis: the controller holding it furthest
+    for (int p = 0; p < npads; p++) {
+        int32_t v[4] = {SDL_GetGamepadAxis(pads[p], SDL_GAMEPAD_AXIS_LEFTX), -SDL_GetGamepadAxis(pads[p], SDL_GAMEPAD_AXIS_LEFTY),
+                        SDL_GetGamepadAxis(pads[p], SDL_GAMEPAD_AXIS_RIGHTX), -SDL_GetGamepadAxis(pads[p], SDL_GAMEPAD_AXIS_RIGHTY)};
+        for (int i = 0; i < 4; i++) if (abs(v[i]) > abs(ax[i])) ax[i] = v[i];
+    }
+    pad_lx = ax[0], pad_ly = ax[1], pad_rx = ax[2], pad_ry = ax[3];
     {   // LARECOMP_LOG_PAD=1: the left stick too, when it moves by more than ~1/8
         static int log_axes = -1;
         static int32_t llx, lly;
@@ -151,13 +158,30 @@ int input_pad_family(void) {
     return env >= 0 ? env : pad_family;
 }
 
+static void pad_open(SDL_JoystickID id) {
+    for (int p = 0; p < npads; p++) if (SDL_GetGamepadID(pads[p]) == id) return;
+    if (npads == MAX_PADS) return;
+    SDL_Gamepad *g = SDL_OpenGamepad(id);
+    if (!g) { LOG("[input] gamepad %u: %s\n", (unsigned)id, SDL_GetError()); return; }
+    pads[npads++] = g;
+    pad = pads[0];
+    LOG("[input] gamepad %u: %s (type %d, %d open)\n", (unsigned)id, SDL_GetGamepadName(g), (int)SDL_GetGamepadType(g), npads);
+    note_family();
+}
+static void pad_close(SDL_JoystickID id) {
+    for (int p = 0; p < npads; p++)
+        if (SDL_GetGamepadID(pads[p]) == id) { SDL_CloseGamepad(pads[p]); pads[p] = pads[--npads]; break; }
+    pad = npads ? pads[0] : NULL;
+    note_family();
+}
+
 void input_handle_event(const SDL_Event *e) {
     static bool scanned;  // pads present at startup: their ADDED event may have gone to the start screen's loop
     if (!scanned) {
         scanned = true;
         int n = 0;
         SDL_JoystickID *ids = SDL_GetGamepads(&n);
-        if (n > 0 && !pad) { pad = SDL_OpenGamepad(ids[0]); LOG("[input] gamepad: %s\n", SDL_GetGamepadName(pad)); note_family(); }
+        for (int i = 0; i < n; i++) pad_open(ids[i]);
         SDL_free(ids);
     }
     switch (e->type) {
@@ -167,10 +191,10 @@ void input_handle_event(const SDL_Event *e) {
         recompute_keyboard();
         break;
     case SDL_EVENT_GAMEPAD_ADDED:
-        if (!pad) { pad = SDL_OpenGamepad(e->gdevice.which); LOG("[input] gamepad: %s\n", SDL_GetGamepadName(pad)); note_family(); }
+        pad_open(e->gdevice.which);
         break;
     case SDL_EVENT_GAMEPAD_REMOVED:
-        if (pad && SDL_GetGamepadID(pad) == e->gdevice.which) { SDL_CloseGamepad(pad); pad = NULL; note_family(); }
+        pad_close(e->gdevice.which);
         recompute_pad();
         break;
     case SDL_EVENT_GAMEPAD_AXIS_MOTION: case SDL_EVENT_GAMEPAD_BUTTON_DOWN: case SDL_EVENT_GAMEPAD_BUTTON_UP:
@@ -378,14 +402,18 @@ extern bool menu_input_captured(void);  // runtime/ui/menu.mm: overlay menu or n
 // Buttons held right now (keyboard, gamepad, test script), independent of whether the game polls (movies).
 #ifdef __ANDROID__
 extern _Atomic uint64_t g_touch_buttons;  // runtime/ui/touch_controls.mm: the on-screen controls
-extern _Atomic int32_t g_touch_lx, g_touch_ly;
+extern _Atomic int32_t g_touch_lx, g_touch_ly, g_touch_rx, g_touch_ry;
 #define TOUCH_BUTTONS g_touch_buttons
 #define TOUCH_LX g_touch_lx
 #define TOUCH_LY g_touch_ly
+#define TOUCH_RX g_touch_rx
+#define TOUCH_RY g_touch_ry
 #else
 #define TOUCH_BUTTONS 0
 #define TOUCH_LX 0
 #define TOUCH_LY 0
+#define TOUCH_RX 0
+#define TOUCH_RY 0
 #endif
 uint64_t input_buttons_now(void) { return (menu_input_captured() ? 0 : key_buttons | pad_buttons | TOUCH_BUTTONS) | script_buttons; }
 
@@ -419,7 +447,7 @@ static void fill_state(Cpu *c) {
         if (renderer_present_count() < until) b |= 1ull << BTN_PLUS;
     }
     int32_t lx = clamp_axis((menu ? 0 : key_lx + pad_lx + TOUCH_LX) + script_lx), ly = clamp_axis((menu ? 0 : key_ly + pad_ly + TOUCH_LY) + script_ly);
-    int32_t rx = clamp_axis((menu ? 0 : key_rx + pad_rx) + script_rx), ry = clamp_axis((menu ? 0 : key_ry + pad_ry) + script_ry);
+    int32_t rx = clamp_axis((menu ? 0 : key_rx + pad_rx + TOUCH_RX) + script_rx), ry = clamp_axis((menu ? 0 : key_ry + pad_ry + TOUCH_RY) + script_ry);
     // stick directions also appear as buttons (bits 16-23)
     if (lx < -16000) b |= 1ull << 16;
     if (ly > 16000) b |= 1ull << 17;

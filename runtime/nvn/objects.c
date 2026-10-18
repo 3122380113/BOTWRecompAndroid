@@ -434,48 +434,66 @@ static NvnTexture *texture_from_builder(uint64_t b) {
     return t;
 }
 
-// Live textures: the game may finalize a texture object twice (BOTW: a copy of one, or one finalized again), and the
-// host texture is freed only once. (Open addressing; a freed slot keeps a tombstone.)
-enum { LIVE_SLOTS = 1 << 18 };
-static uintptr_t g_live_tex[LIVE_SLOTS];
+// Texture objects and their owners. An NVN texture object is a description over pool memory, and BOTW treats it so:
+// it copies objects (agl::TextureSampler keeps a shallow copy, registers it with a view and finalizes the copy on its
+// own), initializes an object again without finalizing it, finalizes one twice, and creates thousands with the same
+// description (each would be a VkImage and an upload of its own). Each nvnTextureInitialize makes the object's guest
+// address an owner of a host texture - one with the same description is shared - and only that address's finalize (or
+// its next initialize) drops the reference: a copy's finalize, or a second one, changes nothing.
+// Under g_live_lock: the owner table (open addressing, a freed slot keeps a tombstone), the description hash (by
+// storage address) and the list of all textures.
+enum { OWNER_SLOTS = 1 << 18, DESC_BUCKETS = 1 << 16 };
+#define OWNER_GONE 1ull
+typedef struct { uint64_t guest; NvnTexture *t; } TexOwner;
+static TexOwner g_owner[OWNER_SLOTS];
+static int g_owner_used, g_owner_gone;
+static NvnTexture *g_desc_hash[DESC_BUCKETS];
 static pthread_mutex_t g_live_lock = PTHREAD_MUTEX_INITIALIZER;
 static NvnTexture *g_all_tex;
-#define LIVE_GONE ((uintptr_t)1)
-static uint32_t live_hash(uintptr_t p) { return (uint32_t)((p >> 4) * 0x9E3779B97F4A7C15ull >> 46) & (LIVE_SLOTS - 1); }
-static void live_insert_locked(NvnTexture *t) {
-    uint32_t i = live_hash((uintptr_t)t);
-    for (int n = 0; n < LIVE_SLOTS && g_live_tex[i] > LIVE_GONE; n++) {
-        if (g_live_tex[i] == (uintptr_t)t) { t->in_live = true; t->finalized = false; return; }
-        i = (i + 1) & (LIVE_SLOTS - 1);
+uint64_t g_tex_stat_init, g_tex_stat_reinit, g_tex_stat_reused, g_tex_stat_fin_owner, g_tex_stat_fin_copy, g_tex_stat_reg;
+
+static uint32_t owner_hash(uint64_t g) { return (uint32_t)((g >> 3) * 0x9E3779B97F4A7C15ull >> 46) & (OWNER_SLOTS - 1); }
+static uint32_t desc_hash(uint64_t addr) { return (uint32_t)((addr >> 9) * 0x9E3779B97F4A7C15ull >> 48) & (DESC_BUCKETS - 1); }
+static NvnTexture *owner_take(uint64_t g) {  // removes and returns the texture g owns (NULL: g owns none)
+    uint32_t i = owner_hash(g);
+    for (int n = 0; n < OWNER_SLOTS && g_owner[i].guest; n++, i = (i + 1) & (OWNER_SLOTS - 1))
+        if (g_owner[i].guest == g) {
+            NvnTexture *t = g_owner[i].t;
+            g_owner[i].guest = OWNER_GONE;
+            g_owner[i].t = NULL;
+            g_owner_used--, g_owner_gone++;
+            return t;
+        }
+    return NULL;
+}
+static void owner_put(uint64_t g, NvnTexture *t) {  // (g owns nothing: owner_take first)
+    if ((g_owner_used + g_owner_gone + 1) * 4 > OWNER_SLOTS * 3) {  // tombstones: rebuild the table in place
+        TexOwner *keep = malloc(sizeof(TexOwner) * (size_t)(g_owner_used ? g_owner_used : 1));
+        if (!keep) FATAL("nvn: out of memory rebuilding the texture owners\n");
+        int k = 0;
+        for (int i = 0; i < OWNER_SLOTS; i++) if (g_owner[i].guest > OWNER_GONE) keep[k++] = g_owner[i];
+        memset(g_owner, 0, sizeof g_owner);
+        g_owner_gone = 0;
+        for (int j = 0; j < k; j++) {
+            uint32_t i = owner_hash(keep[j].guest);
+            while (g_owner[i].guest) i = (i + 1) & (OWNER_SLOTS - 1);
+            g_owner[i] = keep[j];
+        }
+        free(keep);
+        if ((g_owner_used + 1) * 4 > OWNER_SLOTS * 3) FATAL("nvn: more than %d texture objects\n", OWNER_SLOTS * 3 / 4);
     }
-    g_live_tex[i] = (uintptr_t)t;
-    t->in_live = true;
-    t->finalized = false;
-    t->refs++;
-}
-static void live_add(NvnTexture *t) {
-    pthread_mutex_lock(&g_live_lock);
-    t->refs = 0;
-    live_insert_locked(t);
-    t->next = g_all_tex;
-    if (g_all_tex) g_all_tex->prev = t;
-    g_all_tex = t;
-    pthread_mutex_unlock(&g_live_lock);
-}
-static bool live_remove(NvnTexture *t) {
-    pthread_mutex_lock(&g_live_lock);
-    uint32_t i = live_hash((uintptr_t)t);
-    bool found = false;
-    for (int n = 0; n < LIVE_SLOTS && g_live_tex[i]; n++, i = (i + 1) & (LIVE_SLOTS - 1))
-        if (g_live_tex[i] == (uintptr_t)t) { g_live_tex[i] = LIVE_GONE; t->in_live = false; found = true; break; }
-    pthread_mutex_unlock(&g_live_lock);
-    return found;
+    uint32_t i = owner_hash(g);
+    while (g_owner[i].guest > OWNER_GONE) i = (i + 1) & (OWNER_SLOTS - 1);
+    if (g_owner[i].guest == OWNER_GONE) g_owner_gone--;
+    g_owner[i].guest = g;
+    g_owner[i].t = t;
+    g_owner_used++;
 }
 
 static bool texture_same_desc(const NvnTexture *a, const NvnTexture *b) {
     if (a == b) return true;
     if (!a || !b) return false;
-    return a->addr == b->addr && a->target == b->target && a->flags == b->flags &&
+    return a->addr == b->addr && a->pool_offset == b->pool_offset && a->target == b->target && a->flags == b->flags &&
            a->width == b->width && a->height == b->height && a->depth == b->depth &&
            a->levels == b->levels && a->format == b->format && a->samples == b->samples &&
            a->ds_mode == b->ds_mode && a->stride == b->stride &&
@@ -483,9 +501,28 @@ static bool texture_same_desc(const NvnTexture *a, const NvnTexture *b) {
            a->layout.block_height_log2 == b->layout.block_height_log2 &&
            a->layout.block_depth_log2 == b->layout.block_depth_log2;
 }
+static NvnTexture *texture_find_same(const NvnTexture *t) {
+    if (!t->addr) return NULL;
+    for (NvnTexture *e = g_desc_hash[desc_hash(t->addr)]; e; e = e->hnext)
+        if (texture_same_desc(e, t)) return e;
+    return NULL;
+}
+static void texture_track(NvnTexture *t) {  // a new host texture: no references yet
+    t->refs = 0;
+    t->prev = NULL;
+    t->next = g_all_tex;
+    if (g_all_tex) g_all_tex->prev = t;
+    g_all_tex = t;
+    if (t->addr) {
+        NvnTexture **b = &g_desc_hash[desc_hash(t->addr)];
+        t->hnext = *b;
+        *b = t;
+    }
+}
 
 // Descriptor registration copies a texture's description on NVN. Our descriptors reference the host object,
-// so they must keep it alive after TextureFinalize. Dropped references also wait for pending command lists.
+// so they must keep it alive after TextureFinalize. Every dropped reference also waits for pending command lists
+// (render targets and copies name textures directly, and the render thread translates a frame behind the game).
 enum { RETIRE_FRAMES = 4 };
 typedef struct { NvnTexture *t; uint64_t frame; } RetiredTexture;
 static RetiredTexture *g_retired;
@@ -496,6 +533,9 @@ static void texture_release(NvnTexture *t) {  // g_live_lock; render work draine
     if (t->prev) t->prev->next = t->next;
     else g_all_tex = t->next;
     if (t->next) t->next->prev = t->prev;
+    if (t->addr)
+        for (NvnTexture **p = &g_desc_hash[desc_hash(t->addr)]; *p; p = &(*p)->hnext)
+            if (*p == t) { *p = t->hnext; break; }
     free(t);
 }
 static void texture_retire(NvnTexture *t) {
@@ -511,11 +551,6 @@ static void texture_retire(NvnTexture *t) {
         }
     }
     g_nretired = k;
-    if (!t->registered && !t->backend) {
-        texture_release(t);
-        pthread_mutex_unlock(&g_live_lock);
-        return;
-    }
     if (g_nretired == g_cap_retired) {
         g_cap_retired = g_cap_retired ? g_cap_retired * 2 : 256;
         g_retired = realloc(g_retired, g_cap_retired * sizeof *g_retired);
@@ -525,6 +560,12 @@ static void texture_retire(NvnTexture *t) {
     g_nretired++;
     pthread_mutex_unlock(&g_live_lock);
 }
+static void texture_drop_owner(NvnTexture *t) {
+    pthread_mutex_lock(&g_live_lock);
+    if (!--t->owners) t->finalized = true;
+    pthread_mutex_unlock(&g_live_lock);
+    texture_retire(t);
+}
 RT_ON_RESET(textures_reset) {
     // main.c has already stopped guest threads and reset the renderer.
     while (g_all_tex) {
@@ -532,86 +573,59 @@ RT_ON_RESET(textures_reset) {
         free(g_all_tex);
         g_all_tex = next;
     }
-    memset(g_live_tex, 0, sizeof g_live_tex);
+    memset(g_owner, 0, sizeof g_owner);
+    g_owner_used = g_owner_gone = 0;
+    memset(g_desc_hash, 0, sizeof g_desc_hash);
     free(g_retired);
     g_retired = NULL;
     g_nretired = g_cap_retired = 0;
 }
 
-// When a shallow copy of NVNtexture is registered in a pool with a custom NVNtextureView (BOTW's agl::TextureSampler),
-// mark offset 8 of the guest copy so its later nvnTextureFinalize does not finalize the parent TextureData's NvnTexture.
-#define VIEW_WRAPPER_MAGIC 0x5649455757524150ull
-uint64_t g_tex_stat_init, g_tex_stat_reinit, g_tex_stat_reused, g_tex_stat_fin_owner, g_tex_stat_fin_copy, g_tex_stat_reg;
-
 NVN(nvnTextureInitialize) {
-    // An object initialized again without nvnTextureFinalize (BOTW streams textures so: a texture object is just a
-    // description on NVN): its previous texture goes, as at a finalize. (live_remove: only a texture of ours - the
-    // object's first initialize finds whatever its memory held.)
+    // An object initialized again without nvnTextureFinalize (BOTW streams textures so): its previous texture goes,
+    // as at a finalize - unless the description is the same.
     g_tex_stat_init++;
     NvnTexture *t = texture_from_builder(A(1));
-    NvnTexture *old = HOST(NvnTexture, A(0));
-    if (old && (!old->guest_addr || A(0) == old->guest_addr) &&
-        !(G(uint64_t, A(0), 8) == VIEW_WRAPPER_MAGIC)) {
-        if (old->in_live && texture_same_desc(old, t)) {
-            g_tex_stat_reused++;
-            free(t);
-            G(uint64_t, A(0), 8) = 0;
-            RET(1);
-            return;
-        }
-        if (live_remove(old)) {
-            g_tex_stat_reinit++;
-            old->finalized = true;
-            static uint64_t n;
-            if (ENV("LARECOMP_LOG_TEXINIT") && n++ < 20) LOG("[nvn] TextureInitialize %llx again: previous texture retired\n", (unsigned long long)A(0));
-            texture_retire(old);
-        }
+    pthread_mutex_lock(&g_live_lock);
+    NvnTexture *old = owner_take(A(0));
+    NvnTexture *same = old && texture_same_desc(old, t) ? old : texture_find_same(t);
+    if (same) {
+        free(t);
+        t = same;
+        g_tex_stat_reused++;
+    } else {
+        texture_track(t);
     }
-    if (t->addr != 0) {
-        pthread_mutex_lock(&g_live_lock);
-        for (NvnTexture *e = g_all_tex; e; e = e->next) {
-            if (texture_same_desc(e, t)) {
-                if (!e->in_live) {
-                    live_insert_locked(e);
-                    e->guest_addr = A(0);
-                }
-                pthread_mutex_unlock(&g_live_lock);
-                g_tex_stat_reused++;
-                free(t);
-                SET_HOST(A(0), e);
-                G(uint64_t, A(0), 8) = 0;
-                RET(1);
-                return;
-            }
-        }
-        pthread_mutex_unlock(&g_live_lock);
+    t->refs++;
+    t->owners++;
+    t->finalized = false;
+    owner_put(A(0), t);
+    pthread_mutex_unlock(&g_live_lock);
+    if (old) {
+        g_tex_stat_reinit++;
+        static uint64_t n;
+        if (ENV("LARECOMP_LOG_TEXINIT") && n++ < 20) LOG("[nvn] TextureInitialize %llx again: previous texture retired\n", (unsigned long long)A(0));
+        texture_drop_owner(old);
     }
-    t->guest_addr = A(0);
-    live_add(t);
-    if (t->flags & 2)
+    if ((t->flags & 2) && !same)
         LOG("[nvn] video texture %p: %ux%u fmt %#x flags %#x target %u addr %llx stride %llu\n", t, t->width, t->height,
             t->format, t->flags, t->target, t->addr, t->stride);
     SET_HOST(A(0), t);
-    G(uint64_t, A(0), 8) = 0;
     RET(1);
 }
 NVN(nvnTextureFinalize) {
-    NvnTexture *t = HOST(NvnTexture, A(0));
-    if (t && ((t->guest_addr && A(0) != t->guest_addr) ||
-              G(uint64_t, A(0), 8) == VIEW_WRAPPER_MAGIC)) {
-        g_tex_stat_fin_copy++;
-        G(uint64_t, A(0), 8) = 0;
-        SET_HOST(A(0), 0);
-        return;
-    }
-    if (t && live_remove(t)) {
+    pthread_mutex_lock(&g_live_lock);
+    NvnTexture *t = owner_take(A(0));
+    pthread_mutex_unlock(&g_live_lock);
+    if (t) {
         g_tex_stat_fin_owner++;
-        t->finalized = true;
-        texture_retire(t);
-    } else if (t) {
+        texture_drop_owner(t);
+    } else if (HOST(NvnTexture, A(0))) {
+        g_tex_stat_fin_copy++;  // a copy of an object, or an object finalized again
         static int n;
-        if (n++ < 5) LOG("[nvn] TextureFinalize %llx: not a live texture (%p), ignored (lr %llx)\n",
-                         (unsigned long long)A(0), (void *)t, (unsigned long long)c->x[30]);
+        if (ENV("LARECOMP_LOG_TEXINIT") && n++ < 20)
+            LOG("[nvn] TextureFinalize %llx: not an initialized object (%p), ignored (lr %llx)\n", (unsigned long long)A(0),
+                HOST(void, A(0)), (unsigned long long)c->x[30]);
     }
     SET_HOST(A(0), 0);
 }
@@ -813,7 +827,6 @@ static void register_texture(Cpu *c) {
     // An asynchronous draw must finish reading the previous descriptor before its slot is replaced.
     if (old) vk_async_drain();
 #endif
-    if (t) t->registered = true;
     if (old != t) {
         pthread_mutex_lock(&g_live_lock);
         if (t) t->refs++;
@@ -822,12 +835,7 @@ static void register_texture(Cpu *c) {
         if (old) texture_retire(old);
     }
     e->has_view = A(3) != 0;
-    if (e->has_view) {
-        memcpy(&e->view, AP(3), sizeof e->view);
-        if (t && (!t->guest_addr || A(2) != t->guest_addr)) {
-            G(uint64_t, A(2), 8) = VIEW_WRAPPER_MAGIC;
-        }
-    }
+    if (e->has_view) memcpy(&e->view, AP(3), sizeof e->view);
 }
 NVN(nvnTexturePoolRegisterTexture) { register_texture(c); }
 NVN(nvnTexturePoolRegisterImage) { register_texture(c); }

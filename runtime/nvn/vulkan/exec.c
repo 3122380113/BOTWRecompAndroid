@@ -93,6 +93,9 @@ static void cq_resolve_done(uint64_t done);
 
 #ifdef __ANDROID__
 static bool gcopy_mode;   // (no heap import: global memory copied by the CPU, gcopy_prepare)
+#ifdef __ANDROID__
+static bool gwin_mode;    // (heap placed, larger than a storage buffer reaches: draws get a window of it, gwin_prepare)
+#endif
 static VkSpan gc_span;    // this draw's / dispatch's copy, gc_size bytes (0: none)
 static uint64_t gc_size;
 static void gcopy_retire(uint64_t done);
@@ -1149,6 +1152,7 @@ static inline bool ss_need(uint32_t bit, bool same) {
 }
 
 static void vk_end_pass_at(int line);
+static TexBackend *pass_dump_b;  // (debug frame) the color target the open pass draws into
 void vk_end_pass(void) { vk_end_pass_at(0); }
 #define vk_end_pass() vk_end_pass_at(__LINE__)
 static void vk_end_pass_at(int line) {
@@ -1156,7 +1160,10 @@ static void vk_end_pass_at(int line) {
     if (prof && line < 4096) prof_end_line[line]++;
     vkCmdEndRendering(vk_cmd());
     in_pass = false;
-    if (g_debug_frame && st.rt.ncolor && st.rt.color[0] && st.rt.color[0]->backend) {
+    // (the pass's own first color target: by now st.rt may already name the next pass's)
+    static int nodump = -1;  // LARECOMP_DEBUG_NO_PASSES=1: the draw log alone (each dump waits for the GPU: timing changes)
+    if (nodump < 0) nodump = getenv("LARECOMP_DEBUG_NO_PASSES") != NULL;
+    if (g_debug_frame && pass_dump_b && !nodump) {
         char path[256];
         static uint64_t debug_pass_frame = ~0ull;
         static int multi = -1;
@@ -1164,7 +1171,9 @@ static void vk_end_pass_at(int line) {
         if (multi && renderer_present_count() != debug_pass_frame) { debug_pass_frame = renderer_present_count(); debug_pass_no = 0; }
         if (multi) snprintf(path, sizeof path, "build/pass_%llu_%03d.png", (unsigned long long)debug_pass_frame, debug_pass_no++);
         else snprintf(path, sizeof path, "build/pass_%03d.png", debug_pass_no++);
-        renderer_save_texture_tex(st.rt.color[0]->backend, path);
+        TexBackend *b = pass_dump_b;
+        pass_dump_b = NULL;
+        renderer_save_texture_tex(b, path);
     }
 }
 
@@ -1263,6 +1272,7 @@ static void begin_pass(void) {
                           .colorAttachmentCount = pass_ncolor, .pColorAttachments = ca,
                           .pDepthAttachment = has_d ? &da : NULL, .pStencilAttachment = has_s ? &sa : NULL};
     vkCmdBeginRendering(cb, &ri);
+    if (g_debug_frame) pass_dump_b = st.rt.ncolor && st.rt.color[0] ? st.rt.color[0]->backend : NULL;
     ss_forget();  // (whatever ran between the passes may have set its own state)
     in_pass = true;
     vp_sx = pass_sx; vp_sy = pass_sy; vp_ox = 0; vp_oy = 0;
@@ -1582,7 +1592,7 @@ static void translate_program(void *arg) {
     maxwell_gmem_base = HEAP_BASE;
     maxwell_gmem_size = HEAP_MAX;
 #ifdef __ANDROID__
-    maxwell_gmem_map_all = gcopy_mode;
+    maxwell_gmem_map_all = gcopy_mode || gwin_mode;
     maxwell_gmem_miss_log = gcopy_mode && !getenv("LARECOMP_NO_GMISS");
     if (getenv("LARECOMP_GMISS_STAGES"))  // (a test: which stages log misses - 1 vertex, 2 fragment, 32 compute)
         maxwell_gmem_miss_stages = (unsigned)strtoul(getenv("LARECOMP_GMISS_STAGES"), NULL, 0);
@@ -2483,8 +2493,9 @@ bool vk_heap_place(uint64_t size) {
     gmem_mem = mem;
     gmem_size = size;
     gcopy_mode = false;
-    LOG("[vk] guest heap %llu MB is GPU memory (placed at %llx, memory type %d)\n", (unsigned long long)(size >> 20),
-        (unsigned long long)HEAP_BASE, type);
+    gwin_mode = size > g_vk.props.limits.maxStorageBufferRange && !getenv("LARECOMP_VK_NO_GWIN");
+    LOG("[vk] guest heap %llu MB is GPU memory (placed at %llx, memory type %d)%s\n", (unsigned long long)(size >> 20),
+        (unsigned long long)HEAP_BASE, type, gwin_mode ? "; draws reach global memory through windows" : "");
     return true;
 }
 #endif
@@ -2978,6 +2989,55 @@ static void gres_reset(void) {
 }
 
 // The storage buffers of the stages in stage_mask (bit = st.sbuf index) into the ring; store: copied back later.
+// The heap placed in GPU memory but larger than one storage buffer reaches (maxStorageBufferRange, 2 GB on Adreno;
+// BOTW's heap is ~3 GB): a vertex or fragment shader's global loads past that read zero - BOTW's text, whose glyphs a
+// vertex shader reads from a buffer ~2.7 GB into the heap, didn't show. Draws then work like gfast_prepare's window:
+// the table (GMap) lists the storage buffers bound to the draw's stages (with gcopy_prepare's margin before each), all
+// inside one window of the heap that starts at the first of them (GFast's descriptor: gmem_buf from that offset).
+// Accesses outside the table go to the heap from its start, as before.
+static void gwin_prepare(unsigned stage_mask) {
+    memset(gmap_tab, 0, sizeof gmap_tab);
+    gfast_n = 0;
+    gmem_info();
+    uint64_t reach = g_vk.props.limits.maxStorageBufferRange & ~3ull;
+    gfast_win = (VkDescriptorBufferInfo){gmem_buf, 0, reach < gmem_size ? reach : gmem_size};
+    if (!gmem_buf) return;
+    GcRange r[6 * 16];
+    int n = 0;
+    for (int s = 0; s < 6; s++) {
+        if (!(stage_mask & (1u << s))) continue;
+        for (int i = 0; i < 16; i++) {  // heap offsets, 256-aligned, 4 KB of margin before (gcopy_prepare)
+            uint64_t a = st.sbuf[s][i].addr, sz = st.sbuf[s][i].size;
+            if (!a || !sz || a < HEAP_BASE || a - HEAP_BASE + sz > gmem_size) continue;
+            uint64_t lo = (a - HEAP_BASE) & ~255ull, hi = (a - HEAP_BASE + sz + 255) & ~255ull;
+            lo = lo > 4096 ? (lo - 4096) & ~255ull : 0;
+            if (hi > gmem_size) hi = gmem_size;
+            int k = n++;
+            while (k > 0 && r[k - 1].lo > lo) { r[k] = r[k - 1]; k--; }
+            r[k].lo = lo; r[k].hi = hi;
+        }
+    }
+    int m = 0;
+    for (int i = 0; i < n; i++) {  // merged
+        if (m && r[i].lo <= r[m - 1].hi + 4096) { if (r[i].hi > r[m - 1].hi) r[m - 1].hi = r[i].hi; }
+        else r[m++] = r[i];
+    }
+    if (!m) return;
+    uint64_t al = g_vk.props.limits.minStorageBufferOffsetAlignment ? g_vk.props.limits.minStorageBufferOffsetAlignment : 256;
+    uint64_t base = r[0].lo / al * al;
+    if (reach > gmem_size - base) reach = gmem_size - base;
+    int k = 0;
+    for (int i = 0; i < m && k < GMAP_MAX; i++) {
+        if (r[i].hi - base > reach) break;  // (out of the window's reach: the heap from its start, as before)
+        gmap_tab[k * 4 + 0] = (uint32_t)r[i].lo;
+        gmap_tab[k * 4 + 1] = (uint32_t)(r[i].hi - r[i].lo);
+        gmap_tab[k * 4 + 2] = (uint32_t)((r[i].lo - base) >> 2);
+        k++;
+    }
+    gmap_tab[GMAP_MAX * 4] = (uint32_t)k;
+    gfast_win = (VkDescriptorBufferInfo){gmem_buf, base, reach};
+}
+
 static void gcopy_prepare(unsigned stage_mask, bool store) {
     memset(gmap_tab, 0, sizeof gmap_tab);
     gfast_n = 0;
@@ -3520,7 +3580,7 @@ static CsProg *compute_program(NvnProgram *np) {
     maxwell_gmem_base = HEAP_BASE;
     maxwell_gmem_size = HEAP_MAX;
 #ifdef __ANDROID__
-    maxwell_gmem_map_all = gcopy_mode;
+    maxwell_gmem_map_all = gcopy_mode || gwin_mode;
     maxwell_gmem_miss_log = gcopy_mode && !getenv("LARECOMP_NO_GMISS");
     if (getenv("LARECOMP_GMISS_STAGES"))  // (a test: which stages log misses - 1 vertex, 2 fragment, 32 compute)
         maxwell_gmem_miss_stages = (unsigned)strtoul(getenv("LARECOMP_GMISS_STAGES"), NULL, 0);
@@ -3881,6 +3941,8 @@ static void draw_(CmdRec *r, bool indexed) {
     if (gcopy_mode && (pr->vi->uses_gmem_map || pr->fi->uses_gmem_map))  // (the table both stages' sets use)
         gcopy_prepare((pr->vi->uses_gmem_map ? 1u : 0u) | (pr->fi->uses_gmem_map ? 2u : 0u),
                       pr->vi->uses_gmem_store || pr->fi->uses_gmem_store);
+    else if (gwin_mode && (pr->vi->uses_gmem_map || pr->fi->uses_gmem_map))
+        gwin_prepare((pr->vi->uses_gmem_map ? 1u : 0u) | (pr->fi->uses_gmem_map ? 2u : 0u));
 #endif
     VkDescriptorSet vset = stage_set(pr, pr->set_layout[0], 0, 0, pr->vi, NULL, NULL, 0, 0, 0, NULL);
     PROF_ADD(prof_sets);
@@ -4081,7 +4143,9 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
         (unsigned long long)(indexed ? r->x[6] : r->x[4]), (unsigned long long)r->x[0], (unsigned long long)r->x[2],
         (unsigned long long)st.program->stages[0].code_addr, (unsigned long long)st.program->stages[1].code_addr,
         pr->vi->cbuf_mask, pr->fi->cbuf_mask, st.rt.ncolor);
-    for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) LOG(" %ux%u/f%#x", st.rt.color[i]->width, st.rt.color[i]->height, st.rt.color[i]->format);
+    for (int i = 0; i < st.rt.ncolor; i++)
+        if (st.rt.color[i]) LOG(" %ux%u/f%#x@%llx(%p)", st.rt.color[i]->width, st.rt.color[i]->height, st.rt.color[i]->format,
+                                (unsigned long long)st.rt.color[i]->addr, (void *)st.rt.color[i]);
     if (st.rt.depth) LOG(" d%#x %p", st.rt.depth->format, (void *)st.rt.depth);
     LOG(" | vp %.0f %.0f %.0f %.0f | attrs %#x blend %#x ds %02x%02x%02x poly %02x%02x chmask %08x\n", st.viewport[0][0], st.viewport[0][1],
         st.viewport[0][2], st.viewport[0][3], pr->vi->attr_mask, st.color_state[0], st.ds[0], st.ds[1], st.ds[2], st.poly[0], st.poly[1],
@@ -4094,6 +4158,13 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
             for (int k = 0; k < 16; k++) LOG(" %.4g", v[k]);
             LOG("\n");
         }
+        for (int k = 0; k < 4; k++)  // the vertex stage's storage buffers (LDG / STG through driver cb0 0x110..)
+            if (st.sbuf[0][k].addr) {
+                const uint32_t *u = (const uint32_t *)(uintptr_t)st.sbuf[0][k].addr;
+                LOG("[draw]   vsbuf%d %llx size %llu:", k, (unsigned long long)st.sbuf[0][k].addr, (unsigned long long)st.sbuf[0][k].size);
+                for (int j = 0; j < 32 && j * 4 < (int)st.sbuf[0][k].size; j++) LOG(" %08x", u[j]);
+                LOG("\n");
+            }
         for (int c = 0; c < 18; c++) {
             if (!((pr->fi->cbuf_mask >> c) & 1) || !st.ubuf[1][c].addr) continue;
             const float *u = (const float *)(uintptr_t)st.ubuf[1][c].addr;
@@ -4108,6 +4179,21 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
         if (!t) { LOG("[draw]   tex%d: none\n", i); continue; }
         LOG("[draw]   tex%d: %p %ux%u f%#x lv %u -> %ux%u scale %.4f %.4f%s\n", i, (void *)t, t->width, t->height, t->format,
             b ? b->levels : 0, b ? b->width : 0, b ? b->height : 0, b ? b->sx : 0, b ? b->sy : 0, b && b->scalable ? " scalable" : "");
+        if (getenv("LARECOMP_DEBUG_TEXSTATE") && b && t->addr) {  // where its texels come from: the CPU's memory or GPU work
+            uint64_t n = t->layout.fmt ? tegra_total_size(&t->layout) : 0, nz = 0;
+            for (uint64_t k = 0; k < n; k += 64) nz += ((const uint8_t *)(uintptr_t)t->addr)[k] != 0;
+            LOG("[draw]     flags %#x addr %llx size %llu: gpu_owned %d uploaded %d dynamic %d, guest bytes nonzero %llu/%llu\n",
+                t->flags, (unsigned long long)t->addr, (unsigned long long)n, b->gpu_owned, b->uploaded, b->dynamic,
+                (unsigned long long)nz, (unsigned long long)(n + 63) / 64);
+            const NvnTexEntry *te = shader_texture_entry(1, &pr->fi->tex[i]);
+            LOG("[draw]     target %u depth %u layers %u swizzle %u %u %u %u | view %d setmask %#x swizzle %u %u %u %u levels %u+%u "
+                "layers %u+%u format %#x target %u ds %u | shader type %d\n",
+                t->target, t->depth, b->layers, t->swizzle[0], t->swizzle[1], t->swizzle[2], t->swizzle[3], te ? te->has_view : -1,
+                te && te->has_view ? te->view.setmask : 0, te ? te->view.swizzle[0] : 0, te ? te->view.swizzle[1] : 0,
+                te ? te->view.swizzle[2] : 0, te ? te->view.swizzle[3] : 0, te ? te->view.base_level : 0, te ? te->view.num_levels : 0,
+                te ? te->view.min_layer : 0, te ? te->view.num_layers : 0, te ? te->view.format : 0, te ? te->view.target : 0,
+                te ? te->view.ds_mode : 0, pr->fi->tex[i].type);
+        }
     }
 }
 
@@ -4305,9 +4391,9 @@ static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t fl
 static VkPipelineLayout present_layout;
 static VkDescriptorSetLayout present_set_layout;
 
-static VkPipeline present_pipeline(VkFormat fmt) {
-    static struct { VkFormat f; VkPipeline p; } cache[4];
-    for (int i = 0; i < 4; i++) if (cache[i].p && cache[i].f == fmt) return cache[i].p;
+static VkPipeline present_pipeline_a(VkFormat fmt, bool alpha) {  // alpha: the texture's own (debug pass dumps)
+    static struct { VkFormat f; bool a; VkPipeline p; } cache[6];
+    for (int i = 0; i < 6; i++) if (cache[i].p && cache[i].f == fmt && cache[i].a == alpha) return cache[i].p;
     if (!present_layout) {
         VkDescriptorSetLayoutBinding b = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL};
         VkDescriptorSetLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &b};
@@ -4321,7 +4407,7 @@ static VkPipeline present_pipeline(VkFormat fmt) {
         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT,
          .module = vk_builtin_shader("present.vert"), .pName = "main"},
         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-         .module = vk_builtin_shader("present.frag"), .pName = "main"}};
+         .module = vk_builtin_shader(alpha ? "present_a.frag" : "present.frag"), .pName = "main"}};
     VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     VkPipelineInputAssemblyStateCreateInfo ia = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
                                                  .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
@@ -4344,9 +4430,10 @@ static VkPipeline present_pipeline(VkFormat fmt) {
                                        .pColorBlendState = &cb, .pDynamicState = &dy, .layout = present_layout};
     VkPipeline p;
     VK_CHECK(vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, &p));
-    for (int i = 0; i < 4; i++) if (!cache[i].p) { cache[i].f = fmt; cache[i].p = p; break; }
+    for (int i = 0; i < 6; i++) if (!cache[i].p) { cache[i].f = fmt; cache[i].a = alpha; cache[i].p = p; break; }
     return p;
 }
+static VkPipeline present_pipeline(VkFormat fmt) { return present_pipeline_a(fmt, false); }
 
 // Scanout shows the bytes the game wrote: sRGB images are read through a UNORM view (no decode), like metal.m.
 static VkImageView raw_view(TexBackend *b) {
@@ -4595,7 +4682,7 @@ void renderer_save_texture_tex(TexBackend *b, const char *path) {
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {w, h}}, .layerCount = 1,
                           .colorAttachmentCount = 1, .pColorAttachments = &ca};
     vkCmdBeginRendering(cb, &ri);
-    VkPipeline p = present_pipeline(VK_FORMAT_R8G8B8A8_UNORM);
+    VkPipeline p = present_pipeline_a(VK_FORMAT_R8G8B8A8_UNORM, strstr(path, "pass_") != NULL);
     VkDescriptorSet ds = vk_alloc_set(present_set_layout);
     VkDescriptorImageInfo ii = {vk_default_sampler(true), raw_view(b), VK_IMAGE_LAYOUT_GENERAL};
     VkWriteDescriptorSet wr = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 0, .descriptorCount = 1,
