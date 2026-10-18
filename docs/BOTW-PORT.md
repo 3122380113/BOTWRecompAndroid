@@ -142,7 +142,11 @@ Falta (precisa rodar o jogo):
 
 - Rodar: no PC (falta o MSYS2, ver Fase 1) ou no celular (`android/push_game.sh`, com o celular no adb).
 - Comandos de IPC do SDK de 2017 que o runtime não conhece; a ordem de construtores entre `main` e `sdk`.
-- Os slots das vtables de `movie::Extractor` / `Decoder` no SDK de 2017 (o `movie.c` usa os de 2019).
+- ~~Os slots das vtables de `movie::Extractor` / `Decoder`~~: lidos das vtables do `multimedia.nss` dos dois SDKs, são
+  os mesmos onde os dois têm; o BOTW abre o vídeo pelo slot 2 (`SetDataSource(const char*)`, caminhos
+  `content://Movie/<nome>.webm`), agora tratado no `movie.c`.
+- A revisão do renderizador de áudio (`audren:u`) do SDK de 2017: o `services/audio.c` lê o buffer de atualização no
+  formato das revisões que o LAS usava; revisões antigas podem ter outro layout de vozes / memory pools.
 - `romfs.bin` de 13,4 GiB + a cópia do `romfs/` (o `movie.c` e o fundo do launcher leem arquivos soltos): ~27 GB.
 - Meta: a tela de carregamento / logo da Nintendo.
 
