@@ -117,7 +117,10 @@ O gerador do LAS funcionou no BOTW sem mudanças (para Android: `--simd asm --dy
 (Os poucos `rt_udf` no C gerado são `udf` / `brk` de verdade do código e o cabeçalho do módulo.) Os `subsdk` não são
 recompilados, como no LAS: o que o `main` usa deles é HLE (abaixo).
 
-- `android/build_gamelib.sh <exefs>` compila o `botwgame.so` com o NDK (683 arquivos; demora, como no LAS).
+- `android/build_gamelib.sh <exefs>` compila o `botwgame.so` com o NDK: **compilou e linkou (2026-10-18)**, 683
+  arquivos em ~1 h nesta máquina (16 threads), 152 MB sem debug info. O ID (`7e833884382c3dd9`) bate com o do app, e
+  os 6 símbolos que ele pede ao runtime (`rt_dispatch`, `rt_svc`, `rt_udf`, `rt_ticks`, `fnprof_hit`, `g_fnprof`)
+  existem no `libmain.so`. Pronto para `android/push_game.sh`.
 
 ### Fase 3: boot até o primeiro quadro — **em andamento**
 
