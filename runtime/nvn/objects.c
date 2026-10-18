@@ -232,6 +232,8 @@ NVN(nvnMemoryPoolInitialize) {
     p->storage = G(uint64_t, A(1), 0x10);
     p->size = G(uint64_t, A(1), 0x18);
     p->flags = G(uint32_t, A(1), 8);
+    if (ENV("LARECOMP_LOG_POOLS"))
+        LOG("[nvn] pool %llx storage=%llx size=%llx flags=%x\n", A(0), p->storage, p->size, p->flags);
     SET_HOST(A(0), p);
     RET(1);
 }
@@ -246,7 +248,38 @@ NVN(nvnMemoryPoolFlushMappedRange) {
     backend_pool_written(p->storage + A(1), A(2));
 }
 NVN(nvnMemoryPoolInvalidateMappedRange) { (void)c; }
-NVN(nvnMemoryPoolMapVirtual) { RET(1); }
+NVN(nvnMemoryPoolMapVirtual) {
+    // BOTW maps its whole 120 MiB virtual texture heap onto one physical pool before creating textures. GPU
+    // addresses in this runtime are CPU pointers: a contiguous whole-pool alias needs no allocation or copy.
+    // Sparse/partial remapping needs a separate address translation layer; never pretend it succeeded.
+    typedef struct { uint64_t pool, physical_offset, virtual_offset, size; uint32_t storage_class, pad; } Mapping;
+    NvnPool *dst = HOST(NvnPool, A(0));
+    const Mapping *maps = AP(2);
+    uint64_t base = 0, covered = 0;
+    if (!A(1)) { RET(1); return; }
+    bool valid = dst && (dst->flags & 0x200) && maps;
+    for (uint64_t i = 0; valid && i < A(1); i++) {
+        const Mapping *m = &maps[i];
+        NvnPool *src = m->pool ? HOST(NvnPool, m->pool) : NULL;
+        valid = src && src->storage && m->size && m->virtual_offset == covered &&
+                m->physical_offset <= src->size && m->size <= src->size - m->physical_offset &&
+                covered <= dst->size && m->size <= dst->size - covered;
+        if (!valid) break;
+        uint64_t addr = src->storage + m->physical_offset;
+        if (!i) base = addr;
+        else if (addr != base + covered) { valid = false; break; }
+        covered += m->size;
+    }
+    if (!valid || covered != dst->size) {
+        LOG("[nvn] MapVirtual %llx: unsupported non-contiguous/partial mapping (%llu requests)\n", A(0), A(1));
+        RET(0);
+        return;
+    }
+    dst->storage = base;
+    if (ENV("LARECOMP_LOG_POOLS"))
+        LOG("[nvn] MapVirtual %llx: %llx bytes aliased at %llx\n", A(0), covered, base);
+    RET(1);
+}
 
 // ================================================================== buffers
 // Builder: device@0 pool@8 offset@0x10 size@0x18. Buffer: address@0 pool@8 offset@0x10 size@0x18 id@0x20
@@ -406,6 +439,7 @@ static NvnTexture *texture_from_builder(uint64_t b) {
 enum { LIVE_SLOTS = 1 << 18 };
 static uintptr_t g_live_tex[LIVE_SLOTS];
 static pthread_mutex_t g_live_lock = PTHREAD_MUTEX_INITIALIZER;
+static NvnTexture *g_all_tex;
 #define LIVE_GONE ((uintptr_t)1)
 static uint32_t live_hash(uintptr_t p) { return (uint32_t)((p >> 4) * 0x9E3779B97F4A7C15ull >> 46) & (LIVE_SLOTS - 1); }
 static void live_add(NvnTexture *t) {
@@ -413,6 +447,10 @@ static void live_add(NvnTexture *t) {
     uint32_t i = live_hash((uintptr_t)t);
     for (int n = 0; n < LIVE_SLOTS && g_live_tex[i] > LIVE_GONE; n++) i = (i + 1) & (LIVE_SLOTS - 1);
     g_live_tex[i] = (uintptr_t)t;
+    t->refs = 1;
+    t->next = g_all_tex;
+    if (g_all_tex) g_all_tex->prev = t;
+    g_all_tex = t;
     pthread_mutex_unlock(&g_live_lock);
 }
 static bool live_remove(NvnTexture *t) {
@@ -425,28 +463,53 @@ static bool live_remove(NvnTexture *t) {
     return found;
 }
 
-// Finalized textures go away a few presented frames later: lists the render thread hasn't run yet (it is a frame
-// ahead) may still name them.
-enum { RETIRE_FRAMES = 4, RETIRE_MAX = 4096 };
-static struct { NvnTexture *t; uint64_t frame; } g_retired[RETIRE_MAX];
-static int g_nretired;
+// Descriptor registration copies a texture's description on NVN. Our descriptors reference the host object,
+// so they must keep it alive after TextureFinalize. Dropped references also wait for pending command lists.
+enum { RETIRE_FRAMES = 4 };
+typedef struct { NvnTexture *t; uint64_t frame; } RetiredTexture;
+static RetiredTexture *g_retired;
+static int g_nretired, g_cap_retired;
+static void texture_release(NvnTexture *t) {  // g_live_lock; render work drained by the backend
+    if (--t->refs) return;
+    backend_texture_destroyed(t);
+    if (t->prev) t->prev->next = t->next;
+    else g_all_tex = t->next;
+    if (t->next) t->next->prev = t->prev;
+    free(t);
+}
 static void texture_retire(NvnTexture *t) {
     extern uint64_t renderer_present_count(void);
     uint64_t now = renderer_present_count();
     pthread_mutex_lock(&g_live_lock);
     int k = 0;
     for (int i = 0; i < g_nretired; i++) {
-        if (g_retired[i].frame + RETIRE_FRAMES <= now || g_nretired == RETIRE_MAX) {
-            backend_texture_destroyed(g_retired[i].t);
-            free(g_retired[i].t);
+        if (g_retired[i].frame + RETIRE_FRAMES <= now) {
+            texture_release(g_retired[i].t);
         } else {
             g_retired[k++] = g_retired[i];
         }
     }
     g_nretired = k;
+    if (g_nretired == g_cap_retired) {
+        g_cap_retired = g_cap_retired ? g_cap_retired * 2 : 256;
+        g_retired = realloc(g_retired, g_cap_retired * sizeof *g_retired);
+        if (!g_retired) FATAL("nvn: out of memory retiring textures\n");
+    }
     g_retired[g_nretired].t = t, g_retired[g_nretired].frame = now;
     g_nretired++;
     pthread_mutex_unlock(&g_live_lock);
+}
+RT_ON_RESET(textures_reset) {
+    // main.c has already stopped guest threads and reset the renderer.
+    while (g_all_tex) {
+        NvnTexture *next = g_all_tex->next;
+        free(g_all_tex);
+        g_all_tex = next;
+    }
+    memset(g_live_tex, 0, sizeof g_live_tex);
+    free(g_retired);
+    g_retired = NULL;
+    g_nretired = g_cap_retired = 0;
 }
 
 NVN(nvnTextureInitialize) {
@@ -596,18 +659,32 @@ NVN(nvnSamplerGetDebugID) { RET(A(0)); }
 
 // ================================================================== descriptor pools
 NvnDescPool *g_texture_pools[64], *g_sampler_pools[64];
-RT_ON_RESET(desc_pools_reset) { memset(g_texture_pools, 0, sizeof g_texture_pools); memset(g_sampler_pools, 0, sizeof g_sampler_pools); }
+static NvnDescPool *g_all_desc_pools;
+RT_ON_RESET(desc_pools_reset) {
+    while (g_all_desc_pools) {
+        NvnDescPool *next = g_all_desc_pools->next;
+        free(g_all_desc_pools->entries);
+        free(g_all_desc_pools);
+        g_all_desc_pools = next;
+    }
+    memset(g_texture_pools, 0, sizeof g_texture_pools);
+    memset(g_sampler_pools, 0, sizeof g_sampler_pools);
+}
 
 static NvnDescPool *desc_pool_init(uint64_t guest, uint64_t pool, uint64_t off, int count, size_t entry, NvnDescPool **reg) {
     NvnDescPool *d = calloc(1, sizeof *d);
     d->addr = HOST(NvnPool, pool)->storage + off;
     d->count = count;
     d->entries = calloc(count, entry);
+    pthread_mutex_lock(&g_live_lock);
+    d->next = g_all_desc_pools;
+    g_all_desc_pools = d;
+    for (int i = 0; i < 64; i++) if (!reg[i]) { reg[i] = d; break; }
+    pthread_mutex_unlock(&g_live_lock);
     SET_HOST(guest, d);
     G(uint64_t, guest, 8) = pool;
     G(uint64_t, guest, 16) = off;
     G(uint32_t, guest, 24) = (uint32_t)count;
-    for (int i = 0; i < 64; i++) if (!reg[i]) { reg[i] = d; break; }
     return d;
 }
 
@@ -615,7 +692,24 @@ NVN(nvnTexturePoolInitialize) {
     desc_pool_init(A(0), A(1), A(2), (int)A(3), sizeof(NvnTexEntry), g_texture_pools);
     RET(1);
 }
-NVN(nvnTexturePoolFinalize) { (void)c; }
+NVN(nvnTexturePoolFinalize) {
+    NvnDescPool *d = HOST(NvnDescPool, A(0));
+    if (!d) return;
+#ifdef __ANDROID__
+    vk_async_drain();
+#endif
+    NvnTexEntry *entries = d->entries;
+    for (int i = 0; i < d->count; i++) {
+        NvnTexture *t = entries[i].tex;
+        entries[i].tex = NULL;
+        if (t) texture_retire(t);
+    }
+    pthread_mutex_lock(&g_live_lock);
+    for (int i = 0; i < 64; i++) if (g_texture_pools[i] == d) g_texture_pools[i] = NULL;
+    pthread_mutex_unlock(&g_live_lock);
+    // Keep the empty descriptor array until reset: recorded state may still refer to the old pool object.
+    SET_HOST(A(0), 0);
+}
 NVN(nvnTexturePoolSetDebugLabel) { (void)c; }
 NVN(nvnTexturePoolGetMemoryPool) { RET(G(uint64_t, A(0), 8)); }
 NVN(nvnTexturePoolGetMemoryOffset) { RET(G(uint64_t, A(0), 16)); }
@@ -624,8 +718,19 @@ static void register_texture(Cpu *c) {
     NvnDescPool *d = HOST(NvnDescPool, A(0));
     int id = (int)A(1);
     if (id < 0 || id >= d->count) return;
+#ifdef __ANDROID__
+    // An asynchronous draw must finish reading the previous descriptor before its slot is replaced.
+    vk_async_drain();
+#endif
     NvnTexEntry *e = &((NvnTexEntry *)d->entries)[id];
-    e->tex = HOST(NvnTexture, A(2));
+    NvnTexture *old = e->tex, *t = HOST(NvnTexture, A(2));
+    if (old != t) {
+        pthread_mutex_lock(&g_live_lock);
+        if (t) t->refs++;
+        e->tex = t;
+        pthread_mutex_unlock(&g_live_lock);
+        if (old) texture_retire(old);
+    }
     e->has_view = A(3) != 0;
     if (e->has_view) memcpy(&e->view, AP(3), sizeof e->view);
 }

@@ -32,6 +32,8 @@ typedef struct NvnTexture {
     void *backend;  // renderer-side texture
     uint64_t debug_id;
     char label[64];
+    unsigned refs;  // texture object + descriptor slots + deferred releases (objects.c, g_live_lock)
+    struct NvnTexture *next, *prev;
 } NvnTexture;
 
 typedef struct {
@@ -58,6 +60,7 @@ typedef struct NvnDescPool {
     uint64_t addr;
     int count;
     void *entries;  // NvnTexEntry[] or NvnSamplerDesc[]
+    struct NvnDescPool *next;  // all descriptor allocations of this boot
 } NvnDescPool;
 
 typedef struct NvnShaderStage {

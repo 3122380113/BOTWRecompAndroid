@@ -28,7 +28,9 @@ struct KThread {
     pthread_t host;
     uint64_t entry, tlr, id;
     uint32_t handle;
-    int prio, core;
+    int prio, core;        // core: current virtual core, accessed atomically
+    int ideal_core;        // may be -1 (no preference); g_klock
+    uint64_t core_mask;    // allowed virtual cores; g_klock
     bool cancel, in_sync_wait;
     // wait state (protected by g_klock)
     WaitKind wait_kind;
@@ -47,7 +49,8 @@ struct KThread {
 #ifdef __ANDROID__
     void *dcache;          // dispatch.c: this thread's guest -> host function cache (TLS is slow in a dlopened library)
     bool core0_held;       // kernel.c: this thread has core 0 (it runs; the others of core 0 wait)
-    bool core0_evicted;    // kernel.c: its time slice ran out: it waits for core 0 at its next function entry
+    bool core0_evicted;    // atomic request to reconcile core ownership at the next guest safe point
+    KThread *core0_next;   // core-0 runnable queue (c0_m)
 #endif
 };
 

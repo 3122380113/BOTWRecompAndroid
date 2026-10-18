@@ -18,6 +18,8 @@
 #define R_NOT_FOUND 0xF201
 #define R_INVALID_ENUM 0xF001
 #define R_OUT_OF_RESOURCE 0xD001
+#define R_INVALID_CORE 0xE801
+#define R_INVALID_COMBINATION 0xF001
 
 #define PSEUDO_THREAD 0xFFFF8000u
 #define PSEUDO_PROCESS 0xFFFF8001u
@@ -195,69 +197,96 @@ void rt_unwind_point(void) {
 // for the main thread's core (core -2: the process's, 0) at the main thread's priority, so to the main thread a
 // worker's "run the job, then tell its owner" is one step - here, with every thread truly parallel, the main thread
 // sometimes moved on between the two and the worker told an owner that was gone (2026-10-16: crashes, and a hang
-// when the notification was skipped instead: hle/job_race.c). So the threads of core 0 take turns here too: a ticket
-// lock, held while the thread runs and handed on at its blocking SVCs (and around the host's long waits for the
+// when the notification was skipped instead: hle/job_race.c). So the threads of core 0 take turns here too: a runnable
+// queue, held while the thread runs and handed on at its blocking SVCs (and around the host's long waits for the
 // renderer: kernel_blocking_begin / _end). Cores 1-3 stay parallel, as on the Switch.
 static pthread_mutex_t c0_m = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t c0_cv = PTHREAD_COND_INITIALIZER;
-static uint64_t c0_next, c0_serving;
+static KThread *c0_head, *c0_tail;
 static int c0_on = -1;
 static KThread *c0_holder;  // (c0_m) the thread that has core 0, since c0_since
 static uint64_t c0_since;
 
-// Time slices: a thread that keeps core 0 for C0_SLICE_NS without blocking while others wait for it loses it, as if
-// preempted: it waits for core 0 again at its next function entry (FN_ENTER calls fnprof_hit while g_fnprof's bit 1
-// is set: kernel_preempt_point) or blocking SVC. BOTW's main thread spins until another thread of core 0 has made
-// something (main+0x8551a8, a loop without calls): with core 0 never handed on, that thread never ran.
-// (LARECOMP_C0_SLICE_MS: the slice; 0: none)
+// Optional cooperative slices: request a handoff at the next function entry/SVC, never run two owners at once.
+// BOTW's busy waits depend on workers on other cores, handled by SetThreadCoreMask, not by forcing a handoff.
+// (LARECOMP_C0_SLICE_MS: the slice; default 0)
 extern volatile int g_fnprof;  // runtime/fnprof.c
 static int c0_nevicted;  // (c0_m)
-static uint64_t c0_slice_ns = 8000000;
+static uint64_t c0_slice_ns;  // affinity handles BOTW's cross-core waits; slicing is diagnostic only
 static void *core0_slicer(void *arg) {
     (void)arg;
     for (;;) {
         struct timespec ts = {0, 2000000};
         nanosleep(&ts, NULL);
         pthread_mutex_lock(&c0_m);
-        if (c0_holder && c0_next > c0_serving + 1 && plat_now_ns() - c0_since > c0_slice_ns) {
+        if (c0_holder && c0_head && !c0_holder->core0_evicted && plat_now_ns() - c0_since > c0_slice_ns) {
             static uint64_t n;
             if (n++ < 10 || ENV("LARECOMP_LOG_C0"))
-                LOG("[kernel] core 0: t%llu ran %llums without blocking, preempted\n", (unsigned long long)c0_holder->id,
+                LOG("[kernel] core 0: t%llu ran %llums without blocking, handoff requested\n", (unsigned long long)c0_holder->id,
                     (unsigned long long)((plat_now_ns() - c0_since) / 1000000));
-            c0_holder->core0_held = false;
-            c0_holder->core0_evicted = true;
+            __atomic_store_n(&c0_holder->core0_evicted, true, __ATOMIC_RELEASE);
             if (c0_nevicted++ == 0) __atomic_fetch_or(&g_fnprof, 2, __ATOMIC_SEQ_CST);
-            c0_holder = NULL;
-            c0_serving++;
-            pthread_cond_broadcast(&c0_cv);
+            // The old owner must reach a safe point before another thread can run. Merely clearing the owner
+            // here lets both execute guest code at once, corrupting the game's supposedly serial work queues.
         }
         pthread_mutex_unlock(&c0_m);
     }
     return NULL;
 }
 
-static void core0_acquire(KThread *t) {
-    if (c0_on < 0) {
-        c0_on = !getenv("LARECOMP_NO_CORE0");
-        const char *e = getenv("LARECOMP_C0_SLICE_MS");
-        if (e) c0_slice_ns = (uint64_t)atoi(e) * 1000000;
-        if (c0_on && c0_slice_ns) {
-            pthread_t th;
-            pthread_create(&th, NULL, core0_slicer, NULL);
-            pthread_detach(th);
-        }
+static pthread_once_t c0_once = PTHREAD_ONCE_INIT;
+static void core0_init(void) {
+    c0_on = !getenv("LARECOMP_NO_CORE0");
+    const char *e = getenv("LARECOMP_C0_SLICE_MS");
+    if (e && atoi(e) > 0) c0_slice_ns = (uint64_t)atoi(e) * 1000000;
+    if (c0_on && c0_slice_ns) {
+        pthread_t th;
+        pthread_create(&th, NULL, core0_slicer, NULL);
+        pthread_detach(th);
     }
-    if (!t || !c0_on || t->core != 0 || t->core0_held) return;
+}
+static void core0_acquire(KThread *t) {
+    pthread_once(&c0_once, core0_init);
+    if (!t || !c0_on) return;
     pthread_mutex_lock(&c0_m);
     if (t->core0_evicted) {
-        t->core0_evicted = false;
+        __atomic_store_n(&t->core0_evicted, false, __ATOMIC_RELEASE);
         if (--c0_nevicted == 0) __atomic_fetch_and(&g_fnprof, ~2, __ATOMIC_SEQ_CST);
+        if (t->core0_held) {
+            t->core0_held = false;
+            c0_holder = NULL;
+            pthread_cond_broadcast(&c0_cv);
+        }
     }
-    uint64_t my = c0_next++;
-    if (c0_serving != my) {  // (waiting for core 0 is time off the core: blocked, as a kernel wait - frame pacing)
-        uint64_t t0 = plat_now_ns();
-        while (c0_serving != my) pthread_cond_wait(&c0_cv, &c0_m);
-        g_blocked_ns += plat_now_ns() - t0;
+    if (__atomic_load_n(&t->core, __ATOMIC_ACQUIRE) != 0) {
+        if (t->core0_held) {
+            t->core0_held = false;
+            c0_holder = NULL;
+            pthread_cond_broadcast(&c0_cv);
+        }
+        pthread_mutex_unlock(&c0_m);
+        return;
+    }
+    if (t->core0_held) { pthread_mutex_unlock(&c0_m); return; }
+    // A removable queue lets SetThreadCoreMask move a waiter to another core without waiting for the current
+    // owner to yield (that owner may itself be spinning for this worker).
+    t->core0_next = NULL;
+    if (c0_tail) c0_tail->core0_next = t;
+    else c0_head = t;
+    c0_tail = t;
+    uint64_t t0 = plat_now_ns();
+    while ((c0_holder || c0_head != t) && __atomic_load_n(&t->core, __ATOMIC_ACQUIRE) == 0 && !g_rt_unwind)
+        pthread_cond_wait(&c0_cv, &c0_m);
+    g_blocked_ns += plat_now_ns() - t0;
+    KThread **p = &c0_head, *prev = NULL;
+    while (*p != t) { prev = *p; p = &(*p)->core0_next; }
+    *p = t->core0_next;
+    if (c0_tail == t) c0_tail = prev;
+    t->core0_next = NULL;
+    if (__atomic_load_n(&t->core, __ATOMIC_ACQUIRE) != 0 || g_rt_unwind) {
+        pthread_cond_broadcast(&c0_cv);
+        pthread_mutex_unlock(&c0_m);
+        return;
     }
     t->core0_held = true;
     c0_holder = t;
@@ -265,19 +294,22 @@ static void core0_acquire(KThread *t) {
     pthread_mutex_unlock(&c0_m);
 }
 
-// A function entry of a thread whose time slice on core 0 ran out: it waits for core 0 here
+// Apply a pending migration or cooperative handoff at a guest safe point.
 void kernel_preempt_point(void) {
     KThread *t = t_cur;
-    if (t && t->core0_evicted) core0_acquire(t);
+    if (t && __atomic_load_n(&t->core0_evicted, __ATOMIC_ACQUIRE)) core0_acquire(t);
 }
 
 static void core0_release(KThread *t) {
     if (!t) return;
     pthread_mutex_lock(&c0_m);
-    if (t->core0_held) {  // (not when the slicer took core 0 from it)
+    if (t->core0_evicted) {
+        __atomic_store_n(&t->core0_evicted, false, __ATOMIC_RELEASE);
+        if (--c0_nevicted == 0) __atomic_fetch_and(&g_fnprof, ~2, __ATOMIC_SEQ_CST);
+    }
+    if (t->core0_held) {
         t->core0_held = false;
         if (c0_holder == t) c0_holder = NULL;
-        c0_serving++;
         pthread_cond_broadcast(&c0_cv);
     }
     pthread_mutex_unlock(&c0_m);
@@ -316,6 +348,7 @@ static void *thread_main(void *arg) {
 #ifdef __ANDROID__
     if (!setjmp(t->unwind)) {
         core0_acquire(t);
+        rt_unwind_point();
         guest_call(&t->cpu, t->entry);
     }
     core0_release(t);
@@ -337,6 +370,8 @@ static KThread *thread_new(uint64_t entry, uint64_t arg, uint64_t stack_top, int
     t->entry = entry;
     t->prio = prio;
     t->core = core < 0 ? 0 : core;
+    t->ideal_core = t->core;
+    t->core_mask = 1ull << t->core;
     t->id = next_thread_id++;
     t->cpu.x[0] = arg;
     t->cpu.sp = stack_top & ~15ull;
@@ -350,6 +385,34 @@ static KThread *thread_new(uint64_t entry, uint64_t arg, uint64_t stack_top, int
     g_threads = t;
     pthread_mutex_unlock(&g_klock);
     return t;
+}
+
+// Caller holds g_klock. Core ownership changes only at a guest safe point.
+static uint32_t thread_set_core_mask(KThread *t, int ideal, uint64_t mask) {
+    uint32_t result = R_OK;
+    if (ideal == -2) { ideal = 0; mask = 1; }  // process default (GetInfo 20)
+    if (ideal == -3) ideal = t->ideal_core;     // preserve preference
+    if (ideal < -1 || ideal > 3 || (mask & ~0xFull)) result = R_INVALID_CORE;
+    else if (!mask || (ideal >= 0 && !(mask & (1ull << ideal)))) result = R_INVALID_COMBINATION;
+    int old_core = __atomic_load_n(&t->core, __ATOMIC_ACQUIRE), core = old_core;
+    if (!result) {
+        if (!(mask & (1ull << core))) core = ideal >= 0 ? ideal : __builtin_ctzll(mask);
+        t->ideal_core = ideal;
+        t->core_mask = mask;
+#ifdef __ANDROID__
+        pthread_mutex_lock(&c0_m);
+#endif
+        __atomic_store_n(&t->core, core, __ATOMIC_RELEASE);
+#ifdef __ANDROID__
+        if (core != old_core && t->started && c0_on && !t->core0_evicted) {
+            __atomic_store_n(&t->core0_evicted, true, __ATOMIC_RELEASE);
+            if (c0_nevicted++ == 0) __atomic_fetch_or(&g_fnprof, 2, __ATOMIC_SEQ_CST);
+        }
+        pthread_cond_broadcast(&c0_cv);
+        pthread_mutex_unlock(&c0_m);
+#endif
+    }
+    return result;
 }
 
 static void thread_start(KThread *t) {
@@ -730,10 +793,12 @@ void rt_svc(Cpu *c, uint32_t imm, uint64_t pc) {
         me->svc_now = imm + 1;
     }
 #ifdef __ANDROID__
+    kernel_preempt_point();
     bool blocks = svc_blocks(imm);
     if (blocks) core0_release(t_cur);
     svc_entry(c, imm, pc);
     if (blocks) core0_acquire(t_cur);
+    kernel_preempt_point();
 #else
     svc_entry(c, imm, pc);
 #endif
@@ -821,6 +886,8 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         break;
     case 0x07: LOG("ExitProcess\n"); exit(0);
     case 0x08: {  // CreateThread(_, entry, arg, stack_top, prio, core)
+        int core = (int32_t)x[5];
+        if (core != -2 && (core < 0 || core > 3)) { x[0] = R_INVALID_CORE; break; }
         KThread *t = thread_new(x[1], x[2], x[3], (int)x[4], (int)(int32_t)x[5]);
         t->handle = kernel_new_handle(&t->obj);
 #ifdef __ANDROID__
@@ -865,14 +932,36 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         break;
     }
     case 0x0E: {  // GetThreadCoreMask(_, _, handle)
+        pthread_mutex_lock(&g_klock);
         KObject *o = handle_get((uint32_t)x[2]);
-        x[0] = o ? R_OK : R_INVALID_HANDLE;
-        x[1] = o ? (uint64_t)((KThread *)o)->core : 0;
-        x[2] = 0xF;
+        bool valid = o && o->type == KOBJ_THREAD;
+        x[0] = valid ? R_OK : R_INVALID_HANDLE;
+        x[1] = valid ? (uint64_t)(int64_t)((KThread *)o)->ideal_core : 0;
+        x[2] = valid ? ((KThread *)o)->core_mask : 0;
+        pthread_mutex_unlock(&g_klock);
         break;
     }
-    case 0x0F: x[0] = R_OK; break;  // SetThreadCoreMask
-    case 0x10: x[0] = t_cur->core; break;  // GetCurrentProcessorNumber
+    case 0x0F: {  // SetThreadCoreMask(handle, ideal_core, affinity_mask)
+        pthread_mutex_lock(&g_klock);
+        KObject *o = handle_get((uint32_t)x[0]);
+        if (!o || o->type != KOBJ_THREAD) {
+            pthread_mutex_unlock(&g_klock);
+            x[0] = R_INVALID_HANDLE;
+            break;
+        }
+        KThread *t = (KThread *)o;
+        int old_core = __atomic_load_n(&t->core, __ATOMIC_ACQUIRE);
+        uint32_t result = thread_set_core_mask(t, (int32_t)x[1], x[2]);
+        if (ENV("LARECOMP_LOG_AFFINITY"))
+            LOG("[kernel] SetThreadCoreMask handle=%x core=%d mask=%llx by t%llu lr=%llx -> t%llu core %d->%d result=%x\n",
+                (unsigned)x[0], (int)(int32_t)x[1], (unsigned long long)x[2],
+                (unsigned long long)t_cur->id, (unsigned long long)c->x[30], (unsigned long long)t->id,
+                old_core, __atomic_load_n(&t->core, __ATOMIC_ACQUIRE), result);
+        pthread_mutex_unlock(&g_klock);
+        x[0] = result;
+        break;
+    }
+    case 0x10: x[0] = __atomic_load_n(&t_cur->core, __ATOMIC_ACQUIRE); break;  // GetCurrentProcessorNumber
     case 0x11: case 0x12: case 0x17: {  // SignalEvent / ClearEvent / ResetSignal
         pthread_mutex_lock(&g_klock);
         KObject *o = handle_get((uint32_t)x[0]);
@@ -1029,6 +1118,11 @@ void kernel_stop_threads(void (*idle)(void)) {
             if (t->started && !t->finished) { live++; wake(t); }
         pthread_cond_broadcast(&g_nothread_cond);
         pthread_mutex_unlock(&g_klock);
+#ifdef __ANDROID__
+        pthread_mutex_lock(&c0_m);
+        pthread_cond_broadcast(&c0_cv);
+        pthread_mutex_unlock(&c0_m);
+#endif
         if (!live) break;
         uint64_t now = plat_now_ns();
         if (now - logged > 3000000000ull) {  // (a thread that never reaches a safe point: who and where)
@@ -1053,6 +1147,13 @@ void kernel_stop_threads(void (*idle)(void)) {
 // can still point at some (vi.c's vsync event, signalled by its host timer thread).
 void kernel_reset(void) {
     pthread_mutex_lock(&g_klock);
+#ifdef __ANDROID__
+    pthread_mutex_lock(&c0_m);
+    c0_head = c0_tail = c0_holder = NULL;
+    c0_nevicted = 0;
+    __atomic_fetch_and(&g_fnprof, ~2, __ATOMIC_SEQ_CST);
+    pthread_mutex_unlock(&c0_m);
+#endif
     for (KThread *t = g_threads, *next; t; t = next) {
         next = t->anext;
         pthread_cond_destroy(&t->cond);
