@@ -1,9 +1,10 @@
 // movie:: (nnMedia) implemented with FFmpeg: an Android MediaExtractor/MediaCodec-style API.
 // The game owns the objects (vtable at +0); we keep host state at +8.
 //
-// Extractor slots: 4 GetTrackCount(int*), 5 GetTrackConfiguration(int, MediaData*), 6 SelectTrack(int),
-//   9 GetSampleTrackIndex(size_t*), 10 Read(Buffer*), 11 Advance(), 12 GetSampleTime(int64*),
-//   15 SetDataSource(DataSource*, const char* path).
+// Extractor slots: 2 SetDataSource(const char* path), 4 GetTrackCount(int*), 5 GetTrackConfiguration(int, MediaData*),
+//   6 SelectTrack(int), 9 GetSampleTrackIndex(size_t*), 10 Read(Buffer*), 11 Advance(), 12 GetSampleTime(int64*),
+//   15 SetDataSource(DataSource*, const char* path) (2019 SDK only: BOTW's 2017 one ends at 13; the slots it has are
+//   the same, read from both SDKs' vtables).
 // Decoder slots: 2 Configure(MediaData*), 3 RegisterClientEvents(EventType*[4]), 4 GetOutputFormat(MediaData*),
 //   6 Start, 9 AcquireInputBufferIndex(int*, int*), 10 GetInputBuffer(int, Buffer*),
 //   11 SendInputBufferForDecode(int, int off, int size, int64 time, uint32 flags),
@@ -231,8 +232,9 @@ static void ex_fill(Extractor *e) {
 static void ex_set_data_source(Cpu *c) {
     Extractor *e = self_state(c);
     const char *path = (const char *)(uintptr_t)c->x[2];
-    // "rom:/region_common/movie/title.webm" -> extracted/romfs/region_common/movie/title.webm
+    // "content://Movie/Demo101_0.webm" -> extracted/romfs/Movie/Demo101_0.webm (any "<mount>:/" or "<mount>://")
     const char *rel = path && strstr(path, ":/") ? strstr(path, ":/") + 2 : path;
+    while (rel && *rel == '/') rel++;
     char host[1024];
     snprintf(host, sizeof host, "%s/%s", g_romfs_dir, rel ? rel : "");
     LOG("[movie] open %s -> %s\n", path ? path : "(null)", host);
@@ -251,6 +253,12 @@ static void ex_set_data_source(Cpu *c) {
             (e->fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && g_settings.movie_audio && !getenv("LARECOMP_NO_MOVIE_AUDIO")))
             e->map[e->ntracks++] = (int)i;
     c->x[0] = 0;
+}
+
+// slot 2, SetDataSource(const char* path): the path in x1 (slot 15's is in x2)
+static void ex_set_data_source_path(Cpu *c) {
+    c->x[2] = c->x[1];
+    ex_set_data_source(c);
 }
 
 static void ex_get_track_count(Cpu *c) {
@@ -387,11 +395,12 @@ EX_LOCKED(ex_advance)
 EX_LOCKED(ex_get_sample_time)
 EX_LOCKED(ex_cached_duration)
 EX_LOCKED(ex_set_data_source)
+EX_LOCKED(ex_set_data_source_path)
 
 HLE_FUNC("_ZN5movie9ExtractorC1ENS_13ContainerTypeE", movie_extractor_ctor) {
     uint64_t vt = g_ex_vt;
     if (!vt) {
-        HostFn f[16] = {ex_dtor_l, ex_dtor_l, movie_log_slot, movie_log_slot, ex_get_track_count_l,
+        HostFn f[16] = {ex_dtor_l, ex_dtor_l, ex_set_data_source_path_l, movie_log_slot, ex_get_track_count_l,
                         ex_get_track_config_l, ex_select_track_l, movie_log_slot, ex_seek_l, ex_get_sample_track_l,
                         ex_read_l, ex_advance_l, ex_get_sample_time_l, movie_log_slot, ex_cached_duration_l,
                         ex_set_data_source_l};
