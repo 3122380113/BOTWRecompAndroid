@@ -121,8 +121,10 @@ que nenhum dos dois drivers tem.
 
 - Testado em Snapdragon (Adreno): com o Turnip a 60 fps, com o driver do próprio celular a 30 fps (com a iluminação
   nos dois). O app carrega o Turnip com [libadrenotools](https://github.com/bylaws/libadrenotools); o driver não está
-  incluído, você fornece o seu. Outras GPUs (Mali, Xclipse, ...) devem funcionar pelo mesmo caminho do driver da
-  Qualcomm, mas não foram testadas: relatos são bem-vindos.
+  incluído, você fornece o seu. **Mali**: o jogo rodou em uma Mali-G615 a 20-30 fps; desde a 0.3.3 as texturas são
+  decodificadas na CPU (a Mali não tem texturas BC, o formato do Switch), o que corrige os blocos coloridos vistos
+  nela - ainda a confirmar em mais celulares Mali. Xclipse e outras devem funcionar pelo mesmo caminho: relatos são
+  bem-vindos.
 - Você precisa do seu próprio dump v1.0.0 e de cerca de **12 GB livres** para a configuração (o app guarda a sua
   própria cópia dos arquivos do jogo mais uma imagem de dados gerada a partir deles); o dump pode ser apagado depois.
 - A primeira configuração compila o código do jogo no celular: cerca de 20 minutos em um Snapdragon 8 Elite.
