@@ -118,6 +118,8 @@ public class BOTWRecompActivity extends SDLActivity {
             Log.e(TAG, "setup: " + e);
         }
         self = this;
+        setShowWhenLocked(true);
+        setTurnScreenOn(true);
         super.onCreate(state);
         // SDL's own immersive full screen (no status / navigation bar, the camera cutout used): SDL's onCreate asks
         // for the windowed style, and keeps the bars hidden once its full screen mode is on

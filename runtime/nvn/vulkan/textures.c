@@ -472,7 +472,35 @@ static void destroy_image(TexBackend *b) {
 // Live game textures: an in-place reboot (vk_textures_reset) destroys them all.
 static NvnTexture **g_live;
 static int g_nlive, g_cap_live;
-int vk_texture_count(void) { return g_nlive; }
+int vk_texture_count(void) {
+    static int log_diag = -1;
+    if (log_diag < 0) log_diag = getenv("LARECOMP_LOG_TEXDIAG") ? 1 : 0;
+    if (log_diag) {
+        extern uint64_t g_tex_stat_init, g_tex_stat_reinit, g_tex_stat_reused, g_tex_stat_fin_owner, g_tex_stat_fin_copy, g_tex_stat_reg;
+        int fin_held = 0, dup_addr = 0, gpu_own = 0, upl = 0;
+        for (int i = 0; i < g_nlive; i++) {
+            NvnTexture *t = g_live[i];
+            TexBackend *b = t->backend;
+            if (t->finalized) fin_held++;
+            if (b && b->gpu_owned) gpu_own++;
+            if (b && b->uploaded) upl++;
+            for (int j = 0; j < i; j++) {
+                if (g_live[j]->addr && g_live[j]->addr == t->addr) { dup_addr++; break; }
+            }
+        }
+        LOG("[tex-diag] live_vk=%d (fin_held=%d dup_addr=%d gpu_own=%d upl=%d) init=%llu reused=%llu reinit=%llu fin_own=%llu fin_copy=%llu reg=%llu\n",
+            g_nlive, fin_held, dup_addr, gpu_own, upl,
+            (unsigned long long)g_tex_stat_init, (unsigned long long)g_tex_stat_reused, (unsigned long long)g_tex_stat_reinit,
+            (unsigned long long)g_tex_stat_fin_owner, (unsigned long long)g_tex_stat_fin_copy,
+            (unsigned long long)g_tex_stat_reg);
+        for (int i = g_nlive >= 3 ? g_nlive - 3 : 0; i < g_nlive; i++) {
+            NvnTexture *t = g_live[i];
+            LOG("[tex-sample #%d] addr=%llx %ux%ux%u fmt=%#x tgt=%u flags=%#x refs=%u fin=%d label=%s\n",
+                i, (unsigned long long)t->addr, t->width, t->height, t->depth, t->format, t->target, t->flags, t->refs, t->finalized, t->label);
+        }
+    }
+    return g_nlive;
+}
 static void live_add(NvnTexture *t, TexBackend *b) {
     if (g_nlive == g_cap_live) { g_cap_live = g_cap_live ? g_cap_live * 2 : 1024; g_live = realloc(g_live, g_cap_live * sizeof *g_live); }
     g_live[g_nlive++] = t;
@@ -505,19 +533,18 @@ static TexBackend *tex_backend(NvnTexture *t) {
 }
 
 void backend_texture_destroyed(NvnTexture *t) {
+    TexBackend *b = t->backend;
+    if (!b) return;
 #ifdef __ANDROID__
     extern void vk_async_drain(void);
     vk_async_drain();  // (the render thread idle: vulkan/async.c)
 #endif
-    TexBackend *b = t->backend;
-    if (b) {
-        extern void vk_alias_texture_destroyed(NvnTexture *t);  // (exec.c copy aliases: a source's contents handed over)
-        vk_alias_texture_destroyed(t);
-        live_remove(b);
-        destroy_image(b);
-        free(b->pending_rgba);
-        free(b);
-    }
+    extern void vk_alias_texture_destroyed(NvnTexture *t);  // (exec.c copy aliases: a source's contents handed over)
+    vk_alias_texture_destroyed(t);
+    live_remove(b);
+    destroy_image(b);
+    free(b->pending_rgba);
+    free(b);
     t->backend = NULL;
 }
 
@@ -862,14 +889,23 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
     if (b->samples > 1) return vk_dummy_view(want_textype);  // multisampled images can't be sampled as 2D
     if (want == have) {
         if (have == VK_IMAGE_VIEW_TYPE_CUBE) nly = 6;
+        else if (have == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY) nly = nly >= 6 ? nly - (nly % 6) : 6;
         return vk_image_view(b, want, fmt, lv0, nlv, ly0, nly, sw, aspect);
     }
-    if (want == VK_IMAGE_VIEW_TYPE_2D && (have == VK_IMAGE_VIEW_TYPE_2D_ARRAY || have == VK_IMAGE_VIEW_TYPE_CUBE))
+    if (want == VK_IMAGE_VIEW_TYPE_2D &&
+        (have == VK_IMAGE_VIEW_TYPE_2D_ARRAY || have == VK_IMAGE_VIEW_TYPE_CUBE || have == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY))
         return vk_image_view(b, want, fmt, lv0, nlv, ly0, 1, sw, aspect);
-    if (want == VK_IMAGE_VIEW_TYPE_2D_ARRAY && (have == VK_IMAGE_VIEW_TYPE_2D || have == VK_IMAGE_VIEW_TYPE_CUBE))
-        return vk_image_view(b, want, fmt, lv0, nlv, ly0, have == VK_IMAGE_VIEW_TYPE_CUBE ? nly : 1, sw, aspect);
-    if (want == VK_IMAGE_VIEW_TYPE_CUBE && have == VK_IMAGE_VIEW_TYPE_2D_ARRAY && b->layers >= 6 && b->width == b->height)
+    if (want == VK_IMAGE_VIEW_TYPE_2D_ARRAY &&
+        (have == VK_IMAGE_VIEW_TYPE_2D || have == VK_IMAGE_VIEW_TYPE_CUBE || have == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY))
+        return vk_image_view(b, want, fmt, lv0, nlv, ly0, have == VK_IMAGE_VIEW_TYPE_2D ? 1 : nly, sw, aspect);
+    if (want == VK_IMAGE_VIEW_TYPE_CUBE && (have == VK_IMAGE_VIEW_TYPE_2D_ARRAY || have == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY) &&
+        b->layers >= 6 && b->width == b->height)
         return vk_image_view(b, want, fmt, lv0, nlv, ly0 + 6 <= b->layers ? ly0 : 0, 6, sw, aspect);
+    if (want == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY && (have == VK_IMAGE_VIEW_TYPE_CUBE || have == VK_IMAGE_VIEW_TYPE_2D_ARRAY) &&
+        b->layers >= 6 && b->width == b->height) {
+        uint32_t cly = nly >= 6 ? nly - (nly % 6) : 6;
+        return vk_image_view(b, want, fmt, lv0, nlv, ly0 + cly <= b->layers ? ly0 : 0, cly, sw, aspect);
+    }
     if (want == VK_IMAGE_VIEW_TYPE_1D_ARRAY && have == VK_IMAGE_VIEW_TYPE_1D)
         return vk_image_view(b, want, fmt, lv0, nlv, 0, 1, sw, aspect);
     static int nlog;

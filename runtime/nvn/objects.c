@@ -442,12 +442,21 @@ static pthread_mutex_t g_live_lock = PTHREAD_MUTEX_INITIALIZER;
 static NvnTexture *g_all_tex;
 #define LIVE_GONE ((uintptr_t)1)
 static uint32_t live_hash(uintptr_t p) { return (uint32_t)((p >> 4) * 0x9E3779B97F4A7C15ull >> 46) & (LIVE_SLOTS - 1); }
+static void live_insert_locked(NvnTexture *t) {
+    uint32_t i = live_hash((uintptr_t)t);
+    for (int n = 0; n < LIVE_SLOTS && g_live_tex[i] > LIVE_GONE; n++) {
+        if (g_live_tex[i] == (uintptr_t)t) { t->in_live = true; t->finalized = false; return; }
+        i = (i + 1) & (LIVE_SLOTS - 1);
+    }
+    g_live_tex[i] = (uintptr_t)t;
+    t->in_live = true;
+    t->finalized = false;
+    t->refs++;
+}
 static void live_add(NvnTexture *t) {
     pthread_mutex_lock(&g_live_lock);
-    uint32_t i = live_hash((uintptr_t)t);
-    for (int n = 0; n < LIVE_SLOTS && g_live_tex[i] > LIVE_GONE; n++) i = (i + 1) & (LIVE_SLOTS - 1);
-    g_live_tex[i] = (uintptr_t)t;
-    t->refs = 1;
+    t->refs = 0;
+    live_insert_locked(t);
     t->next = g_all_tex;
     if (g_all_tex) g_all_tex->prev = t;
     g_all_tex = t;
@@ -458,9 +467,21 @@ static bool live_remove(NvnTexture *t) {
     uint32_t i = live_hash((uintptr_t)t);
     bool found = false;
     for (int n = 0; n < LIVE_SLOTS && g_live_tex[i]; n++, i = (i + 1) & (LIVE_SLOTS - 1))
-        if (g_live_tex[i] == (uintptr_t)t) { g_live_tex[i] = LIVE_GONE; found = true; break; }
+        if (g_live_tex[i] == (uintptr_t)t) { g_live_tex[i] = LIVE_GONE; t->in_live = false; found = true; break; }
     pthread_mutex_unlock(&g_live_lock);
     return found;
+}
+
+static bool texture_same_desc(const NvnTexture *a, const NvnTexture *b) {
+    if (a == b) return true;
+    if (!a || !b) return false;
+    return a->addr == b->addr && a->target == b->target && a->flags == b->flags &&
+           a->width == b->width && a->height == b->height && a->depth == b->depth &&
+           a->levels == b->levels && a->format == b->format && a->samples == b->samples &&
+           a->ds_mode == b->ds_mode && a->stride == b->stride &&
+           memcmp(a->swizzle, b->swizzle, 4) == 0 &&
+           a->layout.block_height_log2 == b->layout.block_height_log2 &&
+           a->layout.block_depth_log2 == b->layout.block_depth_log2;
 }
 
 // Descriptor registration copies a texture's description on NVN. Our descriptors reference the host object,
@@ -490,6 +511,11 @@ static void texture_retire(NvnTexture *t) {
         }
     }
     g_nretired = k;
+    if (!t->registered && !t->backend) {
+        texture_release(t);
+        pthread_mutex_unlock(&g_live_lock);
+        return;
+    }
     if (g_nretired == g_cap_retired) {
         g_cap_retired = g_cap_retired ? g_cap_retired * 2 : 256;
         g_retired = realloc(g_retired, g_cap_retired * sizeof *g_retired);
@@ -512,28 +538,77 @@ RT_ON_RESET(textures_reset) {
     g_nretired = g_cap_retired = 0;
 }
 
+// When a shallow copy of NVNtexture is registered in a pool with a custom NVNtextureView (BOTW's agl::TextureSampler),
+// mark offset 8 of the guest copy so its later nvnTextureFinalize does not finalize the parent TextureData's NvnTexture.
+#define VIEW_WRAPPER_MAGIC 0x5649455757524150ull
+uint64_t g_tex_stat_init, g_tex_stat_reinit, g_tex_stat_reused, g_tex_stat_fin_owner, g_tex_stat_fin_copy, g_tex_stat_reg;
+
 NVN(nvnTextureInitialize) {
     // An object initialized again without nvnTextureFinalize (BOTW streams textures so: a texture object is just a
     // description on NVN): its previous texture goes, as at a finalize. (live_remove: only a texture of ours - the
     // object's first initialize finds whatever its memory held.)
-    NvnTexture *old = HOST(NvnTexture, A(0));
-    if (old && live_remove(old)) {
-        static uint64_t n;
-        if (ENV("LARECOMP_LOG_TEXINIT") && n++ < 20) LOG("[nvn] TextureInitialize %llx again: previous texture retired\n", (unsigned long long)A(0));
-        texture_retire(old);
-    }
+    g_tex_stat_init++;
     NvnTexture *t = texture_from_builder(A(1));
+    NvnTexture *old = HOST(NvnTexture, A(0));
+    if (old && (!old->guest_addr || A(0) == old->guest_addr) &&
+        !(G(uint64_t, A(0), 8) == VIEW_WRAPPER_MAGIC)) {
+        if (old->in_live && texture_same_desc(old, t)) {
+            g_tex_stat_reused++;
+            free(t);
+            G(uint64_t, A(0), 8) = 0;
+            RET(1);
+            return;
+        }
+        if (live_remove(old)) {
+            g_tex_stat_reinit++;
+            old->finalized = true;
+            static uint64_t n;
+            if (ENV("LARECOMP_LOG_TEXINIT") && n++ < 20) LOG("[nvn] TextureInitialize %llx again: previous texture retired\n", (unsigned long long)A(0));
+            texture_retire(old);
+        }
+    }
+    if (t->addr != 0) {
+        pthread_mutex_lock(&g_live_lock);
+        for (NvnTexture *e = g_all_tex; e; e = e->next) {
+            if (texture_same_desc(e, t)) {
+                if (!e->in_live) {
+                    live_insert_locked(e);
+                    e->guest_addr = A(0);
+                }
+                pthread_mutex_unlock(&g_live_lock);
+                g_tex_stat_reused++;
+                free(t);
+                SET_HOST(A(0), e);
+                G(uint64_t, A(0), 8) = 0;
+                RET(1);
+                return;
+            }
+        }
+        pthread_mutex_unlock(&g_live_lock);
+    }
+    t->guest_addr = A(0);
     live_add(t);
     if (t->flags & 2)
         LOG("[nvn] video texture %p: %ux%u fmt %#x flags %#x target %u addr %llx stride %llu\n", t, t->width, t->height,
             t->format, t->flags, t->target, t->addr, t->stride);
     SET_HOST(A(0), t);
+    G(uint64_t, A(0), 8) = 0;
     RET(1);
 }
 NVN(nvnTextureFinalize) {
     NvnTexture *t = HOST(NvnTexture, A(0));
-    if (t && live_remove(t)) texture_retire(t);
-    else if (t) {
+    if (t && ((t->guest_addr && A(0) != t->guest_addr) ||
+              G(uint64_t, A(0), 8) == VIEW_WRAPPER_MAGIC)) {
+        g_tex_stat_fin_copy++;
+        G(uint64_t, A(0), 8) = 0;
+        SET_HOST(A(0), 0);
+        return;
+    }
+    if (t && live_remove(t)) {
+        g_tex_stat_fin_owner++;
+        t->finalized = true;
+        texture_retire(t);
+    } else if (t) {
         static int n;
         if (n++ < 5) LOG("[nvn] TextureFinalize %llx: not a live texture (%p), ignored (lr %llx)\n",
                          (unsigned long long)A(0), (void *)t, (unsigned long long)c->x[30]);
@@ -566,7 +641,7 @@ NVN(nvnTextureGetStorageClass) { RET(0); }
 NVN(nvnTextureGetRawStorageClass) { RET(0); }
 NVN(nvnTextureGetSparseTileLayout) { RET(0); }
 NVN(nvnTextureGetZCullStorageSize) { RET(0); }
-NVN(nvnTextureCompare) { RET(A(0) == A(1)); }
+NVN(nvnTextureCompare) { RET(texture_same_desc(HOST(NvnTexture, A(0)), HOST(NvnTexture, A(1)))); }
 NVN(nvnTextureFlushTexels) { (void)c; }
 NVN(nvnTextureInvalidateTexels) { (void)c; }
 
@@ -614,7 +689,7 @@ NVN(nvnTextureReadTexelsStrided) { (void)c; }
 NVN(nvnSamplerBuilderSetDevice) { G(uint64_t, A(0), 0) = A(1); }
 NVN(nvnSamplerBuilderSetDefaults) {
     NvnSamplerDesc *d = SD;
-    memset(d, 0, sizeof *d);
+    memset(d, 0, offsetof(NvnSamplerDesc, backend));
     d->min_filter = 0; d->mag_filter = 0;
     d->wrap[0] = d->wrap[1] = d->wrap[2] = 1;  // REPEAT
     d->lod_min = 0; d->lod_max = 1000.0f; d->max_aniso = 1.0f;
@@ -647,6 +722,7 @@ NVN(nvnSamplerBuilderGetLodSnap) { RETF(0); }
 NVN(nvnSamplerInitialize) {
     NvnSamplerDesc *d = malloc(sizeof *d);
     *d = *(NvnSamplerDesc *)(AP(1) + 8);
+    d->backend = NULL;
     SET_HOST(A(0), d);
     RET(1);
 }
@@ -663,7 +739,10 @@ NVN(nvnSamplerGetBorderColori) { memcpy(AP(1), SMP->border, 16); }
 NVN(nvnSamplerGetBorderColorui) { memcpy(AP(1), SMP->border, 16); }
 NVN(nvnSamplerGetMaxAnisotropy) { RETF(SMP->max_aniso); }
 NVN(nvnSamplerGetReductionFilter) { RET(SMP->reduction); }
-NVN(nvnSamplerCompare) { RET(memcmp(HOST(NvnSamplerDesc, A(0)), HOST(NvnSamplerDesc, A(1)), sizeof(NvnSamplerDesc)) == 0); }
+NVN(nvnSamplerCompare) {
+    const NvnSamplerDesc *a = HOST(NvnSamplerDesc, A(0)), *b = HOST(NvnSamplerDesc, A(1));
+    RET(a == b || (a && b && memcmp(a, b, offsetof(NvnSamplerDesc, backend)) == 0));
+}
 NVN(nvnSamplerGetDebugID) { RET(A(0)); }
 
 // ================================================================== descriptor pools
@@ -727,12 +806,14 @@ static void register_texture(Cpu *c) {
     NvnDescPool *d = HOST(NvnDescPool, A(0));
     int id = (int)A(1);
     if (id < 0 || id >= d->count) return;
-#ifdef __ANDROID__
-    // An asynchronous draw must finish reading the previous descriptor before its slot is replaced.
-    vk_async_drain();
-#endif
+    g_tex_stat_reg++;
     NvnTexEntry *e = &((NvnTexEntry *)d->entries)[id];
     NvnTexture *old = e->tex, *t = HOST(NvnTexture, A(2));
+#ifdef __ANDROID__
+    // An asynchronous draw must finish reading the previous descriptor before its slot is replaced.
+    if (old) vk_async_drain();
+#endif
+    if (t) t->registered = true;
     if (old != t) {
         pthread_mutex_lock(&g_live_lock);
         if (t) t->refs++;
@@ -741,7 +822,12 @@ static void register_texture(Cpu *c) {
         if (old) texture_retire(old);
     }
     e->has_view = A(3) != 0;
-    if (e->has_view) memcpy(&e->view, AP(3), sizeof e->view);
+    if (e->has_view) {
+        memcpy(&e->view, AP(3), sizeof e->view);
+        if (t && (!t->guest_addr || A(2) != t->guest_addr)) {
+            G(uint64_t, A(2), 8) = VIEW_WRAPPER_MAGIC;
+        }
+    }
 }
 NVN(nvnTexturePoolRegisterTexture) { register_texture(c); }
 NVN(nvnTexturePoolRegisterImage) { register_texture(c); }

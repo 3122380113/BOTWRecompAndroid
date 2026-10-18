@@ -33,6 +33,8 @@ typedef struct NvnTexture {
     uint64_t debug_id;
     char label[64];
     unsigned refs;  // texture object + descriptor slots + deferred releases (objects.c, g_live_lock)
+    uint64_t guest_addr;  // guest NVNtexture* address passed to nvnTextureInitialize
+    bool registered, in_live, finalized, destroyed;
     struct NvnTexture *next, *prev;
 } NvnTexture;
 

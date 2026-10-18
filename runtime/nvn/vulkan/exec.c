@@ -820,12 +820,25 @@ static VkSpan copy_dedupe(int slot, const void *data, uint64_t size, uint64_t al
 // Guest memory copied once per submission: draws binding the same range share the copy.
 #define GCOPY_TAB 4096
 static struct { uint64_t addr, size, seq; VkSpan span; } gcopy[GCOPY_TAB];
+static uint16_t gcopy_active[GCOPY_TAB];
+static int gcopy_nactive;
+static uint64_t gcopy_active_seq;
 static uint64_t gcopy_gen;  // bumped to drop every shared copy (guest memory written mid-list)
-static void guest_copy_flush(void) { gcopy_gen++; }
+static void guest_copy_flush(void) { gcopy_gen++; gcopy_nactive = 0; }
+static void guest_copy_invalidate(uint64_t lo, uint64_t hi) {
+    uint64_t seq = vk_pending_seq() + (gcopy_gen << 40);
+    if (gcopy_active_seq != seq) return;
+    for (int i = 0; i < gcopy_nactive; i++) {
+        uint16_t s = gcopy_active[i];
+        if (gcopy[s].seq == seq && gcopy[s].addr < hi && lo < gcopy[s].addr + gcopy[s].size) gcopy[s].seq = 0;
+    }
+}
 static VkSpan guest_copy(uint64_t addr, uint64_t size) {
     uint64_t seq = vk_pending_seq() + (gcopy_gen << 40), h = (addr * 0x9E3779B97F4A7C15ull) ^ (size * 0xC2B2AE3D27D4EB4Full);
+    if (gcopy_active_seq != seq) { gcopy_active_seq = seq; gcopy_nactive = 0; }
     uint32_t slot = (uint32_t)(h ^ (h >> 32)) & (GCOPY_TAB - 1);
     if (gcopy[slot].seq == seq && gcopy[slot].addr == addr && gcopy[slot].size == size) return gcopy[slot].span;
+    if (gcopy[slot].seq != seq && gcopy_nactive < GCOPY_TAB) gcopy_active[gcopy_nactive++] = (uint16_t)slot;
     VkSpan s = vk_transient_copy((const void *)(uintptr_t)addr, size, 256);
     gcopy[slot].addr = addr; gcopy[slot].size = size; gcopy[slot].seq = seq; gcopy[slot].span = s;
     return s;
@@ -1971,28 +1984,54 @@ static int nfeedback;
 static uint64_t g_cur_fs_hash;
 static NvnTexture *snap_tex[8];
 static bool snap_ok[8];
+static bool snap_fb_dirty[8];
 static const char *snap_why[8];
 static const char *snap_reason = "?";
 static void snapshots_invalidate(NvnTexture *t) {
-    for (int i = 0; i < 8; i++) if ((!t || snap_tex[i] == t) && snap_ok[i]) { snap_ok[i] = false; snap_why[i] = snap_reason; }
+    for (int i = 0; i < 8; i++)
+        if ((!t || snap_tex[i] == t) && snap_ok[i]) { snap_ok[i] = false; snap_fb_dirty[i] = false; snap_why[i] = snap_reason; }
+}
+static void snapshots_mark_fb_dirty(NvnTexture *t) {
+    for (int i = 0; i < 8; i++) if (snap_tex[i] == t && snap_ok[i]) snap_fb_dirty[i] = true;
+}
+static void snapshots_flush_fb_dirty(const char *why) {
+    for (int i = 0; i < 8; i++)
+        if (snap_fb_dirty[i]) { snap_fb_dirty[i] = false; if (snap_ok[i]) { snap_ok[i] = false; snap_why[i] = why; } }
 }
 
 typedef struct { NvnTexture *key; TexBackend copy; } Snap;
 static Snap snaps[16];
 static int nsnaps;
 
-static NvnTexture *shader_texture_object(int stage, ShaderTexture *st_) {
+static NvnTexEntry *shader_texture_entry(int stage, ShaderTexture *st_) {
     int slot = ((int)st_->handle_offset - 0x20) / 8;
     uint64_t h = (slot >= 0 && slot < 32) ? st.tex[stage][slot] : 0;
     uint32_t tic = h & 0xFFFFF;
     if (!h || !st.tpool || tic >= (uint32_t)st.tpool->count) return NULL;
-    return ((NvnTexEntry *)st.tpool->entries)[tic].tex;
+    return &((NvnTexEntry *)st.tpool->entries)[tic];
 }
 
-static bool is_attachment(NvnTexture *t) {
-    if (!t) return false;
-    if (t == st.rt.depth) return true;
-    for (int i = 0; i < st.rt.ncolor; i++) if (t == st.rt.color[i]) return true;
+static NvnTexture *shader_texture_object(int stage, ShaderTexture *st_) {
+    NvnTexEntry *e = shader_texture_entry(stage, st_);
+    return e ? e->tex : NULL;
+}
+
+static bool view_overlaps_rt(const NvnTexEntry *e, const NvnTextureView *rv, bool has_rv) {
+    uint32_t r_lv = has_rv && (rv->setmask & 1) ? rv->base_level : 0;
+    uint32_t r_ly = has_rv && (rv->setmask & 2) ? rv->min_layer : 0;
+    if (r_lv != 0 || r_ly != 0) return false;
+    uint32_t lv0 = e->has_view && (e->view.setmask & 1) ? e->view.base_level : 0;
+    uint32_t nlv = e->has_view && (e->view.setmask & 1) && e->view.num_levels ? e->view.num_levels : (e->tex->levels > lv0 ? e->tex->levels - lv0 : 1);
+    uint32_t ly0 = e->has_view && (e->view.setmask & 2) ? e->view.min_layer : 0;
+    uint32_t nly = e->has_view && (e->view.setmask & 2) && e->view.num_layers ? e->view.num_layers : 1;
+    return r_lv >= lv0 && r_lv < lv0 + nlv && r_ly >= ly0 && r_ly < ly0 + nly;
+}
+
+static bool is_attachment_entry(const NvnTexEntry *e) {
+    if (!e || !e->tex) return false;
+    if (e->tex == st.rt.depth && view_overlaps_rt(e, &st.rt.dview, st.rt.has_dview != 0)) return true;
+    for (int i = 0; i < st.rt.ncolor; i++)
+        if (e->tex == st.rt.color[i] && view_overlaps_rt(e, &st.rt.cview[i], st.rt.has_cview[i] != 0)) return true;
     return false;
 }
 
@@ -2238,8 +2277,9 @@ static void resolve_feedback(Prog *pr) {
     ShaderInfo *infos[2] = {pr->vi, pr->fi};
     for (int sg = 0; sg < 2; sg++)
         for (int i = 0; i < infos[sg]->ntex; i++) {
-            NvnTexture *t = shader_texture_object(sg, &infos[sg]->tex[i]);
-            if (!is_attachment(t)) continue;
+            NvnTexEntry *e = shader_texture_entry(sg, &infos[sg]->tex[i]);
+            if (!is_attachment_entry(e)) continue;
+            NvnTexture *t = e->tex;
             bool have = false;
             for (int k = 0; k < nfeedback; k++) have |= feedback_tex[k] == t;
             if (have || nfeedback == 4) continue;
@@ -2247,13 +2287,12 @@ static void resolve_feedback(Prog *pr) {
             if (nosnap < 0) nosnap = getenv("LARECOMP_NO_SNAPSHOT_REUSE") != NULL;
             int si = -1;
             for (int k = 0; k < 8; k++) if (snap_tex[k] == t) si = k;
-            bool self_write = t == st.rt.depth && st.ds[0] && st.ds[1];
             TexBackend *src = vk_tex(t, true);
             Snap *existing = NULL;
             for (int k = 0; k < nsnaps; k++) if (snaps[k].key == t && snaps[k].copy.image) existing = &snaps[k];
             VkImageAspectFlags sa = src->aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : src->aspect;
             static const VkComponentMapping id = {0};
-            if (!nosnap && si >= 0 && (snap_ok[si] || self_write) && existing) {
+            if (!nosnap && si >= 0 && snap_ok[si] && existing) {
                 feedback_tex[nfeedback] = t;
                 feedback_view[nfeedback++] = vk_image_view(&existing->copy, VK_IMAGE_VIEW_TYPE_2D, src->format, 0, 1, 0, 1, id, sa);
                 continue;
@@ -2281,6 +2320,7 @@ static void resolve_feedback(Prog *pr) {
             feedback_view[nfeedback++] = vk_image_view(dst, VK_IMAGE_VIEW_TYPE_2D, src->format, 0, 1, 0, 1, id, sa);
             if (si < 0) { static int rr; si = rr++ & 7; snap_tex[si] = t; }
             snap_ok[si] = true;
+            snap_fb_dirty[si] = false;
             st.rt_dirty = true;
         }
 }
@@ -3301,7 +3341,7 @@ static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo
             renderer_texture_scale(e->tex, &sc[0], &sc[1]);
             wh[0] = e->tex->width; wh[1] = e->tex->height;
             for (int k = 0; k < nfeedback; k++)
-                if (e->tex == feedback_tex[k] && (st_->type == TEXTYPE_2D || st_->type == TEXTYPE_2D_ARRAY)) {
+                if (e->tex == feedback_tex[k] && is_attachment_entry(e) && (st_->type == TEXTYPE_2D || st_->type == TEXTYPE_2D_ARRAY)) {
                     view = feedback_view[k];
                     if (st_->type == TEXTYPE_2D_ARRAY) view = vk_dummy_view(TEXTYPE_2D_ARRAY);  // (2D snapshot as array: rare)
                 }
@@ -3663,10 +3703,21 @@ static void draw_(CmdRec *r, bool indexed) {
     alias_draw_check();
     resolve_feedback(pr);
     snap_reason = "draw-depthwrite";
-    if (st.rt.depth && st.ds[0] && st.ds[1]) snapshots_invalidate(st.rt.depth);
+    if (st.rt.depth && st.ds[0] && st.ds[1]) {
+        bool fb = false;
+        for (int k = 0; k < nfeedback; k++) fb |= feedback_tex[k] == st.rt.depth;
+        if (fb) snapshots_mark_fb_dirty(st.rt.depth);
+        else snapshots_invalidate(st.rt.depth);
+    }
     snap_reason = "draw-colorwrite";
-    for (int i = 0; i < st.rt.ncolor; i++)
-        if (st.rt.color[i] && ((st.channel_mask >> (i * 4)) & 0xF)) snapshots_invalidate(st.rt.color[i]);
+    for (int i = 0; i < st.rt.ncolor; i++) {
+        if (st.rt.color[i] && ((pr->fi->out_mask >> (i * 4)) & 0xF) && ((st.channel_mask >> (i * 4)) & 0xF)) {
+            bool fb = false;
+            for (int k = 0; k < nfeedback; k++) fb |= feedback_tex[k] == st.rt.color[i];
+            if (fb) snapshots_mark_fb_dirty(st.rt.color[i]);
+            else snapshots_invalidate(st.rt.color[i]);
+        }
+    }
     begin_pass();
     VkCommandBuffer cb = vk_cmd();
 
@@ -4637,7 +4688,10 @@ static void exec_list(uint64_t handle, int depth) {
             st.rt.has_dview = rt->has_dview;
             static int always = -1;
             if (always < 0) always = getenv("LARECOMP_VK_PASS_RESTART") != NULL;
-            if (always || memcmp(&prev, &st.rt, sizeof prev)) st.rt_dirty = true;
+            if (always || memcmp(&prev, &st.rt, sizeof prev)) {
+                st.rt_dirty = true;
+                snapshots_flush_fb_dirty("rt-change");
+            }
             break;
         }
         case CMD_SET_VIEWPORTS:
@@ -4733,10 +4787,15 @@ static void exec_list(uint64_t handle, int depth) {
         case CMD_DISPATCH: dispatch_compute((uint32_t)r->x[0], (uint32_t)r->x[1], (uint32_t)r->x[2]); break;
         case CMD_DRAW_ARRAYS: draw(r, false); break;
         case CMD_DRAW_ELEMENTS: draw(r, true); break;
-        case CMD_UPDATE_UNIFORM_BUFFER:
-            memcpy((void *)(uintptr_t)(r->x[0] + r->x[2]), x, r->x[3]);
-            guest_copy_flush();  // (cbuf copies shared within the submission are stale now)
+        case CMD_UPDATE_UNIFORM_BUFFER: {
+            uint64_t dst = r->x[0] + r->x[2], sz = r->x[3];
+            if (sz && memcmp((const void *)(uintptr_t)dst, x, sz)) {
+                memcpy((void *)(uintptr_t)dst, x, sz);
+                guest_copy_invalidate(dst, dst + sz);
+            }
             break;
+        }
+        case CMD_BARRIER: snapshots_flush_fb_dirty("barrier"); break;
         case CMD_FENCE_SYNC: {
             static int fence_flush = -1;
             if (fence_flush < 0) fence_flush = getenv("LARECOMP_FENCE_FLUSH") ? 1 : 0;

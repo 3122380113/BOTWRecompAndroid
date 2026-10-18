@@ -40,7 +40,8 @@ int maxwell_dbg_reg;
 const uint8_t *maxwell_dbg_vs;
 
 #define RZ 255
-#define LMEM_WORDS 256  // local memory per invocation (1 KB)
+#define LMEM_WORDS 256   // local memory per invocation (1 KB)
+#define SMEM_WORDS 4096  // shared memory per workgroup (16 KB)
 #define PT 7
 
 typedef struct {
@@ -88,6 +89,7 @@ typedef struct {
     // GLSL (fields kept last: the MSL path's layout, including its out-of-range reg_used writes, is unchanged)
     bool glsl;               // emit Vulkan GLSL: dialect-specific constructs here, the rest via glsl_rewrite()
     bool uses_gmem_store;    // STG present: the gmem buffer is not readonly
+    bool uses_shared;        // LDS / STS present: workgroup shared memory array
     uint32_t cbuf_need[18];  // highest constant vec4 index + 1 per cbuf (array size of the GLSL block)
     bool static_stacks;      // (maxwell_static_stacks) flow_to holds every SYNC / BRK / CONT target
     int32_t *flow_to;        // per instruction index: its resolved target pc (-1: never reached)
@@ -618,6 +620,27 @@ static void glsl_sample(Ctx *c, char *out, int slot, const char *const *co, cons
     else strcpy(out, e);
 }
 
+static void glsl_gather(Ctx *c, char *out, int slot, const char *const *co, const char *layer, const char *dref,
+                        const char *off, int comp) {
+    if (c->fail) { strcpy(out, "vec4(0.0f)"); return; }
+    const ShaderTexture *t = &c->info->tex[slot];
+    int type = t->type;
+    bool cube = type == TEXTYPE_CUBE || type == TEXTYPE_CUBE_ARRAY;
+    int n = cube ? 3 : 2;
+    char xs[1600], P[1800];
+    if (n == 2) {
+        if (off) snprintf(xs, sizeof xs, "(vec2(%s, %s) + vec2(%s) / vec2(tsize%d(0).xy))", co[0], co[1], off, slot);
+        else snprintf(xs, sizeof xs, "vec2(%s, %s)", co[0], co[1]);
+    } else {
+        snprintf(xs, sizeof xs, "vec3(%s, %s, %s)", co[0], co[1], co[2]);
+    }
+    if (layer) snprintf(P, sizeof P, "vec%d(%s, float(%s))", n + 1, xs, layer);
+    else snprintf(P, sizeof P, "%s", xs);
+    if (t->shadow) snprintf(out, 2000, "textureGather(t%d, %s, %s)", slot, P, dref ? dref : "0.0f");
+    else if (comp != 0) snprintf(out, 2000, "textureGather(t%d, %s, %d)", slot, P, comp);
+    else snprintf(out, 2000, "textureGather(t%d, %s)", slot, P);
+}
+
 // TEXS / TLDS in GLSL (same slot allocation order and result layout as the MSL switch in emit_texs)
 static bool glsl_texs(Ctx *c, uint64_t w, bool fetch, int *slot_out, char *call, const char *A, const char *A1,
                       const char *Bv, const char *B1) {
@@ -836,6 +859,181 @@ static void emit_tex(Ctx *c, uint64_t w, bool bindless) {
     write_tex_result(c, slot, call, mask, d, RZ, false, false);
 }
 
+// TLD4 (full form): 4-texel component gather (0xc838 / mask 0xfc38).
+static void emit_tld4(Ctx *c, uint64_t w) {
+    int d = (int)bits(w, 0, 8), a = (int)bits(w, 8, 8), b = (int)bits(w, 20, 8);
+    uint32_t index = (uint32_t)bits(w, 36, 13);
+    int target = (int)bits(w, 29, 2);
+    bool array = bits(w, 28, 1), dc = bits(w, 50, 1);
+    int off_mode = (int)bits(w, 54, 2);  // 0 none, 1 aoffi, 2 ptp
+    int comp = (int)bits(w, 56, 2);
+    uint32_t mask = (uint32_t)bits(w, 31, 4);
+    int type = target == 1 ? (array ? TEXTYPE_2D_ARRAY : TEXTYPE_2D)
+             : target == 3 ? (array ? TEXTYPE_CUBE_ARRAY : TEXTYPE_CUBE)
+                           : TEXTYPE_2D;
+    int ncoord = target == 3 ? 3 : 2;
+    int slot = tex_slot(c, index, type, dc, array);
+    if (c->glsl) {
+        char cs[3][40], lay[96], offv[128], drv[48], gcall[4096];
+        const char *co[3], *layp = NULL, *offp = NULL, *drp = NULL;
+        int ar2 = a, p2 = b;
+        if (array) { sprintf(lay, "min(uint(r%d), uint(tsize%d(0).z) - 1u)", a, slot); c->reg_used[a] = 1; ar2 = a + 1; layp = lay; }
+        for (int i = 0; i < ncoord; i++) { sprintf(cs[i], "as_type<float>(r%d)", ar2 + i); c->reg_used[ar2 + i] = 1; co[i] = cs[i]; }
+        if (off_mode == 1) {
+            c->reg_used[p2] = 1;
+            sprintf(offv, "int2(int(r%d << 26) >> 26, int(r%d << 18) >> 26)", p2, p2);
+            offp = offv;
+            p2++;
+        } else if (off_mode == 2) {
+            c->reg_used[p2] = 1;
+            c->reg_used[p2 + 1] = 1;
+            sprintf(offv, "int2(int(r%d << 26) >> 26, int(r%d << 18) >> 26)", p2, p2);
+            offp = offv;
+            p2 += 2;
+        }
+        if (dc) { c->reg_used[p2] = 1; sprintf(drv, "as_type<float>(r%d)", p2); drp = drv; p2++; }
+        glsl_gather(c, gcall, slot, co, layp, drp, offp, comp);
+        write_tex_result(c, slot, gcall, mask, d, RZ, false, false);
+        return;
+    }
+    char coords[256] = "", layer[64] = "", tmp[64];
+    int ar = a;
+    if (array) { sprintf(layer, "min(uint(r%d), t%d.get_array_size() - 1u)", a, slot); c->reg_used[a] = 1; ar = a + 1; }
+    for (int i = 0; i < ncoord; i++) {
+        sprintf(tmp, "%sas_type<float>(r%d)", i ? ", " : "", ar + i);
+        c->reg_used[ar + i] = 1;
+        strcat(coords, tmp);
+    }
+    int pr = b;
+    char dref[64] = "", off[128] = "";
+    if (off_mode == 1) {
+        c->reg_used[pr] = 1;
+        sprintf(off, ", int2(int(r%d << 26) >> 26, int(r%d << 18) >> 26)", pr, pr);
+        pr++;
+    } else if (off_mode == 2) {
+        c->reg_used[pr] = 1;
+        c->reg_used[pr + 1] = 1;
+        sprintf(off, ", int2(int(r%d << 26) >> 26, int(r%d << 18) >> 26)", pr, pr);
+        pr += 2;
+    }
+    if (dc) { c->reg_used[pr] = 1; sprintf(dref, "as_type<float>(r%d)", pr); pr++; }
+    const char *vec = ncoord == 2 ? "float2" : "float3";
+    const char *cname = comp == 1 ? "component::y" : comp == 2 ? "component::z" : comp == 3 ? "component::w" : "component::x";
+    char call[1024];
+    if (dc)
+        sprintf(call, "t%d.gather_compare(s%d, %s(%s)%s%s, %s%s)", slot, slot, vec, coords, array ? ", " : "", layer, dref, off);
+    else if (ncoord == 3)
+        sprintf(call, "t%d.gather(s%d, %s(%s)%s%s, %s)", slot, slot, vec, coords, array ? ", " : "", layer, cname);
+    else
+        sprintf(call, "t%d.gather(s%d, %s(%s)%s%s%s, %s)", slot, slot, vec, coords, array ? ", " : "", layer, off[0] ? off : ", int2(0)", cname);
+    write_tex_result(c, slot, call, mask, d, RZ, false, false);
+}
+
+// TLD4S (scalar/compact 2D gather, 0xdf00 / mask 0xff40): always writes all 4 gather lanes to d0/d1.
+static void emit_tld4s(Ctx *c, uint64_t w) {
+    int d0 = (int)bits(w, 0, 8), a = (int)bits(w, 8, 8), b = (int)bits(w, 20, 8), d1 = (int)bits(w, 28, 8);
+    uint32_t index = (uint32_t)bits(w, 36, 13);
+    bool dc = bits(w, 50, 1), aoffi = bits(w, 51, 1);
+    int comp = (int)bits(w, 52, 2);
+    bool f16 = bits(w, 55, 1);  // 0xdf00 = Tld4s (F32), 0xdf80 = Tld4sF16 (F16)
+    char a0[16], a1[16], b0[16], b1[16];
+    const char *A = reg(c, a, a0);
+    const char *A1 = (dc && aoffi) ? reg(c, a + 1, a1) : "0u";
+    const char *Bv = reg(c, b, b0);
+    const char *B1 = (dc || aoffi) ? reg(c, b + 1, b1) : "0u";
+    int slot = tex_slot(c, index, TEXTYPE_2D, dc, false);
+    if (c->glsl) {
+        char cs[2][48], offv[96], drv[48], gcall[4096];
+        const char *co[2] = {cs[0], cs[1]}, *offp = NULL, *drp = NULL;
+        if (!dc && !aoffi) {
+            snprintf(cs[0], sizeof cs[0], "as_type<float>(%s)", A);
+            snprintf(cs[1], sizeof cs[1], "as_type<float>(%s)", Bv);
+        } else if (!dc && aoffi) {
+            snprintf(cs[0], sizeof cs[0], "as_type<float>(%s)", A);
+            snprintf(cs[1], sizeof cs[1], "as_type<float>(%s)", Bv);
+            snprintf(offv, sizeof offv, "int2(int(%s << 26) >> 26, int(%s << 18) >> 26)", B1, B1);
+            offp = offv;
+        } else if (dc && !aoffi) {
+            snprintf(cs[0], sizeof cs[0], "as_type<float>(%s)", A);
+            snprintf(cs[1], sizeof cs[1], "as_type<float>(%s)", Bv);
+            snprintf(drv, sizeof drv, "as_type<float>(%s)", B1);
+            drp = drv;
+        } else {
+            snprintf(cs[0], sizeof cs[0], "as_type<float>(%s)", A);
+            snprintf(cs[1], sizeof cs[1], "as_type<float>(%s)", A1);
+            snprintf(offv, sizeof offv, "int2(int(%s << 26) >> 26, int(%s << 18) >> 26)", Bv, Bv);
+            offp = offv;
+            snprintf(drv, sizeof drv, "as_type<float>(%s)", B1);
+            drp = drv;
+        }
+        glsl_gather(c, gcall, slot, co, NULL, drp, offp, comp);
+        write_tex_result(c, slot, gcall, 0xf, d0, d1, true, f16);
+        return;
+    }
+    const char *cname = comp == 1 ? "component::y" : comp == 2 ? "component::z" : comp == 3 ? "component::w" : "component::x";
+    char call[1024];
+    if (!dc && !aoffi)
+        sprintf(call, "t%d.gather(s%d, float2(as_type<float>(%s), as_type<float>(%s)), int2(0), %s)", slot, slot, A, Bv, cname);
+    else if (!dc && aoffi)
+        sprintf(call, "t%d.gather(s%d, float2(as_type<float>(%s), as_type<float>(%s)), int2(int(%s << 26) >> 26, int(%s << 18) >> 26), %s)", slot, slot, A, Bv, B1, B1, cname);
+    else if (dc && !aoffi)
+        sprintf(call, "t%d.gather_compare(s%d, float2(as_type<float>(%s), as_type<float>(%s)), as_type<float>(%s))", slot, slot, A, Bv, B1);
+    else
+        sprintf(call, "t%d.gather_compare(s%d, float2(as_type<float>(%s), as_type<float>(%s)), as_type<float>(%s), int2(int(%s << 26) >> 26, int(%s << 18) >> 26))", slot, slot, A, A1, B1, Bv, Bv);
+    write_tex_result(c, slot, call, 0xf, d0, d1, true, f16);
+}
+
+// TMML (Texture MipMap Level, 0xdf60 / 0xdf58): queries computed LOD as 24.8 signed fixed-point in .x/.y.
+static void emit_tmml(Ctx *c, uint64_t w, bool bindless) {
+    int d = (int)bits(w, 0, 8), a = (int)bits(w, 8, 8);
+    uint32_t index = bindless ? 0 : (uint32_t)bits(w, 36, 13);
+    int target = (int)bits(w, 29, 2);
+    bool array = bits(w, 28, 1);
+    uint32_t mask = (uint32_t)bits(w, 31, 4);
+    if (bindless) { fail(c, "bindless tmml"); return; }
+    int type = target == 0 ? (array ? TEXTYPE_1D_ARRAY : TEXTYPE_1D)
+             : target == 1 ? (array ? TEXTYPE_2D_ARRAY : TEXTYPE_2D)
+             : target == 2 ? TEXTYPE_3D
+                           : (array ? TEXTYPE_CUBE_ARRAY : TEXTYPE_CUBE);
+    int slot = tex_slot(c, index, -1, false, false);
+    if (c->tex_weak[slot]) {
+        c->info->tex[slot].type = (uint8_t)type;
+        c->info->tex[slot].is_array = array;
+    }
+    int stype = c->info->tex[slot].type;
+    int ncoord = (stype == TEXTYPE_1D || stype == TEXTYPE_1D_ARRAY) ? 1
+               : (stype == TEXTYPE_2D || stype == TEXTYPE_2D_ARRAY) ? 2 : 3;
+    int ar = array ? (a == RZ ? RZ : a + 1) : a;
+    if (array && a < RZ) c->reg_used[a] = 1;
+    char cs[3][48], coords[192];
+    for (int i = 0; i < ncoord; i++) {
+        int r = ar == RZ ? RZ : ar + i;
+        if (r < RZ) c->reg_used[r] = 1;
+        snprintf(cs[i], sizeof cs[i], "as_type<float>(%s)", R(r));
+    }
+    if (ncoord == 1) snprintf(coords, sizeof coords, "%s", cs[0]);
+    else if (ncoord == 2) snprintf(coords, sizeof coords, "float2(%s, %s)", cs[0], cs[1]);
+    else snprintf(coords, sizeof coords, "float3(%s, %s, %s)", cs[0], cs[1], cs[2]);
+    if (c->glsl && c->stage == STAGE_FRAGMENT) {
+        sp(&c->body, "    { float2 lod = textureQueryLod(t%d, %s);\n"
+                     "      uint4 q = uint4(uint(int(lod.y * 256.0f)), uint(int(lod.x * 256.0f)), 0u, 0u);\n",
+           slot, coords);
+    } else {
+        sp(&c->body, "    { uint4 q = uint4(0u, 0u, 0u, 0u);\n");
+    }
+    int n = 0;
+    for (int i = 0; i < 4; i++) {
+        if (mask & (1u << i)) {
+            if (d != RZ && d + n < RZ) {
+                c->reg_used[d + n] = 1;
+                sp(&c->body, "      r%d = q[%d];\n", d + n, i);
+            }
+            n++;
+        }
+    }
+    sp(&c->body, "    }\n");
+}
+
 // ------------------------------------------------------------------ instruction translation
 static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
     char t[2048], u[2048];
@@ -941,6 +1139,14 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         emit_tex(c, w, false);
     } else if (OPM(0xdeb8000000000000ull, 0xfff8000000000000ull)) {  // TEX.B (bindless)
         emit_tex(c, w, true);
+    } else if (OPM(0xc838000000000000ull, 0xfc38000000000000ull)) {  // TLD4
+        emit_tld4(c, w);
+    } else if (OPM(0xdf00000000000000ull, 0xff40000000000000ull)) {  // TLD4S
+        emit_tld4s(c, w);
+    } else if (OPM(0xdf60000000000000ull, 0xfff8000000000000ull)) {  // TMML
+        emit_tmml(c, w, false);
+    } else if (OPM(0xdf58000000000000ull, 0xfff8000000000000ull)) {  // TMML.B (bindless)
+        emit_tmml(c, w, true);
     } else if (OPM(0xdf48000000000000ull, 0xfff8000000000000ull)) {  // TXQ
         uint32_t index = (uint32_t)bits(w, 36, 13);
         int qt = (int)bits(w, 22, 6);
@@ -1536,12 +1742,17 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         icmp_expr(cmp, (int)bits(w, 49, 3), cv, "0u", bits(w, 48, 1));
         sprintf(t, "(%s ? %s : %s)", cmp, R(a), bv);
         set_reg(c, d, t);
-    } else if (OPM(0xef40000000000000ull, 0xfff8000000000000ull) || OPM(0xef50000000000000ull, 0xfff8000000000000ull)) {  // LDL / STL
-        // thread-private local memory, modelled as a word array (byte/short accesses within a word)
+    } else if (OPM(0xef40000000000000ull, 0xfff8000000000000ull) || OPM(0xef50000000000000ull, 0xfff8000000000000ull) ||
+               OPM(0xef48000000000000ull, 0xfff8000000000000ull) || OPM(0xef58000000000000ull, 0xfff8000000000000ull)) {  // LDL / STL / LDS / STS
+        // thread-private local memory (lmem) or workgroup shared memory (smem), modelled as a word array
+        bool shared = bits(w, 51, 1);
         bool store = bits(w, 52, 1);
         int size = (int)bits(w, 48, 3);
         int32_t off = (int32_t)sbits(w, 20, 24);
-        c->uses_local = true;
+        if (shared) c->uses_shared = true;
+        else c->uses_local = true;
+        const char *arr = shared ? "smem" : "lmem";
+        uint32_t wmask = (shared ? SMEM_WORDS : LMEM_WORDS) - 1;
         char addr[128];
         if (a == RZ) sprintf(addr, "%du", off);
         else sprintf(addr, "(%s + %du)", R(a), (uint32_t)off);
@@ -1551,19 +1762,19 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
             if (size < 4) {
                 static const char *const ext[] = {"(v >> sh) & 0xFFu", "uint(int(char((v >> sh) & 0xFFu)))", "(v >> sh) & 0xFFFFu",
                                                   "uint(int(short((v >> sh) & 0xFFFFu)))"};
-                if (d != RZ) { c->reg_used[d] = 1; sp(&c->body, "      uint v = lmem[(la >> 2) & %du]; uint sh = (la & 3u) * 8u; r%d = %s;\n", LMEM_WORDS - 1, d, ext[size]); }
+                if (d != RZ) { c->reg_used[d] = 1; sp(&c->body, "      uint v = %s[(la >> 2) & %uu]; uint sh = (la & 3u) * 8u; r%d = %s;\n", arr, wmask, d, ext[size]); }
             } else {
                 for (int k = 0; k < nw; k++)
-                    if (d != RZ && d + k < RZ) { c->reg_used[d + k] = 1; sp(&c->body, "      r%d = lmem[((la >> 2) + %du) & %du];\n", d + k, k, LMEM_WORDS - 1); }
+                    if (d != RZ && d + k < RZ) { c->reg_used[d + k] = 1; sp(&c->body, "      r%d = %s[((la >> 2) + %du) & %uu];\n", d + k, arr, k, wmask); }
             }
         } else {
             if (size < 4) {
                 uint32_t m = size < 2 ? 0xFFu : 0xFFFFu;
-                sp(&c->body, "      uint sh = (la & 3u) * 8u; uint i = (la >> 2) & %du; lmem[i] = (lmem[i] & ~(0x%xu << sh)) | ((%s & 0x%xu) << sh);\n",
-                   LMEM_WORDS - 1, m, R(d), m);
+                sp(&c->body, "      uint sh = (la & 3u) * 8u; uint i = (la >> 2) & %uu; %s[i] = (%s[i] & ~(0x%xu << sh)) | ((%s & 0x%xu) << sh);\n",
+                   wmask, arr, arr, m, R(d), m);
             } else {
                 for (int k = 0; k < nw; k++)
-                    sp(&c->body, "      lmem[((la >> 2) + %du) & %du] = %s;\n", k, LMEM_WORDS - 1, R(d == RZ ? RZ : d + k));
+                    sp(&c->body, "      %s[((la >> 2) + %du) & %uu] = %s;\n", arr, k, wmask, R(d == RZ ? RZ : d + k));
             }
         }
         sp(&c->body, "    }\n");
@@ -2313,6 +2524,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
             sp(&s, "layout(early_fragment_tests) in;\n");
     } else {
         sp(&s, "layout(local_size_x_id = 0, local_size_y_id = 1, local_size_z_id = 2) in;\n");
+        if (c->uses_shared) sp(&s, "shared uint smem[%d];\n", SMEM_WORDS);
     }
     sp(&s, "void main() {\n");
     if (stage == STAGE_VERTEX) {
@@ -2327,6 +2539,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         if (c->pred_used[i]) sp(&s, "  bool p%d = false;\n", i);
     if (c->uses_cc) sp(&s, "  uint cc = 0u; bool ccz = false, ccs = false;\n");
     if (c->uses_local) sp(&s, "  uint lmem[%d]; for (int li_ = 0; li_ < %d; li_++) lmem[li_] = 0u;\n", LMEM_WORDS, LMEM_WORDS);
+    if (c->uses_shared && stage != STAGE_COMPUTE) sp(&s, "  uint smem[%d];\n", SMEM_WORDS);
     if (dbg) sp(&s, maxwell_dbg_pc == 0xffffffffu ? "  float dbgv = 1.0f;\n" : "  float dbgv = -1.0f;\n");
     if (any_branch && c->structured) {
         sp(&s, "  bool exit_now = false;\n  do {\n%s  } while (false);\n", body.buf ? body.buf : "");
@@ -2592,6 +2805,7 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
         if (c->pred_used[i]) sp(&s, "  bool p%d = false;\n", i);
     if (c->uses_cc) sp(&s, "  uint cc = 0; bool ccz = false, ccs = false;\n");
     if (c->uses_local) sp(&s, "  uint lmem[%d] = {};\n", LMEM_WORDS);
+    if (c->uses_shared) sp(&s, "  threadgroup uint smem[%d];\n", SMEM_WORDS);
     if (dbg) sp(&s, maxwell_dbg_pc == 0xffffffffu ? "  float dbgv = 1.0f;\n" : "  float dbgv = -1.0f;\n");
     if (any_branch) {
         sp(&s, "  uint pc = 8u; uint ssy[16]; uint ssy_n = 0; uint pbk[16]; uint pbk_n = 0; uint pcnt[16]; uint pcnt_n = 0;\n");

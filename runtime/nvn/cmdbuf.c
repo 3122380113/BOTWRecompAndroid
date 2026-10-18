@@ -51,7 +51,7 @@ static uint64_t shadow_at(uint64_t guest) {
     uint32_t i = (uint32_t)(page * 0x9E3779B97F4A7C15ull >> 48) & (SHADOW_SLOTS - 1);
     while (g_shadow[i].page && g_shadow[i].page != page) i = (i + 1) & (SHADOW_SLOTS - 1);
     if (!g_shadow[i].page) {
-        g_shadow[i].mem = malloc(SHADOW_PAGE * SHADOW_K);
+        g_shadow[i].mem = malloc(SHADOW_PAGE * SHADOW_K + sizeof(CmdRec));
         if (!g_shadow[i].mem) FATAL("nvn: no memory for a command shadow page\n");
         g_shadow[i].page = page;
     }
@@ -71,6 +71,14 @@ static void jump_from_here(NvnCmdBuf *cb, uint64_t to) {
 }
 
 static void set_chunk(NvnCmdBuf *cb, uint64_t gmem, uint64_t mem, uint64_t size) {
+    if (gmem) {
+        uint64_t in_page = gmem % SHADOW_PAGE;
+        if (in_page + JUMP_RESERVE > SHADOW_PAGE) {
+            uint64_t skip = SHADOW_PAGE - in_page;
+            gmem += skip;
+            size = size > skip ? size - skip : 0;
+        }
+    }
     if (cb->recording && ENV("LARECOMP_CHECK_HANDLES")) {
         static int n;
         if (n++ < 40) LOG("[nvn] command buffer %llx: new memory %llx (host %llx) while recording, %llu of %llu used at %llx\n",
