@@ -90,9 +90,12 @@ typedef struct NvnSync {
 
 // ---- command recording (stored in guest command memory)
 typedef struct {
-    uint64_t mem;    // current command memory chunk (guest address)
-    uint64_t size;   // chunk size
-    uint64_t used;   // bytes used in chunk
+    uint64_t gmem;   // where records go (runtime/nvn/cmdbuf.c): the guest address of the current chunk, 0: host memory
+    uint64_t mem;    // (host memory: its address)
+    uint64_t size;   // chunk size (game bytes)
+    uint64_t used;   // bytes used in chunk (game bytes)
+    bool has_ctrl;   // records go to control memory (the game added some), command memory is only accounted
+    uint64_t cmd_size, cmd_used;
     uint64_t start;  // first record of the list being recorded
     uint64_t callback, callback_data;
     bool recording;

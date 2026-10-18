@@ -39,4 +39,7 @@ if [ -f android/out/botwgame.so ]; then
 else
     echo "no android/out/botwgame.so yet (android/build_gamelib.sh)"
 fi
+# what adb pushes belongs to the shell user (rwxrws---): readable by the app only once others may read it (the app's
+# own setup makes these files as the app)
+adb shell chmod -R o+rX "$D"
 adb shell ls -la "$D"

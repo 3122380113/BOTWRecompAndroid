@@ -1,12 +1,25 @@
-// NVN command buffers: commands are recorded into the guest-provided command memory as CmdRec
-// records, so the game's own memory management and out-of-memory callbacks work as designed.
-// A command handle is the guest address of a list's first record.
+// NVN command buffers: commands are recorded as CmdRec records into a host shadow of the game's own memory, so the
+// game's memory management and out-of-memory callbacks work as designed.
+//
+// Where: in NVN a command handle refers to the list in *control* memory (nvnCommandBufferAddControlMemory), and that
+// is the memory whose lifetime is the list's: BOTW gives a small command buffer its own control memory per object
+// (kept as long as the list is called) but the same scratch command memory every time. So records go to the control
+// memory when the command buffer has some, else to its command memory. Command memory then is only accounted.
+//
+// How much: our records are bigger than NVN's own tokens, which the game sizes its memory for, so each byte of the
+// game's memory stands for SHADOW_K bytes of a host shadow of it (shadow_at: by 64 KB page of guest address). A
+// command buffer reports its use in the game's bytes (ours / SHADOW_K); when the game reuses a piece of its memory,
+// the shadow of that piece is reused too. A list never crosses a shadow page in one piece: a jump continues it.
+// A command handle is the (host) address of a list's first record.
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "nvn.h"
 
-#define JUMP_RESERVE (sizeof(CmdRec) + 8)
+#define SHADOW_K 8                                                  // shadow bytes per byte of the game's memory
+#define SHADOW_PAGE 0x10000ull                                      // (game bytes)
+#define JUMP_RESERVE ((sizeof(CmdRec) + SHADOW_K - 1) / SHADOW_K)  // (game bytes) the chaining jump at a chunk's end
 
 static NvnCmdBuf *cb_of(uint64_t guest) { return HOST(NvnCmdBuf, guest); }
 
@@ -27,50 +40,133 @@ static CmdRec *raw_rec(uint64_t at, uint32_t op, uint32_t size) {
     return r;
 }
 
-NVN(nvnCommandBufferAddCommandMemory) {
-    NvnCmdBuf *cb = cb_of(A(0));
-    uint64_t mem = HOST(NvnPool, A(1))->storage + A(2), size = A(3);
-    if (cb->recording && cb->mem) {
-        // chain the list being recorded into the new chunk
-        CmdRec *j = raw_rec(cb->mem + cb->used, CMD_JUMP, sizeof(CmdRec));
-        j->x[0] = mem;
+// ---- shadow pages: guest page -> host block of SHADOW_PAGE * SHADOW_K bytes (allocated at first use, kept)
+enum { SHADOW_SLOTS = 1 << 16 };
+static struct { uint64_t page; uint8_t *mem; } g_shadow[SHADOW_SLOTS];
+static pthread_mutex_t g_shadow_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static uint64_t shadow_at(uint64_t guest) {
+    uint64_t page = guest / SHADOW_PAGE + 1;  // (+1: 0 marks an empty slot)
+    pthread_mutex_lock(&g_shadow_lock);
+    uint32_t i = (uint32_t)(page * 0x9E3779B97F4A7C15ull >> 48) & (SHADOW_SLOTS - 1);
+    while (g_shadow[i].page && g_shadow[i].page != page) i = (i + 1) & (SHADOW_SLOTS - 1);
+    if (!g_shadow[i].page) {
+        g_shadow[i].mem = malloc(SHADOW_PAGE * SHADOW_K);
+        if (!g_shadow[i].mem) FATAL("nvn: no memory for a command shadow page\n");
+        g_shadow[i].page = page;
     }
+    uint8_t *m = g_shadow[i].mem;
+    pthread_mutex_unlock(&g_shadow_lock);
+    return (uint64_t)(uintptr_t)m + guest % SHADOW_PAGE * SHADOW_K;
+}
+
+// The chunk records go to: cb->gmem (guest address; 0: host memory at cb->mem), cb->size and cb->used in game bytes.
+static uint64_t write_at(const NvnCmdBuf *cb) {
+    return cb->gmem ? shadow_at(cb->gmem + cb->used) : cb->mem + cb->used * SHADOW_K;
+}
+
+// The list being recorded goes on at `to` (a jump to it).
+static void jump_from_here(NvnCmdBuf *cb, uint64_t to) {
+    if (cb->recording && (cb->gmem || cb->mem)) raw_rec(write_at(cb), CMD_JUMP, sizeof(CmdRec))->x[0] = to;
+}
+
+static void set_chunk(NvnCmdBuf *cb, uint64_t gmem, uint64_t mem, uint64_t size) {
+    if (cb->recording && ENV("LARECOMP_CHECK_HANDLES")) {
+        static int n;
+        if (n++ < 40) LOG("[nvn] command buffer %llx: new memory %llx (host %llx) while recording, %llu of %llu used at %llx\n",
+                          (unsigned long long)cb->guest, (unsigned long long)gmem, (unsigned long long)mem,
+                          (unsigned long long)cb->used, (unsigned long long)cb->size, (unsigned long long)cb->gmem);
+    }
+    jump_from_here(cb, gmem ? shadow_at(gmem) : mem);
+    cb->gmem = gmem;
     cb->mem = mem;
     cb->size = size;
     cb->used = 0;
 }
-NVN(nvnCommandBufferAddControlMemory) { (void)c; }
-NVN(nvnCommandBufferGetCommandMemorySize) { RET(cb_of(A(0))->size); }
-NVN(nvnCommandBufferGetCommandMemoryUsed) { RET(cb_of(A(0))->used); }
+
+NVN(nvnCommandBufferAddCommandMemory) {
+    NvnCmdBuf *cb = cb_of(A(0));
+    if (ENV("LARECOMP_CHECK_HANDLES")) {
+        static int n;
+        if (n++ < 300) LOG("[nvn] AddCommandMemory %llx: pool %llx +%llx size %llx (lr %llx)\n", (unsigned long long)A(0),
+                           (unsigned long long)A(1), (unsigned long long)A(2), (unsigned long long)A(3), (unsigned long long)c->x[30]);
+    }
+    cb->cmd_size = A(3), cb->cmd_used = 0;
+    if (!cb->has_ctrl) set_chunk(cb, HOST(NvnPool, A(1))->storage + A(2), 0, A(3));
+}
+NVN(nvnCommandBufferAddControlMemory) {
+    NvnCmdBuf *cb = cb_of(A(0));
+    if (ENV("LARECOMP_CHECK_HANDLES")) {
+        static int n;
+        if (n++ < 300) LOG("[nvn] AddControlMemory %llx: %llx size %llx (lr %llx)\n", (unsigned long long)A(0), (unsigned long long)A(1),
+                           (unsigned long long)A(2), (unsigned long long)c->x[30]);
+    }
+    cb->has_ctrl = true;
+    set_chunk(cb, A(1), 0, A(2));
+}
+static uint64_t chunk_free(const NvnCmdBuf *cb) { return cb->size > cb->used + JUMP_RESERVE ? cb->size - cb->used - JUMP_RESERVE : 0; }
+NVN(nvnCommandBufferGetCommandMemorySize) { NvnCmdBuf *cb = cb_of(A(0)); RET(cb->has_ctrl ? cb->cmd_size : cb->size); }
+NVN(nvnCommandBufferGetCommandMemoryUsed) { NvnCmdBuf *cb = cb_of(A(0)); RET(cb->has_ctrl ? cb->cmd_used : cb->used); }
 NVN(nvnCommandBufferGetCommandMemoryFree) {
     NvnCmdBuf *cb = cb_of(A(0));
-    RET(cb->size > cb->used + JUMP_RESERVE ? cb->size - cb->used - JUMP_RESERVE : 0);
+    RET(cb->has_ctrl ? cb->cmd_size - cb->cmd_used : chunk_free(cb));
 }
-NVN(nvnCommandBufferGetControlMemorySize) { RET(0x10000); }
-NVN(nvnCommandBufferGetControlMemoryUsed) { RET(0); }
-NVN(nvnCommandBufferGetControlMemoryFree) { RET(0x10000); }
+NVN(nvnCommandBufferGetControlMemorySize) { NvnCmdBuf *cb = cb_of(A(0)); RET(cb->has_ctrl ? cb->size : 0x10000); }
+NVN(nvnCommandBufferGetControlMemoryUsed) { NvnCmdBuf *cb = cb_of(A(0)); RET(cb->has_ctrl ? cb->used : 0); }
+NVN(nvnCommandBufferGetControlMemoryFree) { NvnCmdBuf *cb = cb_of(A(0)); RET(cb->has_ctrl ? chunk_free(cb) : 0x10000); }
 NVN(nvnCommandBufferSetMemoryCallback) { cb_of(A(0))->callback = A(1); }
 NVN(nvnCommandBufferGetMemoryCallback) { RET(cb_of(A(0))->callback); }
 NVN(nvnCommandBufferSetMemoryCallbackData) { cb_of(A(0))->callback_data = A(1); }
 NVN(nvnCommandBufferGetMemoryCallbackData) { RET(cb_of(A(0))->callback_data); }
 NVN(nvnCommandBufferSetCommandMemoryCallbackEnabled) { (void)c; }
 
+// Memory of our own, when the game's runs out and its callback adds none (BOTW: an empty callback on small command
+// buffers). Lists live as long as the game keeps calling them, so these chunks are never freed; LARECOMP_LOG_CMDMEM
+// logs each one.
+static void add_host_memory(NvnCmdBuf *cb, uint32_t need) {
+    static _Atomic uint64_t total;
+    uint64_t size = need + JUMP_RESERVE > 0x800 ? need + JUMP_RESERVE : 0x800;  // (game bytes)
+    uint8_t *mem = malloc(size * SHADOW_K);
+    if (!mem) FATAL("nvn: out of command memory (host, %llu bytes)\n", (unsigned long long)(size * SHADOW_K));
+    total += size * SHADOW_K;
+    if (ENV("LARECOMP_LOG_CMDMEM"))
+        LOG("[nvn] command buffer %llx: %llu bytes of host command memory (%llu KB in all)\n",
+            (unsigned long long)cb->guest, (unsigned long long)(size * SHADOW_K), (unsigned long long)(total / 1024));
+    set_chunk(cb, 0, (uint64_t)(uintptr_t)mem, size);
+}
+
 // Reserve a record. May call back into the guest for more memory, so callers snapshot their
 // arguments first.
 static CmdRec *rec(Cpu *c, NvnCmdBuf *cb, uint32_t op, uint32_t extra) {
-    uint32_t size = (uint32_t)((sizeof(CmdRec) + extra + 7) & ~7u);
-    for (int tries = 0; !cb->mem || cb->used + size + JUMP_RESERVE > cb->size; tries++) {
-        if (!cb->callback || tries == 2) FATAL("nvn: out of command memory (need %u)\n", size);
+    uint32_t real = (uint32_t)((sizeof(CmdRec) + extra + 7) & ~7u);
+    uint32_t size = (real + SHADOW_K - 1) / SHADOW_K;  // (game bytes)
+    for (int tries = 0; (!cb->gmem && !cb->mem) || cb->used + size + JUMP_RESERVE > cb->size; tries++) {
+        if (!cb->callback || tries == 2) {
+            add_host_memory(cb, size);
+            break;
+        }
         uint64_t saved[8];
         memcpy(saved, c->x, sizeof saved);
         c->x[0] = cb->guest;
-        c->x[1] = 0;  // NVN_COMMAND_BUFFER_MEMORY_EVENT_OUT_OF_COMMAND_MEMORY
+        c->x[1] = cb->has_ctrl;  // NVN_COMMAND_BUFFER_MEMORY_EVENT_OUT_OF_COMMAND_MEMORY / _CONTROL_MEMORY
         c->x[2] = size + JUMP_RESERVE;
         c->x[3] = cb->callback_data;
         guest_call(c, cb->callback);
         memcpy(c->x, saved, sizeof saved);
     }
-    CmdRec *r = raw_rec(cb->mem + cb->used, op, size);
+    if (cb->gmem) {  // (a record doesn't cross a shadow page: the rest of the page is skipped)
+        uint64_t in_page = (cb->gmem + cb->used) % SHADOW_PAGE;
+        if (in_page + size + JUMP_RESERVE > SHADOW_PAGE) {
+            uint64_t skip = SHADOW_PAGE - in_page;
+            if (cb->used + skip + size + JUMP_RESERVE <= cb->size) {
+                raw_rec(write_at(cb), CMD_JUMP, sizeof(CmdRec))->x[0] = shadow_at(cb->gmem + cb->used + skip);
+                cb->used += skip;
+            } else {
+                add_host_memory(cb, size);
+            }
+        }
+    }
+    CmdRec *r = raw_rec(write_at(cb), op, real);
     cb->used += size;
     return r;
 }
@@ -78,13 +174,17 @@ static CmdRec *rec(Cpu *c, NvnCmdBuf *cb, uint32_t op, uint32_t extra) {
 NVN(nvnCommandBufferBeginRecording) {
     NvnCmdBuf *cb = cb_of(A(0));
     cb->recording = true;
-    rec(c, cb, CMD_BARRIER, 0);  // makes sure memory exists; the list starts here
-    cb->start = cb->mem + cb->used - sizeof(CmdRec);
+    cb->start = (uint64_t)(uintptr_t)rec(c, cb, CMD_BARRIER, 0);  // makes sure memory exists; the list starts here
 }
 NVN(nvnCommandBufferEndRecording) {
     NvnCmdBuf *cb = cb_of(A(0));
     rec(c, cb, CMD_END, 0);
     cb->recording = false;
+    if (ENV("LARECOMP_CHECK_HANDLES")) {
+        static int n;
+        if (n++ < 400) LOG("[nvn] EndRecording %llx -> %llx (lr %llx)\n", (unsigned long long)cb->guest,
+                           (unsigned long long)cb->start, (unsigned long long)c->x[30]);
+    }
     RET(cb->start);
 }
 NVN(nvnCommandBufferIsRecording) { RET(cb_of(A(0))->recording); }
@@ -436,11 +536,104 @@ PLAIN(nvnCommandBufferWaitSync, CMD_WAIT_SYNC)
 PLAIN(nvnCommandBufferBarrier, CMD_BARRIER)
 PLAIN(nvnCommandBufferSignalEvent, CMD_SIGNAL_EVENT)
 PLAIN(nvnCommandBufferWaitEvent, CMD_WAIT_EVENT)
-PLAIN(nvnCommandBufferReportCounter, CMD_REPORT_COUNTER)
+// ReportCounter(cmd, type, address): the counter goes to that GPU address, which here is the guest address of the
+// memory (nvnMemoryPoolGetBufferAddress). An address outside guest memory is logged (once per caller) and dropped.
+NVN(nvnCommandBufferReportCounter) {
+    Snap s = snap(c);
+    if (s.x[2] && (s.x[2] < GUEST_LO || s.x[2] >= GUEST_HI)) {
+        static uint64_t seen[8];
+        int k = 0;
+        while (k < 8 && seen[k] && seen[k] != c->x[30]) k++;
+        if (k < 8 && !seen[k]) {
+            seen[k] = c->x[30];
+            LOG("[nvn] ReportCounter type %llu to %llx: not guest memory, dropped (lr %llx)\n",
+                (unsigned long long)s.x[1], (unsigned long long)s.x[2], (unsigned long long)c->x[30]);
+        }
+        s.x[2] = 0;
+    }
+    record(c, CMD_REPORT_COUNTER, 0, &s);
+}
 NVN(nvnCommandBufferReportValue) { (void)c; }
 NVN(nvnCommandBufferResetCounter) { (void)c; }
-NVN(nvnCommandBufferCallCommands) { record_copy(c, CMD_CALL, 2, (uint32_t)A(1) * 8); }
-NVN(nvnCommandBufferCopyCommands) { record_copy(c, CMD_CALL, 2, (uint32_t)A(1) * 8); }
+// A command handle is the address of a list's first record (a CMD_BARRIER: nvnCommandBufferBeginRecording). Handles
+// that aren't one are logged (LARECOMP_CHECK_HANDLES=1).
+void nvn_check_handles(Cpu *c, const char *what, int n, const uint64_t *h) {
+    if (!ENV("LARECOMP_CHECK_HANDLES")) return;
+    for (int i = 0; i < n; i++) {
+        bool guest = h[i] >= GUEST_LO && h[i] < GUEST_HI;
+        bool host = h[i] >= 0x6000000000ull;  // (malloc'd overflow memory: high host addresses)
+        if ((!guest && !host) || ((const CmdRec *)(uintptr_t)h[i])->op != CMD_BARRIER) {
+            static int n_logged;
+            if (n_logged++ < 20)
+                LOG("[nvn] %s: handle %d of %d is %llx, not a command list (lr %llx)\n", what, i, n,
+                    (unsigned long long)h[i], (unsigned long long)c->x[30]);
+        }
+    }
+}
+// LARECOMP_CHECK_HANDLES: a submitted list's records are walked first; the first that isn't one is logged with the
+// records before it.
+static bool plausible(uint64_t a) { return (a >= GUEST_LO && a < GUEST_HI) || a >= 0x6000000000ull; }
+void nvn_check_list(uint64_t h, int depth) {
+    if (!ENV("LARECOMP_CHECK_HANDLES") || depth > 4) return;
+    uint64_t p = h, prev[8] = {0};
+    int np = 0;
+    for (int i = 0; i < 1000000; i++) {
+        if (!plausible(p)) { LOG("[nvn] list %llx: record %d at %llx: bad address\n", (unsigned long long)h, i, (unsigned long long)p); break; }
+        const CmdRec *r = (const CmdRec *)(uintptr_t)p;
+        bool bad = r->op >= CMD_COUNT || (r->op != CMD_END && r->op != CMD_JUMP && (r->size < sizeof(CmdRec) || r->size > 0x100000));
+        if (bad) {
+            LOG("[nvn] list %llx: record %d at %llx: op %u size %u; before:", (unsigned long long)h, i, (unsigned long long)p, r->op, r->size);
+            for (int k = 0; k < np && k < 8; k++) {
+                const CmdRec *q = (const CmdRec *)(uintptr_t)prev[(np - 1 - k) % 8];
+                LOG(" [%llx op %u size %u]", (unsigned long long)prev[(np - 1 - k) % 8], q->op, q->size);
+            }
+            LOG("\n");
+            return;
+        }
+        prev[np++ % 8] = p;
+        if (r->op == CMD_END) return;
+        if (r->op == CMD_JUMP) { p = r->x[0]; continue; }
+        if (r->op == CMD_CALL) {
+            const uint64_t *hh = (const uint64_t *)r->extra;
+            for (uint64_t k = 0; k < r->x[0] && k < 64; k++) {
+                if (!plausible(hh[k])) LOG("[nvn] list %llx: record %d (call) handle %llu is %llx\n", (unsigned long long)h, i, (unsigned long long)k, (unsigned long long)hh[k]);
+                else nvn_check_list(hh[k], depth + 1);
+            }
+        }
+        p += r->size;
+    }
+}
+
+NVN(nvnCommandBufferCallCommands) {
+    nvn_check_handles(c, "CallCommands", (int)A(1), AP(2));
+    record_copy(c, CMD_CALL, 2, (uint32_t)A(1) * 8);
+}
+// CopyCommands copies the lists' commands into this one: the game may reuse their memory right away (BOTW does).
+// (CallCommands above only refers to them.) The lists' leading barrier (nvnCommandBufferBeginRecording) is left out.
+static void copy_list(Cpu *c, NvnCmdBuf *cb, uint64_t p) {
+    bool first = true;
+    for (int guard = 0; guard < 10000000 && p; guard++) {
+        const CmdRec *r = (const CmdRec *)(uintptr_t)p;
+        if (r->op == CMD_END) return;
+        if (r->op == CMD_JUMP) { p = r->x[0]; continue; }
+        uint32_t size = r->size;
+        if (!size) return;
+        if (!(first && r->op == CMD_BARRIER)) {
+            CmdRec *d = rec(c, cb, r->op, size - (uint32_t)sizeof(CmdRec));
+            memcpy(d, r, size);
+        }
+        first = false;
+        p += size;
+    }
+}
+NVN(nvnCommandBufferCopyCommands) {
+    int n = (int)A(1);
+    nvn_check_handles(c, "CopyCommands", n, AP(2));
+    uint64_t self = A(0), handles[64];
+    if (n > 64) n = 64;
+    memcpy(handles, AP(2), n * sizeof *handles);  // (rec may call the guest back: its registers change)
+    for (int i = 0; i < n; i++) copy_list(c, cb_of(self), handles[i]);
+}
 NVN(nvnCommandBufferInsertDebugMarker) { (void)c; }
 NVN(nvnCommandBufferInsertDebugMarkerDynamic) { (void)c; }
 NVN(nvnCommandBufferInsertDebugMarkerStatic) { (void)c; }

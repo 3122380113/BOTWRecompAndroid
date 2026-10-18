@@ -141,6 +141,34 @@ Feito sem rodar o jogo (análise estática; `tools/imports.py <exefs>` refaz):
   implementação: viram stubs que registram no log).
 - **Símbolos que o runtime procura por nome no SDK:** todos existem no BOTW, menos `nn::init::Start` (acima).
 
+**Primeiro teste no celular (2026-10-18, POCO F7 Ultra, driver Qualcomm):** o jogo **inicializa e apresenta
+quadros** (~80–130 fps nas telas iniciais, ~300–500 draws por quadro), com áudio, entrada, saves e ~200 MB lidos do
+romfs. Corrigido no caminho (todos em `runtime/`):
+
+| Problema | Correção |
+|---|---|
+| `adb push` deixa os arquivos do jogo ilegíveis para o app | `android/push_game.sh` faz `chmod o+rX` |
+| `fsp-srv` 203 (dados de atualização) devolvia "ok" sem objeto | responde "não encontrado" |
+| Espaço de endereçamento de **36 bits** (`main.npdm` tipo 1): o SDK sorteia endereços de alias abaixo de 2 GB | `hle/address_space.c` leva os `AddressSpaceAllocator` para a região de alias do runtime |
+| O jogo exige NVN **52.x (≥ 32)**; o runtime dizia 53.207 | responde 52.32 |
+| Buffers de comando de 512 bytes com callback vazio | memória do host quando o jogo não dá mais |
+| Áudio **REV1**: a saída tinha a seção de render info (só existe a partir da REV5) | só da REV5 em diante |
+| `nfp:user` (amiibo) sem implementação | serviço mínimo: nenhum leitor |
+| A thread principal gira esperando outra thread do núcleo 0 | **fatia de tempo** de 8 ms na emulação do núcleo 0 (`LARECOMP_C0_SLICE_MS`) |
+| Listas de comando gravadas na memória de *comandos* (o BOTW reaproveita essa e mantém a de *controle*) | as listas vão para uma sombra (8×) da memória de **controle**, por página do endereço do jogo |
+| `CopyCommands` tratado como `CallCommands` | copia de verdade |
+| `nvnTextureFinalize` duas vezes no mesmo objeto (`free` inválido) | só libera texturas vivas |
+
+Ferramentas novas de diagnóstico: `LARECOMP_WATCHDOG=<s>` (threads paradas em syscalls), `LARECOMP_CHECK_HANDLES=1`
+(valida listas de comando), `android/run_boot.sh` (abre o jogo direto e grava o logcat).
+
+Próximos problemas vistos:
+
+- Instruções Maxwell que o tradutor de shaders não conhece: `0xc838…`/`0xc83a…` e `0xdf00…` (20 shaders nas telas
+  iniciais).
+- Crash em `renderer_mark_gpu_owned` (acesso a `0xa3`) depois de ~9 s.
+- Ainda não vi a imagem: os testes foram com o celular em uso.
+
 Falta (precisa rodar o jogo):
 
 - Rodar: no PC (falta o MSYS2, ver Fase 1) ou no celular (`android/push_game.sh`, com o celular no adb).

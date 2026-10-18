@@ -13,7 +13,7 @@ static uint64_t next_debug_id = 1;
 // NVNdeviceInfo -> value
 static uint32_t device_integer(uint32_t which) {
     static const uint32_t v[] = {
-        [0] = 53, [1] = 207,           // API version
+        [0] = 52, [1] = 32,            // API version: BOTW 1.0.0 was built against NVN 52.32 (it needs 52.x, >= 32)
         [2] = 14, [3] = 65536, [4] = 256, [5] = 8, [6] = 16, [7] = 4, [8] = 16, [9] = 32,
         [10] = 16, [11] = 4, [12] = 4, [13] = 4, [14] = 16, [15] = 32, [16] = 32,
         [17] = 256, [18] = 256,        // reserved texture / sampler descriptors
@@ -121,6 +121,10 @@ NVN(nvnQueueResetMemoryUsageCounts) { (void)c; }
 NVN(nvnQueueSubmitCommands) {
     int n = (int)A(1);
     const uint64_t *handles = AP(2);
+    extern void nvn_check_handles(Cpu *c, const char *what, int n, const uint64_t *h);  // cmdbuf.c
+    nvn_check_handles(c, "SubmitCommands", n, handles);
+    extern void nvn_check_list(uint64_t h, int depth);  // cmdbuf.c
+    for (int i = 0; i < n; i++) nvn_check_list(handles[i], 0);
     for (int i = 0; i < n; i++) backend_execute(handles[i]);
 }
 NVN(nvnQueueFlush) { (void)c; }
@@ -397,8 +401,33 @@ static NvnTexture *texture_from_builder(uint64_t b) {
     return t;
 }
 
+// Live textures: the game may finalize a texture object twice (BOTW: a copy of one, or one finalized again), and the
+// host texture is freed only once. (Open addressing; a freed slot keeps a tombstone.)
+enum { LIVE_SLOTS = 1 << 18 };
+static uintptr_t g_live_tex[LIVE_SLOTS];
+static pthread_mutex_t g_live_lock = PTHREAD_MUTEX_INITIALIZER;
+#define LIVE_GONE ((uintptr_t)1)
+static uint32_t live_hash(uintptr_t p) { return (uint32_t)((p >> 4) * 0x9E3779B97F4A7C15ull >> 46) & (LIVE_SLOTS - 1); }
+static void live_add(NvnTexture *t) {
+    pthread_mutex_lock(&g_live_lock);
+    uint32_t i = live_hash((uintptr_t)t);
+    for (int n = 0; n < LIVE_SLOTS && g_live_tex[i] > LIVE_GONE; n++) i = (i + 1) & (LIVE_SLOTS - 1);
+    g_live_tex[i] = (uintptr_t)t;
+    pthread_mutex_unlock(&g_live_lock);
+}
+static bool live_remove(NvnTexture *t) {
+    pthread_mutex_lock(&g_live_lock);
+    uint32_t i = live_hash((uintptr_t)t);
+    bool found = false;
+    for (int n = 0; n < LIVE_SLOTS && g_live_tex[i]; n++, i = (i + 1) & (LIVE_SLOTS - 1))
+        if (g_live_tex[i] == (uintptr_t)t) { g_live_tex[i] = LIVE_GONE; found = true; break; }
+    pthread_mutex_unlock(&g_live_lock);
+    return found;
+}
+
 NVN(nvnTextureInitialize) {
     NvnTexture *t = texture_from_builder(A(1));
+    live_add(t);
     if (t->flags & 2)
         LOG("[nvn] video texture %p: %ux%u fmt %#x flags %#x target %u addr %llx stride %llu\n", t, t->width, t->height,
             t->format, t->flags, t->target, t->addr, t->stride);
@@ -407,7 +436,12 @@ NVN(nvnTextureInitialize) {
 }
 NVN(nvnTextureFinalize) {
     NvnTexture *t = HOST(NvnTexture, A(0));
-    if (t) { backend_texture_destroyed(t); free(t); }
+    if (t && live_remove(t)) { backend_texture_destroyed(t); free(t); }
+    else if (t) {
+        static int n;
+        if (n++ < 5) LOG("[nvn] TextureFinalize %llx: not a live texture (%p), ignored (lr %llx)\n",
+                         (unsigned long long)A(0), (void *)t, (unsigned long long)c->x[30]);
+    }
     SET_HOST(A(0), 0);
 }
 NVN(nvnTextureSetDebugLabel) {

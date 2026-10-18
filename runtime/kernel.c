@@ -202,9 +202,46 @@ static pthread_mutex_t c0_m = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t c0_cv = PTHREAD_COND_INITIALIZER;
 static uint64_t c0_next, c0_serving;
 static int c0_on = -1;
+static KThread *c0_holder;  // (c0_m) the thread that has core 0, since c0_since
+static uint64_t c0_since;
+
+// Time slices: a thread that keeps core 0 for C0_SLICE_NS without blocking while others wait for it loses it - it
+// goes on running, as if preempted, until its next blocking SVC, where it queues for core 0 again. BOTW's main thread
+// spins until another thread of core 0 has made something (main+0x8551a8): with core 0 never handed on, that thread
+// never ran. (LARECOMP_C0_SLICE_MS: the slice; 0: none)
+static uint64_t c0_slice_ns = 8000000;
+static void *core0_slicer(void *arg) {
+    (void)arg;
+    for (;;) {
+        struct timespec ts = {0, 2000000};
+        nanosleep(&ts, NULL);
+        pthread_mutex_lock(&c0_m);
+        if (c0_holder && c0_next > c0_serving + 1 && plat_now_ns() - c0_since > c0_slice_ns) {
+            static uint64_t n;
+            if (n++ < 10 || ENV("LARECOMP_LOG_C0"))
+                LOG("[kernel] core 0: t%llu ran %llums without blocking, preempted\n", (unsigned long long)c0_holder->id,
+                    (unsigned long long)((plat_now_ns() - c0_since) / 1000000));
+            c0_holder->core0_held = false;
+            c0_holder = NULL;
+            c0_serving++;
+            pthread_cond_broadcast(&c0_cv);
+        }
+        pthread_mutex_unlock(&c0_m);
+    }
+    return NULL;
+}
 
 static void core0_acquire(KThread *t) {
-    if (c0_on < 0) c0_on = !getenv("LARECOMP_NO_CORE0");
+    if (c0_on < 0) {
+        c0_on = !getenv("LARECOMP_NO_CORE0");
+        const char *e = getenv("LARECOMP_C0_SLICE_MS");
+        if (e) c0_slice_ns = (uint64_t)atoi(e) * 1000000;
+        if (c0_on && c0_slice_ns) {
+            pthread_t th;
+            pthread_create(&th, NULL, core0_slicer, NULL);
+            pthread_detach(th);
+        }
+    }
     if (!t || !c0_on || t->core != 0 || t->core0_held) return;
     pthread_mutex_lock(&c0_m);
     uint64_t my = c0_next++;
@@ -213,16 +250,21 @@ static void core0_acquire(KThread *t) {
         while (c0_serving != my) pthread_cond_wait(&c0_cv, &c0_m);
         g_blocked_ns += plat_now_ns() - t0;
     }
-    pthread_mutex_unlock(&c0_m);
     t->core0_held = true;
+    c0_holder = t;
+    c0_since = plat_now_ns();
+    pthread_mutex_unlock(&c0_m);
 }
 
 static void core0_release(KThread *t) {
-    if (!t || !t->core0_held) return;
-    t->core0_held = false;
+    if (!t) return;
     pthread_mutex_lock(&c0_m);
-    c0_serving++;
-    pthread_cond_broadcast(&c0_cv);
+    if (t->core0_held) {  // (not when the slicer took core 0 from it)
+        t->core0_held = false;
+        if (c0_holder == t) c0_holder = NULL;
+        c0_serving++;
+        pthread_cond_broadcast(&c0_cv);
+    }
     pthread_mutex_unlock(&c0_m);
 }
 
@@ -627,8 +669,51 @@ static _Atomic uint64_t svc_wait_ns[32][0x80], svc_calls[32][0x80];
 static int prof_svc = -1;
 
 static void svc_entry(Cpu *c, uint32_t imm, uint64_t pc);
+
+// LARECOMP_WATCHDOG=<seconds>: every that many seconds, the game's threads stuck in one svc for longer, with its
+// arguments and caller, and where each of the others is (its guest lr) - for hangs.
+static void *watchdog_main(void *arg) {
+    uint64_t every = (uint64_t)(uintptr_t)arg;
+    for (;;) {
+        sleep((unsigned)every);
+        uint64_t now = plat_now_ns();
+        LOG("[watchdog] threads:\n");
+        for (KThread *t = g_threads; t; t = t->anext) {
+            if (t->finished) continue;
+            uint32_t n = t->svc_now;
+            if (n && now - t->svc_since > every * 1000000000ull)
+                LOG("[watchdog]  t%llu prio %d: svc %02x for %llus (%llx, %llx, %llx, %llx) from %llx; wait kind %d addr %llx\n",
+                    (unsigned long long)t->id, t->prio, n - 1, (unsigned long long)((now - t->svc_since) / 1000000000ull),
+                    (unsigned long long)t->svc_args[0], (unsigned long long)t->svc_args[1],
+                    (unsigned long long)t->svc_args[2], (unsigned long long)t->svc_args[3],
+                    (unsigned long long)t->svc_lr, (int)t->wait_kind, (unsigned long long)t->wait_addr);
+            else
+                LOG("[watchdog]  t%llu prio %d: running%s, pc %llx lr %llx\n", (unsigned long long)t->id, t->prio,
+                    n ? " (short svc)" : "", (unsigned long long)t->cpu.pc, (unsigned long long)t->cpu.x[30]);
+        }
+    }
+    return NULL;
+}
+
+static void watchdog_start(void) {
+    static int started;
+    const char *e = getenv("LARECOMP_WATCHDOG");
+    if (started || !e || atoi(e) <= 0) return;
+    started = 1;
+    pthread_t th;
+    pthread_create(&th, NULL, watchdog_main, (void *)(uintptr_t)atoi(e));
+    pthread_detach(th);
+}
+
 void rt_svc(Cpu *c, uint32_t imm, uint64_t pc) {
     rt_unwind_point();
+    KThread *me = t_cur;
+    if (me) {
+        me->svc_since = plat_now_ns();
+        for (int i = 0; i < 4; i++) me->svc_args[i] = c->x[i];
+        me->svc_lr = c->x[30];
+        me->svc_now = imm + 1;
+    }
 #ifdef __ANDROID__
     bool blocks = svc_blocks(imm);
     if (blocks) core0_release(t_cur);
@@ -637,6 +722,7 @@ void rt_svc(Cpu *c, uint32_t imm, uint64_t pc) {
 #else
     svc_entry(c, imm, pc);
 #endif
+    if (me) me->svc_now = 0;
     rt_unwind_point();
 }
 
@@ -884,7 +970,7 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         case 14: v = STACK_BASE; break;
         case 15: v = STACK_SIZE; break;
         case 16: case 17: v = 0; break;
-        case 18: v = 0x01006BB00C6F0000ull; break;
+        case 18: v = 0x01007EF00011E000ull; break;  // program id (BOTW)
         case 20: v = 0; break;
         default: r = R_INVALID_ENUM; LOG("[kernel] GetInfo unknown id %u/%llu\n", id0, x[3]);
         }
@@ -973,6 +1059,7 @@ void kernel_reset(void) {
 }
 
 void kernel_init(void) {
+    watchdog_start();
 #ifdef __ANDROID__
     tls_next = TLS_BASE;
 #endif

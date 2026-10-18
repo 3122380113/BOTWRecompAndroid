@@ -803,6 +803,10 @@ static void update_mix(Renderer *r, const uint8_t *p, int id) {
     memcpy(&m->dest_splitter, p + 0x928, 4);
     memcpy(m->vol, p + 0x24, sizeof m->vol);
     if (!m->buf) m->buf = calloc(MIXBUF_MAX * r->sample_count, sizeof(float));
+    // (once per mix; LARECOMP_AUDIO_LOG: every update - before REV7 every update carries every mix)
+    static uint64_t logged;
+    if (id < 64 && (logged >> id & 1) && !ENV("LARECOMP_AUDIO_LOG")) return;
+    if (id < 64) logged |= 1ull << id;
     LOG("[audren] mix %d used %u vol %.3f bufs %u dest %d:", id, m->used, m->volume, m->bufs, m->dest);
     for (int i = 0; i < MIXBUF_MAX * MIXBUF_MAX; i++)
         if (m->vol[i] != 0) LOG(" %d>%d=%.3f", i / MIXBUF_MAX, i % MIXBUF_MAX, m->vol[i]);
@@ -925,10 +929,20 @@ static void request_update(Renderer *r, IpcReq *req, IpcResp *resp) {
     o += oh[8];
     oh[1] = 0xB0;  // behavior / error info
     o += 0xB0;
-    oh[10] = 0x10;  // render info: elapsed frame count
-    if (o + 0x10 <= out->size) *(uint64_t *)(op + o) = elapsed;
-    o += 0x10;
+    if ((r->revision >> 24) - '0' >= 5) {  // render info: elapsed frame count (REV5 on; BOTW 1.0.0 is REV1)
+        oh[10] = 0x10;
+        if (o + 0x10 <= out->size) *(uint64_t *)(op + o) = elapsed;
+        o += 0x10;
+    }
     oh[15] = o;
+    static int logged;
+    if (!logged++) {  // (the first update: what this SDK's renderer revision sends, what we answer)
+        LOG("[audren] revision %.4s, update in:", (const char *)&h[0]);
+        for (int i = 0; i < 16; i++) LOG(" %x", h[i]);
+        LOG("\n[audren] update out:");
+        for (int i = 0; i < 16; i++) LOG(" %x", oh[i]);
+        LOG(" (out buffer %llu bytes)\n", (unsigned long long)out->size);
+    }
     (void)resp;
 }
 

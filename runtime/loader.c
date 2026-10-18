@@ -128,10 +128,22 @@ const char *loader_symbol_at(uint64_t addr, uint64_t *offset) {
     return best;
 }
 
+// Functions a module defines whose calls (through the module's own PLT, every call to an exported symbol) go to a host
+// implementation anyway; it calls the module's own one (loader_find_symbol) when it has adjusted the arguments.
+static const char *const override_defined[] = {
+    "_ZN2nn2os6detail21AddressSpaceAllocatorC1Emmm",  // runtime/hle/address_space.c
+};
+
 static uint64_t resolve(Module *m, uint32_t symidx) {
     Elf64Sym *s = sym(m, symidx);
     const char *name = symname(m, s);
-    if (s->shndx) return m->base + s->value;
+    if (s->shndx) {
+        for (size_t i = 0; i < sizeof override_defined / sizeof *override_defined; i++) {
+            HostFn impl = strcmp(name, override_defined[i]) ? NULL : hle_lookup_impl(name);
+            if (impl) return hle_register(name, impl);
+        }
+        return m->base + s->value;
+    }
     HostFn impl = hle_lookup_impl(name);
     if (impl) return hle_register(name, impl);  // host implementation wins over the guest SDK's
     uint64_t a = loader_find_symbol(name);

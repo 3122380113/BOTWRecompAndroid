@@ -41,6 +41,9 @@ struct KThread {
     jmp_buf unwind;
     bool started, finished;
     KThread *anext;        // every thread of this boot (g_klock)
+    // the svc in progress (LARECOMP_WATCHDOG, kernel.c): number + 1 (0: none), since when, its arguments and caller
+    volatile uint32_t svc_now;
+    volatile uint64_t svc_since, svc_args[4], svc_lr;
 #ifdef __ANDROID__
     void *dcache;          // dispatch.c: this thread's guest -> host function cache (TLS is slow in a dlopened library)
     bool core0_held;       // kernel.c: this thread has core 0 (it runs; the others of core 0 wait)

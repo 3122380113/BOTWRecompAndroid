@@ -608,6 +608,9 @@ SERVICE("fsp-srv", fsp_srv) {
         LOG("[fs] OpenDataStorageByDataId %llx (not available)\n", IN(uint64_t, 8));
         resp->result = MAKE_RESULT(2, 1001);
         break;
+    case 203:  // OpenPatchDataStorageByCurrentProcess: no update installed (BOTW asks at boot) - TargetNotFound
+        resp->result = MAKE_RESULT(2, 1002);
+        break;
     case 1005: OUT(uint32_t, 0) = 0; resp_size(resp, 4); break;  // GetGlobalAccessLogMode
     case 1003: case 1004: case 1006: break;
     case 1011: memset(resp->data, 0, 0x10); resp_size(resp, 0x10); break;

@@ -4746,6 +4746,11 @@ static void exec_list(uint64_t handle, int depth) {
             extern uint64_t vk_frame_counter(void);
             if (mode == 1 && vk_frame_counter() != frame_seen) { frame_seen = vk_frame_counter(); frame_ts = ns_to_gpu_ticks(plat_now_ns()); }
             if (!out) break;
+            if ((uint64_t)(uintptr_t)out < GUEST_LO || (uint64_t)(uintptr_t)out >= GUEST_HI) {  // (not guest memory)
+                static int bad;
+                if (bad++ < 5) LOG("[nvn] ReportCounter record %p: destination %p is not guest memory, skipped\n", (void *)r, (void *)out);
+                break;
+            }
             out[0] = 0;
             out[1] = mode == 1 ? frame_ts : mode == 3 ? SDL_GetTicksNS() : ns_to_gpu_ticks(plat_now_ns());  // (3 legacy: ns, the old bug)
             static uint64_t *prev_out;  // (frame pacing: the pair's start)
