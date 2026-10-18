@@ -1,5 +1,5 @@
 #!/bin/bash
-# android/deps/build_gen_deps.sh: what the app needs to make the game code on the phone itself (docs/ANDROID-PORT.md,
+# android/deps/build_gen_deps.sh: what the app needs to make the game code on the phone itself (docs/las/ANDROID-PORT.md,
 # Fase 6) - the generator (tools/gen.py) runs on Python for Android, the compiler is zig - from pinned sources into
 # android/deps/out/gen for arm64-v8a:
 #   python/        the official CPython for Android (python.org's aarch64-linux-android package): libpython and its

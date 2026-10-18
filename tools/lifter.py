@@ -75,7 +75,7 @@ def hx(v):
 # Android (gen.py --dyn-base): the guest window starts wherever the process has room (android/common/guest_window.h)
 # instead of at CANON. Addresses the code derives from its own pc (ADR / ADRP, literal loads, return addresses, branch
 # and dispatch targets) are then emitted as GB + offset, GB being the window's actual start (a local of every function
-# that uses it, from lasgame_gb). Off, the output is exactly what it was.
+# that uses it, from botwgame_gb). Off, the output is exactly what it was.
 CANON = 0x7000000000    # GUEST_LO (runtime/rt.h)
 WINDOW = 0x320000000    # GUEST_HI - GUEST_LO
 DYN_BASE = False

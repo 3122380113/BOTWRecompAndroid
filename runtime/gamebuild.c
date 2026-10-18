@@ -14,7 +14,7 @@
 #include "rt.h"
 
 #ifdef __ANDROID__
-// Android (docs/ANDROID-PORT.md, Fase 6): the generator runs on the app's Python (libpymain.so, its standard library
+// Android (docs/las/ANDROID-PORT.md, Fase 6): the generator runs on the app's Python (libpymain.so, its standard library
 // and the generator in LARECOMP_GEN_DIR, android/deps/build_gen_deps.sh) and zig compiles for aarch64-linux-musl: the
 // C library's headers only - the library links -nostdlib against libmain.so, and Android's linker resolves its libc
 // calls. -O1 as on the desktop (on the phone a build takes minutes; -O2 measured no faster in game).
@@ -110,7 +110,7 @@ static void args_free(Args *a) {
 
 // ------------------------------------------------------------------ the tools
 typedef struct {
-    char gen[1100], gen_script[1100];  // generator: lasgen, or (source checkout) the venv's python + tools/gen.py
+    char gen[1100], gen_script[1100];  // generator: botwgen, or (source checkout) the venv's python + tools/gen.py
     char cc[1100];                     // compiler: zig (as `zig cc`), or LARECOMP_CC / clang
     bool zig;
     char inc[1100], entry[1100], hle[1100];  // headers the game code includes, tools/gamelib_entry.c, HLE names
@@ -165,7 +165,7 @@ static bool find_tools(Tools *t) {
     memset(t, 0, sizeof *t);
     const char *e = getenv("LARECOMP_GEN");
     if (e && *e) snprintf(t->gen, sizeof t->gen, "%s", e);
-    else if (!rt_resource("lasgen" SEP "lasgen" PLAT_EXE_SUFFIX, NULL, t->gen, sizeof t->gen) &&
+    else if (!rt_resource("botwgen" SEP "botwgen" PLAT_EXE_SUFFIX, NULL, t->gen, sizeof t->gen) &&
              !(rt_resource(NULL, "tools/" PLAT_VENV_PYTHON, t->gen, sizeof t->gen) &&
                rt_resource(NULL, "tools/gen.py", t->gen_script, sizeof t->gen_script)))
         return false;
@@ -184,7 +184,7 @@ static bool find_tools(Tools *t) {
     if (b > s) s = b;
     if (s) *s = 0;
 #ifdef _WIN32
-    if (!rt_resource("lasrecomp.dll.a", "build/lasrecomp.dll.a", t->implib, sizeof t->implib)) return false;
+    if (!rt_resource("botwrecomp.dll.a", "build/botwrecomp.dll.a", t->implib, sizeof t->implib)) return false;
     t->zig_rt[0] = 0;
     if (t->zig && rt_resource("zig" SEP "rt" SEP "link.rsp", NULL, t->zig_rt, sizeof t->zig_rt)) {
         char *s = strrchr(t->zig_rt, '/'), *b = strrchr(t->zig_rt, '\\');
@@ -319,7 +319,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
     if (!registered) registered = true, atexit(end_all);
     Tools t;
     if (!find_tools(&t)) {
-        snprintf(why, why_size, "the game code builder is missing from this copy of LAS Recomp");
+        snprintf(why, why_size, "the game code builder is missing from this copy of BOTW Recomp");
         return false;
     }
     char work[1100], lib[1100], tmp[1100];

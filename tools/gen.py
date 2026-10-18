@@ -328,31 +328,6 @@ class Module:
             ext.add(end)
         return labels, ext, tables
 
-    def render_single(self, ins, a, jump, refs):
-        """C for one lifted instruction (no batching); used for patch variants."""
-        k = ins.kind
-        if k == 'asm':
-            return [emit_asm_batch([ins.asm])]
-        if k in ('op', 'trap'):
-            return [ins.code]
-        if k == 'b':
-            return [jump(ins.target)]
-        if k == 'bcond':
-            return [f'if ({ins.cond}) {{ {jump(ins.target)} }}']
-        if k == 'bl':
-            t = ins.target
-            if self.in_text(t):
-                refs.add(t)
-                return [f'c->x[30] = {gaddr(a + 4)}; {fname(t)}(c);']
-            return [f'c->x[30] = {gaddr(a + 4)}; c->pc = {gaddr(t)}; rt_dispatch(c);']
-        if k == 'blr':
-            return [f'c->pc = {ins.target}; c->x[30] = {gaddr(a + 4)}; rt_dispatch(c);']
-        if k == 'br':
-            return [f'c->pc = {ins.target}; __attribute__((musttail)) return rt_dispatch(c);']
-        if k == 'ret':
-            return ['return;']
-        raise Unsupported(k)
-
     def emit_function(self, entry, end, labels, tables, hle):
         out = [f'void {fname(entry)}(Cpu *c) {{']
         if entry in hle:
@@ -381,31 +356,12 @@ class Module:
         all_labels = bool(tables)
         if all_labels:
             labels = set(range(entry, end, 4))
-        rando_here = [a for a in range(entry, end, 4) if a - self.base in RANDO_CODE]
-        if rando_here:
-            labels = set(labels)
-            for a in rando_here:
-                for w in RANDO_CODE[a - self.base]:
-                    v = self.lifter.lift(w, a)
-                    if v.kind in ('b', 'bcond') and isinstance(v.target, int) and entry <= v.target < end:
-                        labels.add(v.target)
         last = None
         for a in range(entry, end, 4):
             ins = self.lift(a)
             if a in labels:
                 flush()
                 out.append(f'L_{a:x}:;')
-            if a - self.base in RANDO_CODE:  # randomizer patch site: the active seed picks the instruction
-                flush()
-                out.append(f'    {{ extern uint32_t rando_word(uint64_t); uint32_t rw = rando_word({gaddr(a)});')
-                first = True
-                for w in RANDO_CODE[a - self.base]:
-                    v = self.lifter.lift(w, a)
-                    out.append(f'    {"if" if first else "else if"} (rw == {hx(w)}) {{ ' + ' '.join(self.render_single(v, a, jump, refs)) + ' }')
-                    first = False
-                out.append('    else { ' + ' '.join(self.render_single(ins, a, jump, refs)) + ' } }')
-                last = 'op'
-                continue
             if a in PATCHES:  # hand-written replacement for one instruction (tools/patches.py)
                 flush()
                 out.append('    ' + rebase_patch(PATCHES[a](self, a)))
@@ -464,7 +420,7 @@ class Module:
             out.append('    __attribute__((musttail)) return rt_dispatch(c);')
         out.append('}')
         if lifter.DYN_BASE and any(GB_USE.search(l) for l in out):
-            out.insert(1, '    const uint64_t GB = lasgame_gb;')
+            out.insert(1, '    const uint64_t GB = botwgame_gb;')
         self._refs = refs
         return out
 
@@ -487,15 +443,6 @@ def switch_on(expr):
 
 def rebase_patch(code):
     return PATCH_ADDR.sub(lambda m: gaddr(int(m.group(1), 16)), code) if lifter.DYN_BASE else code
-
-import json as _json
-import os as _os
-_rv = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'rando', 'patch_variants.json')
-RANDO_CODE = {}
-if _os.path.exists(_rv):
-    for _a, _ws in _json.load(open(_rv))['code'].items():
-        RANDO_CODE[int(_a, 16)] = [int(_w, 16) for _w in _ws]
-
 
 def write_if_changed(path, text):
     """Leaves unchanged chunks untouched so make only recompiles what a patch affected."""
@@ -623,7 +570,7 @@ def main():
         path = os.path.join(args.outdir, f'{args.name}_{nchunks:03d}.c')
         text = ['#include "cpu.h"\n' + ('#include "simd.h"\n' if m.lifter.sc else '')]
         if args.dyn_base:
-            text += ['extern __attribute__((visibility("hidden"))) uint64_t lasgame_gb;\n']
+            text += ['extern __attribute__((visibility("hidden"))) uint64_t botwgame_gb;\n']
         text += [f'void {fname(r)}(Cpu *c);\n' for r in sorted(refs)]
         text += [f'void {sanitize(hle[a])}(Cpu *c);\n' for a in sorted(set(hle) & set(fns))]
         text += ['\n'.join(body), '\n']
@@ -649,9 +596,9 @@ def main():
         f.write(f'const uint64_t {args.name}_fn_count = {len(order)};\n')
         if args.dyn_base:  # (in each module's table, weak: main and sdk share one)
             f.write("// the guest window's start (--dyn-base): the runtime sets it before any game code runs\n")
-            f.write(f'__attribute__((weak, visibility("hidden"))) uint64_t lasgame_gb = {hx(CANON)};\n')
-            f.write('__attribute__((weak, visibility("default"))) void lasgame_set_guest_base(uint64_t gb) '
-                    '{ lasgame_gb = gb; }\n')
+            f.write(f'__attribute__((weak, visibility("hidden"))) uint64_t botwgame_gb = {hx(CANON)};\n')
+            f.write('__attribute__((weak, visibility("default"))) void botwgame_set_guest_base(uint64_t gb) '
+                    '{ botwgame_gb = gb; }\n')
         write_if_changed(os.path.join(args.outdir, f'{args.name}_table.c'), f.getvalue())
     print(f'{args.name}: wrote {nchunks} chunks, {time.time() - t0:.0f}s total', file=sys.stderr)
 

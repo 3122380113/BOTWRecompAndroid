@@ -197,7 +197,7 @@ static void create_device(void) {
     VkPhysicalDeviceFeatures *b = &f.features, *h = &have.features;
 #ifdef __ANDROID__
     {   // Adreno has no uniformAndStorageBuffer8BitAccess, and no shader uses 8-bit uniform buffers
-        // (docs/ANDROID-PORT.md, Fase 0): the 8-bit features only when the driver has them
+        // (docs/las/ANDROID-PORT.md, Fase 0): the 8-bit features only when the driver has them
         VkPhysicalDeviceVulkan12Features h12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
         VkPhysicalDeviceFeatures2 h2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &h12};
         vkGetPhysicalDeviceFeatures2(g_vk.phys, &h2);
@@ -338,7 +338,7 @@ static void create_swapchain(void) {
     SDL_GetWindowSizeInPixels(window, &w, &h);
 #ifdef __ANDROID__
     // The surface reports the panel's own (portrait) orientation; the window is landscape: images of the window's
-    // size, turned by the compositor (pre-rotation in the app would spare it that: docs/ANDROID-PORT.md, Fase 3)
+    // size, turned by the compositor (pre-rotation in the app would spare it that: docs/las/ANDROID-PORT.md, Fase 3)
     VkExtent2D ext = {(uint32_t)w, (uint32_t)h};
     VkSurfaceTransformFlagBitsKHR transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
     LOG("[vk] swapchain: surface %ux%u transform %#x, window %dx%d, present mode %d, images %u-%u\n", caps.currentExtent.width,
@@ -614,12 +614,8 @@ static void present_game_half(void) {
     if (slow_ms > 0 && renderer_present_count() > 2600 && (!slow_until || (long)renderer_present_count() < slow_until)) SDL_Delay((Uint32)slow_ms);
     extern void fnprof_frame(uint64_t frame);
     fnprof_frame(renderer_present_count());
-    extern void warp_frame(uint64_t frame);
-    warp_frame(renderer_present_count());
     extern void reboot_test_frame(uint64_t frame);  // runtime/main.c (LARECOMP_REBOOT_AT)
     reboot_test_frame(renderer_present_count());
-    extern void save_editor_frame(uint64_t frame);
-    save_editor_frame(renderer_present_count());
 }
 
 void vk_present_now(NvnTexture *t);
@@ -707,12 +703,8 @@ void backend_present(NvnTexture *t) {
     if (slow_ms > 0 && total_frames > 2600 && (!slow_until || (long)total_frames < slow_until)) SDL_Delay((Uint32)slow_ms);
     extern void fnprof_frame(uint64_t frame);
     fnprof_frame(total_frames);
-    extern void warp_frame(uint64_t frame);
-    warp_frame(total_frames);
     extern void reboot_test_frame(uint64_t frame);  // runtime/main.c (LARECOMP_REBOOT_AT)
     reboot_test_frame(total_frames);
-    extern void save_editor_frame(uint64_t frame);
-    save_editor_frame(total_frames);
 #endif
     extern void vk_level_change_check(void);
     vk_level_change_check();
@@ -827,7 +819,7 @@ void ui_window_init(void) {
                                             getenv("LARECOMP_HOST_INPUT") || getenv("LARECOMP_BIND_TEST"));
         if (scripted) SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
     }
-    window = SDL_CreateWindow("LAS Recomp", win_w, win_h, wflags);
+    window = SDL_CreateWindow("BOTW Recomp", win_w, win_h, wflags);
     if (!window) FATAL("SDL_CreateWindow: %s\n", SDL_GetError());
     rt_window_icon(window);
     // the Fullscreen setting applies from the start screen on (not only once the game runs); test windows stay windows

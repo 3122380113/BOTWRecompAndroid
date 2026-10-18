@@ -1,6 +1,6 @@
 #!/bin/bash
 # android/push_game.sh <game folder with exefs/ and romfs/>: the player's own game files onto the device over adb,
-# set up as the start screen's setup would (docs/ANDROID-PORT.md, Fase 2; until the app has a folder picker):
+# set up as the start screen's setup would (docs/las/ANDROID-PORT.md, Fase 2; until the app has a folder picker):
 # <data root>/extracted/{exefs,romfs} (skipped when there), romfs.bin built on the device (android/tools/romfs_tool.c,
 # no third copy of 6 GB through USB), and the game code from android/build_gamelib.sh (android/out).
 set -euo pipefail
@@ -8,8 +8,8 @@ export MSYS_NO_PATHCONV=1  # (Git Bash: leave the device paths alone)
 cd "$(dirname "$0")/.."
 R=$PWD
 SRC=${1:?usage: android/push_game.sh <folder with exefs/ and romfs/>}
-D=/sdcard/Android/data/com.lasrecomp.android/files/extracted
-DEV_TMP=/data/local/tmp/lasrecomp
+D=/sdcard/Android/data/com.botwrecomp.android/files/extracted
+DEV_TMP=/data/local/tmp/botwrecomp
 
 SDK=${ANDROID_HOME:-${LOCALAPPDATA:-$HOME}/Android/Sdk}
 SDK=${SDK//\\//}
@@ -34,9 +34,9 @@ if ! adb shell test -s "$D/romfs.bin"; then
     adb shell "$DEV_TMP/romfs_tool" "$D/romfs" "$D/romfs.bin"
 fi
 
-if [ -f android/out/lasgame.so ]; then
-    adb push android/out/lasgame.so android/out/lasgame.so.id "$D/"
+if [ -f android/out/botwgame.so ]; then
+    adb push android/out/botwgame.so android/out/botwgame.so.id "$D/"
 else
-    echo "no android/out/lasgame.so yet (android/build_gamelib.sh)"
+    echo "no android/out/botwgame.so yet (android/build_gamelib.sh)"
 fi
 adb shell ls -la "$D"

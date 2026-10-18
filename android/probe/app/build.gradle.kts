@@ -3,12 +3,12 @@ plugins {
 }
 
 android {
-    namespace = "com.lasrecomp.probe"
+    namespace = "com.botwrecomp.probe"
     compileSdk = 36
     ndkVersion = "30.0.16248370"
 
     defaultConfig {
-        applicationId = "com.lasrecomp.probe"
+        applicationId = "com.botwrecomp.probe"
         minSdk = 31  // (Build.SOC_MODEL)
         targetSdk = 36
         versionCode = 1

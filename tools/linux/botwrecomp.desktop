@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=BOTW Recomp
+Comment=The Legend of Zelda: Link's Awakening, recompiled (bring your own game files)
+Exec=botwrecomp
+Icon=botwrecomp
+Categories=Game;
+Terminal=false

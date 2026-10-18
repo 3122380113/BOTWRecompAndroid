@@ -1,4 +1,4 @@
-// On-screen controls on Android (docs/ANDROID-PORT.md, Fase 4): a left stick, A / B / X / Y, L / R / ZL / ZR,
+// On-screen controls on Android (docs/las/ANDROID-PORT.md, Fase 4): a left stick, A / B / X / Y, L / R / ZL / ZR,
 // Minus / Plus and a button for the in-game menu, drawn over the game with ImGui (ui/menu.mm menu_render) while no
 // controller is connected. Fingers come from SDL's touch events (ui_run, runtime/nvn/vulkan/device.c); what they hold
 // joins the controller's buttons and stick in runtime/hle/input.c (g_touch_buttons, g_touch_lx / ly). The stick is

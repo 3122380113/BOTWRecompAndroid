@@ -1,7 +1,7 @@
-# Building LAS Recomp on Windows (x86-64)
+# Building BOTW Recomp on Windows (x86-64)
 
-Status: part of main. Builds and runs the game on Vulkan (with your own game files); `make dist` packages the
-release zip.
+Status: inherited from LAS Recomp, where it builds and runs the game on Vulkan; for BOTW the game doesn't run yet
+(docs/BOTW-PORT.md). `make dist` packages the release zip.
 
 ## One-time setup
 Run in PowerShell from the repo root:
@@ -9,15 +9,15 @@ Run in PowerShell from the repo root:
     powershell -ExecutionPolicy Bypass -File tools\setup_windows.ps1
 
 This installs MSYS2 (UCRT64: clang, lld, make, SDL3, FFmpeg, Vulkan loader + headers, shaderc, Vulkan Memory
-Allocator, validation layers), Python 3.12 for the tools (`tools\venv`: unicorn, capstone, lz4) and the randomizer
-(`third_party\LAS-Randomizer\venv`) and switches the clone to LF line endings.
+Allocator, validation layers), Python 3.12 for the tools (`tools\venv`: unicorn, capstone, lz4) and switches the
+clone to LF line endings.
 
 ## Build
 From an MSYS2 UCRT64 shell, or Git Bash with MSYS2 first on PATH:
 
     export PATH="/c/msys64/ucrt64/bin:/c/msys64/usr/bin:$PATH"
-    make gen        # once: recompile the game from extracted/exefs (your own game files; see the start screen)
-    make -j         # -> build/lasrecomp.exe and the game code library build/lasgame.dll
+    make gen        # once: recompile the game from extracted/exefs (or EXEFS=Dump/01007EF00011E000/exefs)
+    make -j         # -> build/botwrecomp.exe and the game code library build/botwgame.dll
 
 Without `generated/` only the app is built: the start screen builds the game code itself when you set up the game
 files (as for players), given the generator and the compiler (`make gen-helper`, `tools/fetch_zig.sh`).
@@ -26,13 +26,12 @@ files (as for players), given the generator and the compiler (`make gen-helper`,
 Run from a shell that has `C:\msys64\ucrt64\bin` on PATH (SDL3, FFmpeg, Vulkan, shaderc DLLs).
 
 ## Package
-    make rando-helper   # the seed generator without Python (build/helper/rando-gen)
-    make gen-helper     # the game code generator without Python (build/helper/lasgen)
+    make gen-helper     # the game code generator without Python (build/helper/botwgen)
     tools/fetch_zig.sh  # the compiler the start screen builds the game code with (build/zig)
-    make dist           # -> build/dist/LAS Recomp-<version>-windows.zip (no game code inside)
+    make dist           # -> build/dist/BOTW Recomp-<version>-windows.zip (no game code inside)
 
-The zip's `LAS Recomp/` folder holds `lasrecomp.exe` (icon from `docs/icon/icon.ico`, via windres),
-`rando-gen/` and the MSYS2 DLLs. No installer: game files, saves, seeds and settings are kept next to the exe, so
+The zip's `BOTW Recomp/` folder holds `botwrecomp.exe` (icon from `docs/icon/icon.ico`, via windres),
+`botwgen/`, `zig/` and the MSYS2 DLLs. No installer: game files, saves and settings are kept next to the exe, so
 the folder must be writable (the app says so and quits if it isn't, e.g. under Program Files). A source checkout
 with `extracted/` in the starting folder keeps using that folder instead.
 
@@ -43,7 +42,7 @@ with `extracted/` in the starting folder keeps using that folder instead.
   inline-asm passthrough.
 - Renderer: Vulkan (runtime/nvn/vulkan) instead of Metal; shaders are translated to GLSL and compiled with
   shaderc. macOS keeps Metal.
-- Seed switches and "Title screen" reboot the game in place on both (runtime/main.c); the only re-exec left is
+- "Title screen" reboots the game in place on both (runtime/main.c); the only re-exec left is
   the startup retry when the guest window is taken, which on Windows starts a new process and exits.
 
 ## Tests

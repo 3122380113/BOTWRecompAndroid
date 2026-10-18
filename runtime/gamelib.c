@@ -72,8 +72,8 @@ static const GameLibTables *open_lib(const char *path) {
         return NULL;  // (left loaded: nothing of it runs)
     }
 #ifdef __ANDROID__
-    // its addresses follow the guest window wherever it is (gen.py --dyn-base: lasgame_gb)
-    void (*set_base)(uint64_t) = (void (*)(uint64_t))dlsym(h, "lasgame_set_guest_base");
+    // its addresses follow the guest window wherever it is (gen.py --dyn-base: botwgame_gb)
+    void (*set_base)(uint64_t) = (void (*)(uint64_t))dlsym(h, "botwgame_set_guest_base");
     if (!set_base) {
         snprintf(g_error, sizeof g_error, "%s: not built for Android (gen.py --dyn-base)", path);
         return NULL;

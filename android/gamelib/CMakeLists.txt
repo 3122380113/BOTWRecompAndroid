@@ -1,9 +1,9 @@
-# lasgame.so for Android: the game code generated from the player's own game files with gen.py --dyn-base
+# botwgame.so for Android: the game code generated from the player's own game files with gen.py --dyn-base
 # (android/build_gamelib.sh runs the generator and this build). The runtime functions it calls are libmain.so's: it
 # names libmain.so as a dependency, which is how Android's linker finds them when the runtime loads it (dlopen).
 #   LAS_GEN: the generated code (sdk/, main/)   LAS_LIBMAIN: the app's libmain.so (to link against)
 cmake_minimum_required(VERSION 3.22)
-project(lasgame C)
+project(botwgame C)
 
 set(R ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 get_filename_component(R ${R} ABSOLUTE)
@@ -22,10 +22,10 @@ endif()
 add_library(main SHARED IMPORTED)
 set_target_properties(main PROPERTIES IMPORTED_LOCATION ${LAS_LIBMAIN} IMPORTED_NO_SONAME FALSE)
 
-add_library(lasgame SHARED ${GEN_SRC} ${R}/tools/gamelib_entry.c)
-target_include_directories(lasgame PRIVATE ${R}/runtime)
-target_compile_options(lasgame PRIVATE ${GAMELIB_FLAGS})
+add_library(botwgame SHARED ${GEN_SRC} ${R}/tools/gamelib_entry.c)
+target_include_directories(botwgame PRIVATE ${R}/runtime)
+target_compile_options(botwgame PRIVATE ${GAMELIB_FLAGS})
 set_source_files_properties(${R}/tools/gamelib_entry.c PROPERTIES COMPILE_DEFINITIONS "GAMELIB_ID=\"${GAMELIB_ID}\"")
-target_link_libraries(lasgame PRIVATE main)
-set_target_properties(lasgame PROPERTIES PREFIX "")   # lasgame.so (runtime/gamelib.h GAMELIB_NAME)
-file(WRITE ${CMAKE_BINARY_DIR}/lasgame.so.id "${GAMELIB_ID}\n")
+target_link_libraries(botwgame PRIVATE main)
+set_target_properties(botwgame PROPERTIES PREFIX "")   # botwgame.so (runtime/gamelib.h GAMELIB_NAME)
+file(WRITE ${CMAKE_BINARY_DIR}/botwgame.so.id "${GAMELIB_ID}\n")

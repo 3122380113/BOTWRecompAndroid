@@ -44,7 +44,7 @@ void plat_exec(char *const argv[]);  // replace the process (NULL = same command
 void plat_terminate(void);  // end the process now, skipping DLL teardown (exit status 0)
 #endif
 
-// Child processes (seed generator, game-file extraction). stdout + stderr go to log_path (NULL = /dev/null).
+// Child processes (game code generator, game-file extraction). stdout + stderr go to log_path (NULL = /dev/null).
 typedef intptr_t PlatProc;  // 0 = failed to start
 PlatProc plat_spawn(const char *const argv[], const char *log_path, bool append_log);
 int plat_proc_wait(PlatProc p, bool block);  // exit code, or -1 while still running (block = false)

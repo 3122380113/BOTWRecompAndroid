@@ -1,7 +1,8 @@
-// Start screen, shown before the game boots (user 2026-10-08, styled after Dusklight's launcher): PLAY (with
-// ‹ Vanilla / seed › picker), SETTINGS, QUIT, game-files status at the lower left. Nothing of the game ships with
-// LAS Recomp: on first launch the user picks the folder with their own game files (v1.0.0), we check the main
-// module's build id, copy the files and build the game's data image; PLAY stays disabled until that worked. The background is a frame of the game's own title movie (from the user's files) once extracted.
+// Start screen, shown before the game boots (from LAS Recomp's, styled after Dusklight's launcher): PLAY, SETTINGS,
+// QUIT, game-files status at the lower left. Nothing of the game ships with BOTW Recomp: on first launch the user picks
+// the folder with their own game files (v1.0.0), we check the main module's build id, copy the files and build the
+// game's data image; PLAY stays disabled until that worked. The background is a frame of one of the game's own movies
+// (from the user's files) once extracted.
 //
 // Skipped with --play, LARECOMP_NO_LAUNCHER=1, or any scripted test run (LARECOMP_INPUT): tests boot straight in.
 // The in-game menu's "Title screen" comes back here without leaving the process (runtime/main.c reboots the game).
@@ -32,7 +33,7 @@
 #include "imgui_impl_sdl3.h"
 
 extern "C" {
-#ifndef LARECOMP_NO_FFMPEG  // (Android, for now: docs/ANDROID-PORT.md, Fase 2)
+#ifndef LARECOMP_NO_FFMPEG  // (Android, for now: docs/las/ANDROID-PORT.md, Fase 2)
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libswscale/swscale.h>
@@ -84,17 +85,17 @@ static void save_png(id<MTLTexture> tex, const char *path) {
 }
 #endif
 
-static const uint8_t BUILD_ID[8] = {0xae, 0x16, 0xf7, 0x1e, 0x00, 0x2a, 0xf8, 0xcb};  // Link's Awakening v1.0.0 main
+static const uint8_t BUILD_ID[8] = {0x20, 0x94, 0xf1, 0x52, 0x83, 0x66, 0x83, 0xa3};  // Breath of the Wild v1.0.0 main
 // The release tag this build is (also names the release files; Makefile / tools/bundle_macos.sh / make_dmg.sh read
 // it): beta_<n> until 1.0, then v<major>.<minor>.<patch>.
-#define LARECOMP_VERSION "beta_4"
+#define LARECOMP_VERSION "alpha_0"
 
 // ------------------------------------------------------------------ update check
 // The start screen asks GitHub for the project's releases once per launch (a background curl, which macOS and
 // Windows 10+ ship) and offers the best one if it outranks this build: any v1.0.0+ above every beta, betas by
 // number; other tags (the alpha_* ones) are ignored. Offline / no curl / anything unexpected: nothing is shown.
-#define RELEASES_URL "https://api.github.com/repos/peiikai/LASRecomp/releases?per_page=100"
-#define RELEASE_PAGE "https://github.com/peiikai/LASRecomp/releases/tag/"
+#define RELEASES_URL "https://api.github.com/repos/mamcjr/BOTWRecomp/releases?per_page=100"
+#define RELEASE_PAGE "https://github.com/mamcjr/BOTWRecomp/releases/tag/"
 
 static long long tag_rank(const std::string &t) {
     int n, a, b, c;
@@ -135,7 +136,7 @@ static void *update_thread(void *) {
         std::string out = std::string(rt_data_root()) + "/cache/releases.json";
         mkdir((std::string(rt_data_root()) + "/cache").c_str(), 0755);
         const char *av[] = {curl.c_str(), "-fsSL", "--max-time", "15", "-H", "Accept: application/vnd.github+json",
-                            "-A", "LASRecomp/" LARECOMP_VERSION, RELEASES_URL, NULL};
+                            "-A", "BOTWRecomp/" LARECOMP_VERSION, RELEASES_URL, NULL};
         PlatProc p = plat_spawn(av, out.c_str(), false);
         if (!p || plat_proc_wait(p, true) != 0) { remove(out.c_str()); return NULL; }
         if (FILE *f = fopen(out.c_str(), "rb")) {
@@ -179,7 +180,7 @@ static std::string check_copied_files(const std::string &root) {
     size_t n = fread(id, 1, 8, f);
     fclose(f);
     if (n != 8 || memcmp(id, BUILD_ID, 8)) return "Wrong game version (needs v1.0.0)";
-    if (!file_exists(root + "/romfs/region_common") || !file_exists(root + "/romfs.bin")) return "Game data missing";
+    if (!file_exists(root + "/romfs/Pack") || !file_exists(root + "/romfs.bin")) return "Game data missing";
     return "";
 }
 
@@ -219,10 +220,10 @@ static void set_failure(int k) {
         "",
         "Choose the folder that holds the game files.",
         "Choose the folder that holds the game files.",
-        "Make sure there's about 12 GB free and try again.",
-        "LAS Recomp needs version 1.0.0 of the game, without updates.",
+        "Make sure there's about 30 GB free and try again.",
+        "BOTW Recomp needs version 1.0.0 of the game, without updates.",
         "Some files are missing. Choose the folder again; if it happens again, dump the game again.",
-        "Make sure there's about 2 GB free and try again. If it keeps happening, report it on Discord or GitHub."};
+        "Make sure there's about 2 GB free and try again. If it keeps happening, report it on GitHub."};
     if (k >= 1 && k <= 6) set_job(head[k], true, hint[k]);
 }
 
@@ -231,12 +232,12 @@ static bool is_dir(const std::string &p) {
     return stat(p.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
 }
 
-// exefs: the folder with main and main.npdm; romfs: the folder with region_common (the game's data root). Found
+// exefs: the folder with main and main.npdm; romfs: the folder with Pack (the game's data root). Found
 // in the picked folder or a few levels below it (dump tools nest them).
 static void find_game(const std::string &dir, int depth, std::string &exefs, std::string &romfs, bool &unusable) {
     if (depth > 4 || (!exefs.empty() && !romfs.empty())) return;
     if (exefs.empty() && file_exists(dir + "/main") && file_exists(dir + "/main.npdm")) exefs = dir;
-    if (romfs.empty() && is_dir(dir + "/region_common")) romfs = dir;
+    if (romfs.empty() && is_dir(dir + "/Pack")) romfs = dir;
     DIR *d = opendir(dir.c_str());
     if (!d) return;
     std::vector<std::string> sub;
@@ -246,7 +247,7 @@ static void find_game(const std::string &dir, int depth, std::string &exefs, std
         std::string ext = n.size() > 4 ? n.substr(n.size() - 4) : "";
         for (auto &ch : ext) ch = (char)tolower((unsigned char)ch);
         if (ext == ".xci" || ext == ".nsp" || ext == ".nca" || ext == ".nsz" || ext == ".xcz") unusable = true;
-        if (n != "region_common" && is_dir(dir + "/" + n)) sub.push_back(dir + "/" + n);
+        if (n != "Pack" && is_dir(dir + "/" + n)) sub.push_back(dir + "/" + n);
     }
     closedir(d);
     std::sort(sub.begin(), sub.end());
@@ -329,7 +330,7 @@ static void *extract_thread(void *) {
     if (exefs.empty() || romfs.empty()) { set_failure(unusable ? FAIL_UNUSABLE : FAIL_NOT_FOUND); goto done; }
     if (!build_id_ok(exefs + "/main")) { set_failure(FAIL_VERSION); goto done; }
     {
-        // (the picked folder can't be LAS Recomp's own copy: setting up again deletes that first)
+        // (the picked folder can't be BOTW Recomp's own copy: setting up again deletes that first)
         char a[4096], b[4096];
         mkdir(g_root.c_str(), 0755);
         if (realpath(exefs.c_str(), a) && realpath(g_root.c_str(), b) && !strncmp(a, b, strlen(b)) &&
@@ -372,7 +373,7 @@ done:
 
 #ifdef __ANDROID__
 // ------------------------------------------------------------------ Android: the system's pickers (SAF)
-// Android has no POSIX path to a folder the player picks: LASRecompActivity opens the system's folder picker, finds
+// Android has no POSIX path to a folder the player picks: BOTWRecompActivity opens the system's folder picker, finds
 // exefs/ and romfs/ in the picked folder (a few levels down too, as find_game), checks the game version with
 // nativeBuildIdOk and copies them into <g_root> (nativeImportBegin / Progress / Done); the setup then goes on as on the
 // desktop: the data image, then the game code (runtime/gamebuild.c, on the phone itself). The Vulkan driver is
@@ -393,14 +394,14 @@ static void android_call(const char *method) {  // a static method of the activi
     env->DeleteLocalRef(act);
 }
 
-extern "C" JNIEXPORT jboolean JNICALL Java_com_lasrecomp_LASRecompActivity_nativeBuildIdOk(JNIEnv *env, jclass, jbyteArray head) {
+extern "C" JNIEXPORT jboolean JNICALL Java_com_botwrecomp_BOTWRecompActivity_nativeBuildIdOk(JNIEnv *env, jclass, jbyteArray head) {
     if (env->GetArrayLength(head) < 0x48) return JNI_FALSE;
     jbyte b[8];
     env->GetByteArrayRegion(head, 0x40, 8, b);
     return memcmp(b, BUILD_ID, 8) == 0 ? JNI_TRUE : JNI_FALSE;
 }
 
-extern "C" JNIEXPORT void JNICALL Java_com_lasrecomp_LASRecompActivity_nativeImportBegin(JNIEnv *env, jclass, jstring name) {
+extern "C" JNIEXPORT void JNICALL Java_com_botwrecomp_BOTWRecompActivity_nativeImportBegin(JNIEnv *env, jclass, jstring name) {
     const char *n = env->GetStringUTFChars(name, NULL);
     pthread_mutex_lock(&g_lock);
     g_busy = true;
@@ -413,13 +414,13 @@ extern "C" JNIEXPORT void JNICALL Java_com_lasrecomp_LASRecompActivity_nativeImp
     set_job("Copying the game files...");
 }
 
-extern "C" JNIEXPORT void JNICALL Java_com_lasrecomp_LASRecompActivity_nativeImportProgress(JNIEnv *, jclass, jlong done, jlong total) {
+extern "C" JNIEXPORT void JNICALL Java_com_botwrecomp_BOTWRecompActivity_nativeImportProgress(JNIEnv *, jclass, jlong done, jlong total) {
     g_total = 2ull * (unsigned long long)total;  // (the copy, then the data image: each about the size of romfs/)
     g_done = (unsigned long long)done;
 }
 
 // 0 copied, 1 cancelled, 2 no game files found, 3 game packages instead of files, 4 another version, 5 copy failed
-extern "C" JNIEXPORT void JNICALL Java_com_lasrecomp_LASRecompActivity_nativeImportDone(JNIEnv *, jclass, jint result) {
+extern "C" JNIEXPORT void JNICALL Java_com_botwrecomp_BOTWRecompActivity_nativeImportDone(JNIEnv *, jclass, jint result) {
     if (result == 0) {
         g_android_imported = true;
         pthread_t t;
@@ -434,11 +435,11 @@ extern "C" JNIEXPORT void JNICALL Java_com_lasrecomp_LASRecompActivity_nativeImp
     set_failure(result == 2 ? FAIL_NOT_FOUND : result == 3 ? FAIL_UNUSABLE : result == 4 ? FAIL_VERSION : FAIL_COPY);
 }
 
-extern "C" JNIEXPORT void JNICALL Java_com_lasrecomp_LASRecompActivity_nativeDriverPicked(JNIEnv *env, jclass, jstring name) {
+extern "C" JNIEXPORT void JNICALL Java_com_botwrecomp_BOTWRecompActivity_nativeDriverPicked(JNIEnv *env, jclass, jstring name) {
     const char *n = env->GetStringUTFChars(name, NULL);
     pthread_mutex_lock(&g_lock);
-    g_driver_msg = n && !strcmp(n, "-") ? "The system's driver from the next start on. Restart LAS Recomp to use it."
-                   : n && *n                ? std::string(n) + " installed. Restart LAS Recomp to use it."
+    g_driver_msg = n && !strcmp(n, "-") ? "The system's driver from the next start on. Restart BOTW Recomp to use it."
+                   : n && *n                ? std::string(n) + " installed. Restart BOTW Recomp to use it."
                                             : "That file isn't a driver.";
     pthread_mutex_unlock(&g_lock);
     if (n) env->ReleaseStringUTFChars(name, n);
@@ -509,7 +510,7 @@ static void remove_fonts() {
     g_font_msg = "Imported fonts removed: the substitute font is used.";
 }
 
-// ------------------------------------------------------------------ background: a title movie frame
+// ------------------------------------------------------------------ background: a movie frame
 #ifdef __APPLE__
 static id<MTLTexture> g_bg;
 #define BG_TEXID ((ImTextureID)(__bridge void *)g_bg)
@@ -525,7 +526,7 @@ static void load_background(GpuDevice dev) {
 #ifdef LARECOMP_NO_FFMPEG
     (void)dev;  // (no movie decoder yet: the start screen without its background frame)
 #else
-    std::string path = g_root + "/romfs/region_common/movie/title.webm";
+    std::string path = g_root + "/romfs/Movie/Demo101_0.webm";  // (to choose: which movie and frame look best)
     AVFormatContext *fmt = NULL;
     if (avformat_open_input(&fmt, path.c_str(), NULL, NULL) < 0) return;
     int si = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
@@ -574,21 +575,6 @@ static void load_background(GpuDevice dev) {
 #endif
 }
 
-// ------------------------------------------------------------------ seeds
-static std::vector<std::string> list_seeds() {
-    std::vector<std::string> out;
-    if (DIR *d = opendir("rando")) {
-        while (struct dirent *e = readdir(d)) {
-            if (e->d_name[0] == '.') continue;
-            std::string dir = std::string("rando/") + e->d_name;
-            if (file_exists(dir + "/settings.json") && file_exists(dir + "/romfs")) out.push_back(e->d_name);
-        }
-        closedir(d);
-    }
-    std::sort(out.begin(), out.end());
-    return out;
-}
-
 // ------------------------------------------------------------------ screen
 static ImFont *g_font_title, *g_font_menu, *g_font_small;
 enum Page { MAIN, SETTINGS, SETUP };  // SETTINGS: the in-game menu's tabs (runtime/ui/menu.mm)
@@ -600,17 +586,10 @@ void menu_tabs_draw(float scale, ImFont *font, ImFont *font_big, bool in_game, v
 void menu_tabs_focus(bool first_tab);
 extern int g_tab_request_ext;
 extern "C" void menu_apply_window_requests(void *sdl_window);
-extern "C" int g_start_screen;  // runtime/hle/warp.c: the start screen is up (no game loaded: don't read its memory)
-// The Randomizer tab's Play / Play Now on the start screen (rando_tab.mm): start the game with that seed
-static std::string g_play_seed;
-static bool g_play_seed_req, g_play_pending;
-extern "C" void launcher_play_seed(const char *seed) {
-    g_play_seed = seed ? seed : "";
-    g_play_seed_req = true;
-}
+extern "C" int g_start_screen;  // runtime/hle/game.c: the start screen is up (no game loaded: don't read its memory)
 static float g_menu_gap = 0.35f;  // space under each item, in line heights
 
-// The first PLAY ever (settings.menu_tip_seen): a note on opening the LAS Recomp menu in game (it isn't obvious),
+// The first PLAY ever (settings.menu_tip_seen): a note on opening the BOTW Recomp menu in game (it isn't obvious),
 // OK starts the game. Returns true once OK is pressed.
 static bool g_tip_test;  // (LARECOMP_LAUNCHER_SHOT=<frame>:tip)
 // First PLAY ever, before the menu note: authentic 16:9 or the unlocked (fill the window) aspect ratio.
@@ -671,7 +650,7 @@ static bool menu_tip(float s) {
         static const char *const home[] = {"Home button", "Xbox button", "PlayStation button"};  // (bind_label_family)
         static const char *const pad[] = {"Minus + Plus", "View + Menu", "Create + Options"};
         ImGui::PushTextWrapPos(0);
-        ImGui::TextUnformatted("LAS Recomp has its own menu for settings, the randomizer, cosmetics and more.");
+        ImGui::TextUnformatted("BOTW Recomp has its own menu for settings and controls.");
         ImGui::Spacing();
         int fam = bind_label_family() % 3;
 #ifdef __ANDROID__
@@ -732,7 +711,7 @@ static bool menu_item(const char *label, bool enabled, bool *hovered = NULL, con
     ImGui::PushFont(g_menu_small ? g_font_small : g_font_menu);
     ImGui::BeginDisabled(!enabled);
     ImVec2 at = ImGui::GetCursorScreenPos();
-    // (the ID from the label's fixed part: PLAY's changes with the seed shown, and a new ID loses the selection)
+    // (the ID from the label's fixed part: a new ID loses the selection)
     ImGui::PushID(label, split ? split : label + strlen(label));
     ImVec2 sz = ImGui::CalcTextSize(label);
     // (EnableNav: otherwise an InvisibleButton can't be reached with the d-pad / arrow keys - ImGui 1.91)
@@ -852,7 +831,7 @@ static bool launcher_pad_event(const SDL_Event &e) {
     }
 }
 
-// Returns when PLAY is chosen (seed stored in g_settings.rando_seed); QUIT exits.
+// Returns when PLAY is chosen; QUIT exits.
 // Settings' first tab, on the start screen only: the extracted game files (size, delete) and the user's own Switch
 // fonts (import / back to the substitute)
 // Open a folder in Finder / Explorer (relative paths are in the data root, the working directory)
@@ -933,8 +912,8 @@ static void prelaunch_tab(float sc) {
         ImGui::PushFont(g_font_menu);
         ImGui::TextColored(ImVec4(1, 0.72f, 0.4f, 1), "Are you sure?");
         ImGui::PopFont();
-        ImGui::Text("This deletes LAS Recomp's copy of the game files (%.1f GB).", gb);
-        ImGui::TextDisabled("Saves, seeds and settings are kept. Your own game files aren't touched.");
+        ImGui::Text("This deletes BOTW Recomp's copy of the game files (%.1f GB).", gb);
+        ImGui::TextDisabled("Saves and settings are kept. Your own game files aren't touched.");
         if (rt_dev_mode()) {  // (a source checkout: the files are the project's own extracted/)
             bool abs = !g_root.empty() && (g_root[0] == '/' || (g_root.size() > 1 && g_root[1] == ':'));
             std::string where = abs ? g_root : std::string(rt_data_root()) + "/" + g_root;
@@ -943,7 +922,7 @@ static void prelaunch_tab(float sc) {
         ImGui::Spacing();
         if (ImGui::Button("Delete", ImVec2(220 * sc, 0))) {
             bool ok = rt_remove_game_files(g_root.c_str());  // (runtime/paths.c: only what the extraction made)
-            set_job(ok ? "Game files deleted." : "Could not delete the game files (not in LAS Recomp's data folder?).", !ok);
+            set_job(ok ? "Game files deleted." : "Could not delete the game files (not in BOTW Recomp's data folder?).", !ok);
             g_files_deleted = true, gb = -1;
             ImGui::CloseCurrentPopup();
         }
@@ -1042,12 +1021,6 @@ extern "C" void launcher_run(const char *root) {
 
     std::string status = check_game_files(g_root);
     if (status.empty()) load_background(dev);
-    std::vector<std::string> seeds = list_seeds();
-    std::vector<std::string> choices = {"Vanilla"};
-    choices.insert(choices.end(), seeds.begin(), seeds.end());
-    int choice = 0;
-    for (size_t i = 0; i < seeds.size(); i++)
-        if (seeds[i] == g_settings.rando_seed) choice = (int)i + 1;
     Page page = status.empty() ? MAIN : SETUP;
     bool play = false;
     // LARECOMP_LAUNCHER_SHOT=<frame>[:<page>] (test): save build/launcher.png at that frame and exit; page: settings[:<tab>] / askdelete / setup
@@ -1094,25 +1067,10 @@ extern "C" void launcher_run(const char *root) {
     }
     while (!play) {
         menu_apply_window_requests(win);  // (the Video tab's Fullscreen)
-        // the seed PLAY would start, kept current (Settings > Gameplay greys out what that seed forces)
-        snprintf(g_settings.rando_seed, sizeof g_settings.rando_seed, "%s", choice ? choices[choice].c_str() : "");
         if (g_files_deleted) {  // (Settings > Prelaunch deleted them)
             g_files_deleted = false;
             status = check_game_files(g_root);
             if (!status.empty()) { g_bg = 0; bind_capture_cancel(); settings_save(); page = SETUP; }
-        }
-        if (g_play_seed_req) {  // the Randomizer tab's Play: that seed, then PLAY as if pressed (first-launch questions)
-            g_play_seed_req = false;
-            seeds = list_seeds();
-            choices = {"Vanilla"};
-            choices.insert(choices.end(), seeds.begin(), seeds.end());
-            choice = 0;
-            for (size_t i = 0; i < seeds.size(); i++)
-                if (seeds[i] == g_play_seed) choice = (int)i + 1;
-            bind_capture_cancel();
-            settings_save();
-            page = MAIN;
-            g_play_pending = true;
         }
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
@@ -1199,13 +1157,13 @@ extern "C" void launcher_run(const char *root) {
             ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0));
             ImGui::Begin("##launcher", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                                                  ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus);
-            ImGui::SetScrollX(0);  // (the start screen never scrolls; a long seed name or a stray nav move mustn't shift it)
+            ImGui::SetScrollX(0);  // (the start screen never scrolls; a stray nav move mustn't shift it)
             ImGui::SetScrollY(0);
             float x0 = 90 * s;
             ImGui::SetCursorPos(ImVec2(x0, 120 * s));
             ImGui::PushFont(g_font_title);
             if (page == MAIN) {  // gold to orange, shadowed (not behind the Settings / Game Files windows)
-                const char *t = "LAS Recompiled";
+                const char *t = "BOTW Recompiled";
                 ImVec2 p = ImGui::GetCursorScreenPos();
                 text_fx(ImGui::GetWindowDrawList(), ImGui::GetFont(), ImGui::GetFontSize(), p, IM_COL32(255, 232, 120, 255),
                         IM_COL32(255, 138, 48, 255), t, 3 * s);
@@ -1259,39 +1217,11 @@ extern "C" void launcher_run(const char *root) {
                     g_menu_gap = -0.18f;
                     ImGui::SetCursorPosY(285 * s + 3 * pitch(0.35f) - 3 * pitch(g_menu_gap));
                 }
-                bool hov = false;
-                char label[192];
-                snprintf(label, sizeof label, "PLAY    \xe2\x80\xb9 %s%s \xe2\x80\xba", choice ? "Rando: " : "",
-                         choices[choice].c_str());  // (choice 0 = Vanilla)
                 ImGui::SetCursorPosX(x0);
-                // a long seed name may run past the other items (to 80% of the window); beyond that the line shrinks
-                ImGui::PushFont(g_font_menu);
-                float fit = (ds.x * 0.8f - x0) / ImGui::CalcTextSize(label).x;
-                ImGui::PopFont();
-                if (fit < 1) ImGui::SetWindowFontScale(fit < 0.55f ? 0.55f : fit);
-                // the ‹ › arrows are clickable with the mouse: they cycle Vanilla / seeds instead of starting the game
-                int arrow = 0;
-                {
-                    ImGui::PushFont(g_font_menu);
-                    ImVec2 at = ImGui::GetCursorScreenPos();
-                    const char *lt = strstr(label, "\xe2\x80\xb9"), *rt = strstr(label, "\xe2\x80\xba");
-                    float h = ImGui::CalcTextSize(label).y, pad = h * 0.35f;
-                    float lx = at.x + ImGui::CalcTextSize(label, lt).x, rx = at.x + ImGui::CalcTextSize(label, rt).x;
-                    float aw = ImGui::CalcTextSize("\xe2\x80\xb9").x;
-                    ImVec2 m = ImGui::GetIO().MousePos;
-                    bool in_y = m.y >= at.y - pad && m.y <= at.y + h + pad;
-                    if (in_y && m.x >= lx - pad && m.x <= lx + aw + pad) arrow = -1;
-                    if (in_y && m.x >= rx - pad && m.x <= rx + aw + pad) arrow = 1;
-                    ImGui::PopFont();
-                }
                 static bool focused_once;
                 if (!focused_once) { ImGui::SetKeyboardFocusHere(); focused_once = true; }
                 ImVec2 play_at = ImGui::GetCursorScreenPos();
-                const char *name = strstr(label, "\xe2\x80\xb9") + 4, *name_end = strstr(label, " \xe2\x80\xba");
-                bool pressed = menu_item(label, status.empty(), &hov, name,
-                                         choice ? IM_COL32(250, 250, 255, 255) : IM_COL32(246, 232, 176, 255),
-                                         name_end);  // (the choice keeps its colour when hovered: "Rando: <seed>" white,
-                                                     //  "Vanilla" vanilla cream; the arrows stay white)
+                bool pressed = menu_item("PLAY", status.empty());
                 if (status.empty()) {  // PLAY twinkles now and then while the game is ready
                     ImGui::PushFont(g_font_menu);
                     float w = ImGui::CalcTextSize("PLAY").x, h = ImGui::CalcTextSize("PLAY").y;
@@ -1302,13 +1232,7 @@ extern "C" void launcher_run(const char *root) {
                     sparkle(dl, ImVec2(play_at.x + w + h * 0.05f, play_at.y + h * 0.22f), h * 0.2f, k1, t * 0.6f);
                     sparkle(dl, ImVec2(play_at.x + w - h * 0.32f, play_at.y + h * 0.08f), h * 0.11f, k2 * 0.8f, -t * 0.8f);
                 }
-                ImGui::SetWindowFontScale(1.0f);
-                if (pressed && arrow && ImGui::IsMouseReleased(0)) {  // (a mouse click on an arrow: cycle)
-                    choice = (choice + arrow + (int)choices.size()) % (int)choices.size();
-                    pressed = false;
-                }
                 // first PLAY ever: the aspect ratio question, then how to reach our menu, then the game
-                if (g_play_pending && status.empty()) pressed = true, g_play_pending = false;
                 if (pressed) {
                     if (!g_settings.aspect_asked) ImGui::OpenPopup("##aspect");
                     else if (!g_settings.menu_tip_seen) ImGui::OpenPopup("##menutip");
@@ -1320,17 +1244,6 @@ extern "C" void launcher_run(const char *root) {
                     else ImGui::OpenPopup("##menutip");
                 }
                 if (menu_tip(s)) play = true;
-                if (hov && status.empty()) {
-                    if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow) || ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft))
-                        choice = (choice + (int)choices.size() - 1) % (int)choices.size();
-                    if (ImGui::IsKeyPressed(ImGuiKey_RightArrow) || ImGui::IsKeyPressed(ImGuiKey_GamepadDpadRight))
-                        choice = (choice + 1) % (int)choices.size();
-                    // left / right are ours while PLAY is selected: ImGui's navigation would otherwise take them too,
-                    // find nothing beside PLAY and scroll the window (PLAY loses its highlight, the cycling stops)
-                    ImGuiID own = ImGui::GetID("##play_lr");
-                    for (ImGuiKey k : {ImGuiKey_LeftArrow, ImGuiKey_RightArrow, ImGuiKey_GamepadDpadLeft, ImGuiKey_GamepadDpadRight})
-                        ImGui::SetKeyOwner(k, own);
-                }
                 ImGui::SetCursorPosX(x0);
                 if (g_refocus == SETTINGS) ImGui::SetKeyboardFocusHere(), g_refocus = MAIN;  // (back from Settings: it
                 if (menu_item("SETTINGS", true)) {                                             //  stays selected)
@@ -1394,13 +1307,6 @@ extern "C" void launcher_run(const char *root) {
                     bind_capture_cancel();
                     settings_save();
                     page = MAIN, g_refocus = SETTINGS;
-                    std::string cur = choices[choice];  // seeds made / renamed / deleted in the Randomizer tab
-                    seeds = list_seeds();
-                    choices = {"Vanilla"};
-                    choices.insert(choices.end(), seeds.begin(), seeds.end());
-                    choice = 0;
-                    for (size_t i = 0; i < choices.size(); i++)
-                        if (choices[i] == cur) choice = (int)i;
                 }
             } else {
                 // SETUP: the game files, in a window like Settings (option rows: runtime/ui/option_rows.h) - choose the
@@ -1457,12 +1363,12 @@ extern "C" void launcher_run(const char *root) {
                     dl->AddLine(ImVec2(x, cy), ImVec2(x + u * 0.35f, cy + u * 0.35f), g, fs * 0.11f);
                     dl->AddLine(ImVec2(x + u * 0.35f, cy + u * 0.35f), ImVec2(x + u, cy - u * 0.4f), g, fs * 0.11f);
                 };
-                std::string src_d = "The folder with your own game folders (exefs/romfs) of The Legend of Zelda: Link's "
-                                    "Awakening for Nintendo Switch, version 1.0.0. The game isn't included with LAS Recomp.";
+                std::string src_d = "The folder with your own game folders (exefs/romfs) of The Legend of Zelda: Breath "
+                                    "of the Wild for Nintendo Switch, version 1.0.0. The game isn't included with BOTW Recomp.";
                 if (!src.empty()) src_d += "\n\nChosen: " + src;
                 // the step that's running / its result, under the rows and in the Set up row's explanation
                 const std::string &job_line = job;
-                std::string ex_d = "Copies the game files LAS Recomp needs and recompiles the game from them. This only "
+                std::string ex_d = "Copies the game files BOTW Recomp needs and recompiles the game from them. This only "
                                    "needs to be done once and may take a while. Your own files aren't changed.";
                 if (!job.empty()) ex_d += "\n\n" + job + (job_hint.empty() ? "" : ".\n" + job_hint);
 
@@ -1497,15 +1403,15 @@ extern "C" void launcher_run(const char *root) {
                     }
                     files_gb = -1;  // (re-measured after a setup)
                 } else {
-                    // DELETE: frees LAS Recomp's copy (runtime/paths.c removes only what the setup made, only inside
-                    // the data root). Saves, seeds, settings and the user's own files stay.
+                    // DELETE: frees BOTW Recomp's copy (runtime/paths.c removes only what the setup made, only inside
+                    // the data root). Saves, settings and the user's own files stay.
                     if (files_gb < 0) files_gb = rt_game_files_size(g_root.c_str()) / 1e9;
                     char gb[32];
                     snprintf(gb, sizeof gb, "%.1f GB", files_gb);
                     opt_section("Game files");
                     if (!g_confirm_delete) {
-                        if (opt_action("Delete game files", gb, "Frees the space LAS Recomp's copy of the game files takes. "
-                                       "Saves, seeds and settings are kept, and your own game files aren't touched: you can "
+                        if (opt_action("Delete game files", gb, "Frees the space BOTW Recomp's copy of the game files takes. "
+                                       "Saves and settings are kept, and your own game files aren't touched: you can "
                                        "set the game files up again from them.", true))
                             g_confirm_delete = true;
                         first_row();
@@ -1514,7 +1420,7 @@ extern "C" void launcher_run(const char *root) {
                             bool ok = rt_remove_game_files(g_root.c_str());
                             status = check_game_files(g_root);
                             if (ok) set_job("Game files deleted.");
-                            else set_job("Couldn't delete the game files", true, "They aren't in LAS Recomp's data folder, "
+                            else set_job("Couldn't delete the game files", true, "They aren't in BOTW Recomp's data folder, "
                                          "so they were left alone.");
                             if (!status.empty()) g_bg = 0;
                             g_confirm_delete = false, files_gb = -1;
@@ -1689,8 +1595,7 @@ extern "C" void launcher_run(const char *root) {
 #endif
         }
     }
-    // play: remember the choice, hand the window to the game
-    snprintf(g_settings.rando_seed, sizeof g_settings.rando_seed, "%s", choice ? choices[choice].c_str() : "");
+    // play: hand the window to the game
     settings_save();
 #ifdef __APPLE__
     ImGui_ImplMetal_Shutdown();

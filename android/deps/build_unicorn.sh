@@ -4,23 +4,23 @@
 # script: on Windows run this in WSL, as android/deps/build_ffmpeg.sh:
 #   wsl -d Ubuntu-26.04 -- bash android/deps/build_unicorn.sh
 # Needs the Linux NDK (~/android-ndk-r30, as build_ffmpeg.sh fetches it) and cmake / ninja (on PATH, or in
-# ~/lasrecomp-tools: python3 -m venv ~/lasrecomp-tools && ~/lasrecomp-tools/bin/pip install cmake ninja).
+# ~/botwrecomp-tools: python3 -m venv ~/botwrecomp-tools && ~/botwrecomp-tools/bin/pip install cmake ninja).
 set -euo pipefail
 cd "$(dirname "$0")"
 D=$PWD
 NDK=${ANDROID_NDK_LINUX:-$HOME/android-ndk-r30}
 [ -d "$NDK" ] || { echo "no Linux NDK at $NDK (android/deps/build_ffmpeg.sh fetches it)"; exit 1; }
-export PATH="$HOME/lasrecomp-tools/bin:$PATH"
+export PATH="$HOME/botwrecomp-tools/bin:$PATH"
 command -v cmake >/dev/null && command -v ninja >/dev/null || { echo "cmake / ninja: see the header"; exit 1; }
 # QEMU's configure insists on a pkg-config binary, though unicorn needs no system package: an empty one that finds none
 if ! command -v pkg-config >/dev/null; then
-    mkdir -p "$HOME/lasrecomp-tools/bin"
-    printf '#!/bin/sh\nexit 1\n' > "$HOME/lasrecomp-tools/bin/pkg-config"
-    chmod 755 "$HOME/lasrecomp-tools/bin/pkg-config"
+    mkdir -p "$HOME/botwrecomp-tools/bin"
+    printf '#!/bin/sh\nexit 1\n' > "$HOME/botwrecomp-tools/bin/pkg-config"
+    chmod 755 "$HOME/botwrecomp-tools/bin/pkg-config"
 fi
 SRC=$D/src/unicorn-2.1.4.tar.gz
 echo "ea8863f095a0136388694e5a6063afd9bb7650e30243dd6251af59c5ce5601f4  $SRC" | sha256sum -c --quiet
-W=$HOME/lasrecomp-unicorn  # (the Linux file system: QEMU's configure is slow on /mnt)
+W=$HOME/botwrecomp-unicorn  # (the Linux file system: QEMU's configure is slow on /mnt)
 rm -rf "$W" && mkdir -p "$W/src" && tar -xzf "$SRC" -C "$W/src" --strip-components 1
 # (QEMU's configure gets the NDK's clang without its target, so its test programs fail and it decides there is no
 # __int128 - aarch64 has it, and int128.h's fallback then clashes with the compiler's own type)

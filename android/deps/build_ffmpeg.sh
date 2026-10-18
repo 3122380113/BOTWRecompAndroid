@@ -4,13 +4,13 @@
 # game's movies need. FFmpeg's configure wants a Unix shell: on Windows run it in WSL
 #   wsl -d Ubuntu-26.04 -- bash android/deps/build_ffmpeg.sh
 # It uses the Linux NDK (the same version as the app; downloaded to ~/android-ndk-r30 when missing) and builds in
-# ~/lasrecomp-ffmpeg (the Linux file system: much faster than /mnt). Shared libraries without version suffixes
+# ~/botwrecomp-ffmpeg (the Linux file system: much faster than /mnt). Shared libraries without version suffixes
 # (libavcodec.so, not .so.62): the names an APK can carry.
 set -euo pipefail
 cd "$(dirname "$0")"
 P=$PWD/out
 NDK=${ANDROID_NDK_LINUX:-$HOME/android-ndk-r30}
-W=$HOME/lasrecomp-ffmpeg
+W=$HOME/botwrecomp-ffmpeg
 API=30
 mkdir -p "$W" "$P/include" "$P/lib"
 

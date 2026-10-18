@@ -2,7 +2,7 @@
 // emulators show: frame rate and frame time with a graph, CPU clusters and this app's CPU share, the GPU and its driver
 // and how much of the time the CPU waits on it (apps can't read the GPU's own load), memory, temperatures, battery
 // power and Android's thermal state (runtime/platform/android.c plat_device_stats; the battery and thermal state come
-// from the activity, LASRecompActivity.reportDeviceStats).
+// from the activity, BOTWRecompActivity.reportDeviceStats).
 #ifdef __ANDROID__
 #include <SDL3/SDL.h>
 #include <stdio.h>

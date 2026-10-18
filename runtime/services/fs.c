@@ -8,7 +8,6 @@
 #include <unistd.h>
 
 #include "../hle.h"
-#include "../rando.h"
 #include "../ipc.h"
 
 #define FS_PATH_NOT_FOUND MAKE_RESULT(2, 1)
@@ -35,7 +34,7 @@ static RomFile *rom_files;
 static int rom_nfiles;
 static uint64_t rom_data_off;
 
-// Reboot: the next seed builds its own index / overlay when the game opens the RomFS again.
+// Reboot: the next boot builds its own index / overlay when the game opens the RomFS again.
 RT_ON_RESET(fs_reset) {
     for (int i = 0; i < ov_n; i++) {
         if (ov[i].fd >= 0) close(ov[i].fd);
@@ -51,6 +50,21 @@ RT_ON_RESET(fs_reset) {
     if (romfs_fd >= 0) close(romfs_fd);
     romfs_fd = -1;
     g_save_dir = "save";
+}
+
+// RomFS mods: LARECOMP_MODS=<folder> with a romfs/ laid out like the game's; its files replace the game's files of the
+// same path, and files the game doesn't have are added (in directories it has).
+static const char *mods_dir(void) {
+    const char *e = getenv("LARECOMP_MODS");
+    return e && *e ? e : NULL;
+}
+
+static bool mods_override(const char *path, char *out, size_t cap) {
+    const char *d = mods_dir();
+    if (!d) return false;
+    snprintf(out, cap, "%s/romfs/%s", d, path);
+    struct stat sb;
+    return stat(out, &sb) == 0 && S_ISREG(sb.st_mode);
 }
 
 static int rom_cmp(const void *a, const void *b) {
@@ -75,7 +89,7 @@ static void rom_dir_path(const uint8_t *dmeta, uint32_t dsize, uint32_t dir, cha
     for (int i = n - 1; i >= 0; i--) { strlcat(out, parts[i], cap); strlcat(out, "/", cap); }
 }
 
-// ---- files a seed ADDS (names the game's RomFS doesn't have: generated dungeon cells...). The game parses the
+// ---- files a mod ADDS (names the game's RomFS doesn't have). The game parses the
 // RomFS tables itself, so they're extended: a copy of the file-meta table with the new entries appended (linked
 // into their directory's file list and the name hash buckets) is placed past the end of the image, the header,
 // directory table and hash table are patched to match. New files must go into existing directories.
@@ -135,10 +149,10 @@ static int64_t dir_lookup(const uint8_t *dm, uint64_t dsz, const char *path) {
 }
 
 static void add_new_files(int fd, const uint64_t *h, const uint8_t *dmeta, uint64_t dsz, uint64_t fsz) {
-    const char *seed = rando_seed_dir();
-    if (!seed) return;
+    const char *mods = mods_dir();
+    if (!mods) return;
     char root[1100];
-    snprintf(root, sizeof root, "%s/romfs", seed);
+    snprintf(root, sizeof root, "%s/romfs", mods);
     char **known = malloc(sizeof *known * rom_nfiles);
     for (int i = 0; i < rom_nfiles; i++) known[i] = rom_files[i].path;
     qsort(known, rom_nfiles, sizeof *known, path_cmp);
@@ -183,7 +197,7 @@ static void add_new_files(int fd, const uint64_t *h, const uint8_t *dmeta, uint6
         const char *name = slash ? slash + 1 : nf[i].rel;
         if (slash) *slash = 0; else dirp[0] = 0;
         int64_t dir = dir_lookup(dcopy, dsz, dirp);
-        if (dir < 0) { LOG("[fs] seed file %s: directory not in the game's RomFS, skipped\n", nf[i].rel); continue; }
+        if (dir < 0) { LOG("[fs] mod file %s: directory not in the game's RomFS, skipped\n", nf[i].rel); continue; }
         uint32_t nl = (uint32_t)strlen(name), d32 = (uint32_t)dir, entry = (uint32_t)o, child;
         memcpy(&child, dcopy + dir + 0xC, 4);  // dir's first file -> becomes our sibling
         uint64_t rel = data_at - rom_data_off, size = nf[i].size;
@@ -217,7 +231,7 @@ static void add_new_files(int fd, const uint64_t *h, const uint8_t *dmeta, uint6
     patches[npatches++] = (Patch){0, 0x50, head};
     patches[npatches++] = (Patch){h[3], dsz, dcopy};
     patches[npatches++] = (Patch){hoff, hsz, hcopy};
-    LOG("[fs] randomizer: %d new romfs files\n", added);
+    LOG("[fs] mods: %d new romfs files\n", added);
 }
 
 static void rom_index(int fd) {
@@ -249,11 +263,11 @@ static void rom_index(int fd) {
         rom_files[rom_nfiles++] = (RomFile){rom_data_off + data, size, path, (uint32_t)o};
         o += 0x20 + ((namelen + 3) & ~3u);
     }
-    // Randomizer seed: replacement files are served from the seed folder. The file-meta table is patched
+    // Mods: replacement files are served from the mods folder. The file-meta table is patched
     // (in a copy) to point them at data appended past the end of the image; reads there go to host files.
     for (int i = 0; i < rom_nfiles; i++) {
         char host[1200];
-        if (!rando_romfs_override(rom_files[i].path, host, sizeof host)) continue;
+        if (!mods_override(rom_files[i].path, host, sizeof host)) continue;
         struct stat sb;
         if (stat(host, &sb)) continue;
         if (!ov_meta) {
@@ -277,7 +291,7 @@ static void rom_index(int fd) {
         ov_n++;
         ov_end = (ov_end + size + 0xF) & ~0xFull;
     }
-    if (ov_n) LOG("[fs] randomizer: %d romfs files replaced\n", ov_n);
+    if (ov_n) LOG("[fs] mods: %d romfs files replaced\n", ov_n);
     if (ov_meta) { patches[npatches++] = (Patch){ov_meta_off, ov_meta_size, ov_meta}; }
     add_new_files(fd, h, dmeta, dsz, fsz);
     qsort(rom_files, rom_nfiles, sizeof *rom_files, rom_cmp);
@@ -337,8 +351,6 @@ const char *romfs_file_at(uint64_t off) {
     return NULL;
 }
 
-void romfs_file_read_hook(const char *path);
-
 // ------------------------------------------------------------------ IStorage (raw RomFS image)
 typedef struct { int fd; uint64_t size; } Storage;
 
@@ -358,7 +370,6 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
             if (path && path != last) {
                 last = path;
                 if (getenv("LARECOMP_LOG_FILES")) LOG("[fs] read %s\n", path);
-                romfs_file_read_hook(path);
             }
         }
         static uint64_t reads, bytes;
@@ -420,10 +431,6 @@ static void file(Service *s, IpcReq *req, IpcResp *resp) {
         ssize_t n = pread(f->fd, (void *)(uintptr_t)b->addr, (size_t)size, off);
         if (strstr(f->path, "savedata")) {
             LOG("[save] read %s off %lld size %lld -> guest %llx\n", f->path, (long long)off, (long long)size, (unsigned long long)b->addr);
-            extern void save_editor_file_read(const char *path, uint64_t addr, int64_t off, int64_t size);
-            save_editor_file_read(f->path, b->addr, off, n);
-            extern void flags_ext_save_read(const char *path, uint64_t addr, int64_t off, int64_t size);
-            flags_ext_save_read(f->path, b->addr, off, n);
         }
         OUT(int64_t, 0) = n < 0 ? 0 : n;
         resp_size(resp, 8);
@@ -435,10 +442,6 @@ static void file(Service *s, IpcReq *req, IpcResp *resp) {
         if (strstr(f->path, "savedata"))
             LOG("[save] write %s off %lld size %lld <- guest %llx\n", f->path, (long long)off, (long long)size, (unsigned long long)a->addr);
         if (pwrite(f->fd, (void *)(uintptr_t)a->addr, (size_t)size, off) < 0) resp->result = errno_result();
-        else if (strstr(f->path, "savedata")) {
-            extern void flags_ext_save_written(const char *path, uint64_t addr, int64_t off, int64_t size);
-            flags_ext_save_written(f->path, a->addr, off, size);
-        }
         break;
     }
     case 2: fsync(f->fd); break;
@@ -576,11 +579,6 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
 static Service *open_host_fs(const char *sub) {
     HostFs *fs = calloc(1, sizeof *fs);
     if (getenv("LARECOMP_SAVE_DIR")) g_save_dir = getenv("LARECOMP_SAVE_DIR");  // test runs use a scratch copy
-    else if (rando_seed_dir()) {  // each randomizer seed has its own save slots
-        static char seed_save[600];
-        snprintf(seed_save, sizeof seed_save, "%s/save", rando_seed_dir());
-        g_save_dir = seed_save;
-    }
     snprintf(fs->root, sizeof fs->root, "%s/%s", g_save_dir, sub);
     char cmd[1200];
     snprintf(cmd, sizeof cmd, "%s", fs->root);

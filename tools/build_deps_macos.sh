@@ -3,8 +3,8 @@
 # minimum macOS (MACOS_MIN, default 15.0) into build/deps. Homebrew's bottles target the macOS they were built on, so
 # they can't ship. Plain `make` (dev builds) keeps using Homebrew.
 #   SDL3; FFmpeg (LGPL only, no GPL parts: just what the game's movies need - WebM: VP9 video + Vorbis audio, plus
-#   VP8 / Opus / H.264 / AAC in WebM or MP4 - and swscale); keystone (for the seed generator helper);
-#   a relocatable CPython 3.12 (python-build-standalone, built for macOS 11+) that `make rando-helper` freezes.
+#   VP8 / Opus / H.264 / AAC in WebM or MP4 - and swscale);
+#   a relocatable CPython 3.12 (python-build-standalone, built for macOS 11+) that `make gen-helper` freezes.
 # Needs: Xcode command line tools, cmake. Each step is skipped when its output exists (delete build/deps/<x> to redo).
 set -euo pipefail
 cd "$(dirname "$0")/.."

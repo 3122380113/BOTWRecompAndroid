@@ -81,12 +81,29 @@ Esta máquina já tem o Android SDK/NDK (usados pelo LASRecompAndroid), mas **n�
 - Fork do LASRecompAndroid com o histórico (129 commits; remotos `las` e `upstream` para trazer melhorias do motor).
 - `Dump/` fora do git; `tools/botw_dump.py` confere os módulos, a versão e o romfs.
 
-### Fase 1: tirar o LAS e compilar sem o jogo
+### Fase 1: tirar o LAS e compilar sem o jogo — **feita (2026-10-18), menos o build desktop**
 
-- Remover o randomizer, os hooks de jogo do LAS, as abas do LAS no menu, os scripts de teste do LAS; esvaziar
-  `tools/patches.py` (mantendo o mecanismo).
-- Renomear o projeto (`lasrecomp` → `botwrecomp`, `lasgame` → `botwgame`, pacote Android, variáveis `LARECOMP_`).
-- Montar o ambiente MSYS2 e compilar o runtime no Windows, sem código do jogo.
+- Saíram: o randomizer (`third_party/LAS-Randomizer`, `tools/rando`, `runtime/rando.c`), os 17 hooks de jogo do LAS
+  em `runtime/hle/` (chamber, digs, doorjump, escape, flags_ext, framepace, hookshot, keysanity, miniboss, mirror,
+  pets, pot_glow, qol, rescue, shopsanity, souls, warp), as abas Save Editor / Randomizer / Warp / Cheats / Gameplay /
+  Cosmetics e os overlays do LAS, as opções do LAS em `settings.h`, os scripts de teste do LAS e o smoketest Linux
+  (que andava pelo jogo do LAS).
+- `tools/patches.py` ficou vazio, com o mecanismo e um exemplo; o gerador perdeu as variantes de patch das seeds.
+- O que o runtime pergunta ao jogo ficou em `runtime/hle/game.c` (`game_in_play`, `game_level_name`: "fora de
+  jogo" por enquanto). `runtime/hle/widescreen.c` virou a interface neutra que os renderers chamam (imagem 16:9 com
+  barras até existir um hook de câmera do BOTW). `runtime/nvn/texpatch.c` ficou como stub (os botões no estilo do
+  controle eram do LAS).
+- Novo: `LARECOMP_MODS=<pasta>` com um `romfs/` que substitui / acrescenta arquivos do jogo (o mecanismo de
+  sobreposição das seeds, agora para mods).
+- O launcher confere o build id do BOTW v1.0.0 e acha o romfs pela pasta `Pack/` (no PC e no Android).
+- Renome: `botwrecomp` (executável, pacote Android `com.botwrecomp`, `BOTWRecompActivity`, pasta
+  `android/botwrecomp`), `botwgame` (a biblioteca do código do jogo), `botwgen` (o helper do gerador),
+  `botwrecomp.ini`, bundle id `com.mamcjr.botwrecomp`. **As variáveis de ambiente continuam `LARECOMP_*`** e os
+  identificadores internos também: o motor é o do LAS, e assim fica mais fácil trazer melhorias de lá.
+- Verificação: o app Android (`android/botwrecomp`, `gradlew assembleDebug`) compila e linka com `--no-undefined`.
+  Os arquivos só do macOS (`renderer.m`, `metal.m`) foram editados do mesmo jeito, mas não compilados aqui.
+- **Falta:** o ambiente MSYS2 do Windows (`tools/setup_windows.ps1` instala MSYS2, pacotes e Python; não rodei sem
+  você) e o build desktop.
 
 ### Fase 2: gerar o código do jogo
 

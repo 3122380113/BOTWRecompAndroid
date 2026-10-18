@@ -9,13 +9,13 @@
 #include "cpu.h"
 
 #if defined(_WIN32)
-#define GAMELIB_NAME "lasgame.dll"
+#define GAMELIB_NAME "botwgame.dll"
 #define GAMELIB_EXPORT __declspec(dllexport)
 #elif defined(__APPLE__)
-#define GAMELIB_NAME "lasgame.dylib"
+#define GAMELIB_NAME "botwgame.dylib"
 #define GAMELIB_EXPORT __attribute__((visibility("default")))
 #else
-#define GAMELIB_NAME "lasgame.so"
+#define GAMELIB_NAME "botwgame.so"
 #define GAMELIB_EXPORT __attribute__((visibility("default")))
 #endif
 
@@ -36,7 +36,7 @@ typedef struct {
 
 // The library's one exported function (tools/gamelib_entry.c).
 typedef const GameLibTables *(*GameLibEntry)(void);
-#define GAMELIB_ENTRY "lasgame_tables"
+#define GAMELIB_ENTRY "botwgame_tables"
 
 #ifdef __cplusplus
 extern "C" {

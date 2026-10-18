@@ -334,11 +334,6 @@ static TexBackend *tex_backend(NvnTexture *t) {
     return b;
 }
 
-// runtime/nvn/texpatch.c id of a texture already in use (-1: none / not identified yet)
-int renderer_texpatch_of(NvnTexture *t) {
-    const TexBackend *b = (const TexBackend *)t->backend;
-    return b && b->tp > 0 ? b->tp - 1 : -1;
-}
 
 static void create_backend_texture(NvnTexture *t, TexBackend *b) {
     MtlFormat mf = mtl_format(t->format);
@@ -1049,7 +1044,7 @@ void backend_present(NvnTexture *t) {
         static long win_shot = -1;  // LARECOMP_WINDOW_SHOT=<frame>: save the final window image (game + menu)
         if (win_shot < 0) win_shot = getenv("LARECOMP_WINDOW_SHOT") ? atol(getenv("LARECOMP_WINDOW_SHOT")) : 0;
         id<MTLTexture> shot_tex = nil;
-        extern char g_window_shot_request[256];  // test hooks (runtime/hle/hookshot.c): save the next frame here
+        extern char g_window_shot_request[256];  // test hooks (runtime/hle/input.c): save the next frame here
         if ((win_shot && (long)total_frames + 1 == win_shot) || g_window_shot_request[0]) {
             MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:drawable.texture.pixelFormat
                                          width:drawable.texture.width height:drawable.texture.height mipmapped:NO];
@@ -1085,12 +1080,8 @@ void backend_present(NvnTexture *t) {
     if (slow_ms > 0 && total_frames > 2600) usleep((useconds_t)slow_ms * 1000);
     extern void fnprof_frame(uint64_t frame);
     fnprof_frame(total_frames);
-    extern void warp_frame(uint64_t frame);
-    warp_frame(total_frames);
     extern void reboot_test_frame(uint64_t frame);  // runtime/main.c (LARECOMP_REBOOT_AT)
     reboot_test_frame(total_frames);
-    extern void save_editor_frame(uint64_t frame);
-    save_editor_frame(total_frames);
     static long shot_every = -1;
     if (shot_every < 0) { const char *e = getenv("LARECOMP_SCREENSHOT_EVERY"); shot_every = e ? atol(e) : 0; }
     extern bool g_debug_frame;
@@ -1147,7 +1138,7 @@ void ui_window_init(void) {
     // LARECOMP_HIDDEN=1: never shown (automated test runs render off screen without taking the user's focus)
     SDL_WindowFlags wflags = SDL_WINDOW_METAL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
     if (getenv("LARECOMP_HIDDEN")) wflags |= SDL_WINDOW_HIDDEN;
-    window = SDL_CreateWindow("LAS Recomp", win_w, win_h, wflags);
+    window = SDL_CreateWindow("BOTW Recomp", win_w, win_h, wflags);
     if (!window) FATAL("SDL_CreateWindow: %s\n", SDL_GetError());
     rt_window_icon(window);
     // the Fullscreen setting applies from the start screen on (not only once the game runs); test windows stay windows
