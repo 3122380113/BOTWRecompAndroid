@@ -36,6 +36,39 @@ static void module_init(Cpu *c, Module *m) {
 static void rtld_init_sdk(Cpu *c) { module_init(c, &g_modules[1]); }
 static void rtld_init_main(Cpu *c) { module_init(c, &g_modules[0]); }
 
+static void call_sym(Cpu *c, const char *name, bool required) {
+    uint64_t a = loader_find_symbol(name);
+    if (!a) {
+        if (required) FATAL("%s not found\n", name);
+        return;
+    }
+    LOG("[boot] %s\n", name);
+    guest_call(c, a);
+}
+
+// SDKs before nn::init::Start (BOTW 1.0.0, 2017): there rtld ran the startup sequence itself, calling these by name
+// (BOTW's rtld from 0x70: its own imports, resolved against the loaded modules) - the main thread starts here with
+// rtld's entry registers (x0 = 0: no exception, x1 = the main thread's handle). Module initializers (DT_INIT) run
+// together after __nnDetailInitLibc2, in rtld's module list order (by address: main, then sdk). nnosInitialize's
+// second argument is the process argument region (right after rtld there); 0 makes it skip the arguments, as on the
+// nn::init::Start path.
+static void rtld_start_legacy(Cpu *c) {
+    uint64_t handle = c->x[1];
+    call_sym(c, "__nnDetailInitLibc0", true);
+    c->x[0] = handle, c->x[1] = 0;
+    call_sym(c, "nnosInitialize", true);
+    call_sym(c, "__nnDetailInitLibc1", true);
+    call_sym(c, "nndiagStartup", true);
+    call_sym(c, "nninitInitializeSdkModule", false);
+    call_sym(c, "nninitInitializeAbortObserver", false);
+    call_sym(c, "nninitStartup", true);
+    call_sym(c, "__nnDetailInitLibc2", true);
+    for (int i = 0; i < g_nmodules; i++) module_init(c, &g_modules[i]);
+    call_sym(c, "nnMain", true);
+    call_sym(c, "nninitFinalizeSdkModule", false);
+    call_sym(c, "nnosQuickExit", true);
+}
+
 // Claim the guest address range before anything else can map there. The host allocator places
 // regions at random addresses in the same window; on a collision, re-exec for a fresh layout.
 __attribute__((constructor(101))) static void reserve_guest_space(void) {
@@ -149,7 +182,12 @@ static void boot(const char *root) {
     LOG("main thread: prio %d, stack 0x%x\n", prio, stack_size);
 
     uint64_t start = loader_find_symbol("_ZN2nn4init5StartEmmPFvvES2_");
-    if (!start) FATAL("nn::init::Start not found\n");
+    if (!start) {  // an older SDK: rtld's own startup sequence
+        LOG("no nn::init::Start: the older SDK's startup (rtld_start_legacy)\n");
+        KThread *t = kernel_create_main_thread(hle_register("<rtld_start_legacy>", rtld_start_legacy), stack_size, prio);
+        kernel_run_main(t, 0, t->handle, 0, 0);
+        return;
+    }
     uint64_t init_fn = hle_register("<rtld_init_sdk>", rtld_init_sdk);
     uint64_t fini_fn = hle_register("<rtld_init_main>", rtld_init_main);
     KThread *t = kernel_create_main_thread(start, stack_size, prio);

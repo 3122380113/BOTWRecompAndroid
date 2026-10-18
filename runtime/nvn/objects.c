@@ -41,6 +41,12 @@ NVN(nvnDeviceInitialize) {
     RET(1);
 }
 NVN(nvnDeviceFinalize) { (void)c; }
+// The GPU never reports an error here. BOTW calls this (a thread waiting for GPU errors): each call waits a while
+// (100 ms; on the Switch it blocks until an error) and says "none", so such a thread doesn't spin.
+NVN(nvnDeviceWaitForError) {
+    plat_sleep_until_ns(plat_now_ns() + 100000000ull);
+    RET(0);
+}
 NVN(nvnDeviceSetDebugLabel) { (void)c; }
 NVN(nvnDeviceGetInteger) { *(int32_t *)AP(2) = (int32_t)device_integer((uint32_t)A(1)); }
 NVN(nvnDeviceGetCurrentTimestampInNanoseconds) {

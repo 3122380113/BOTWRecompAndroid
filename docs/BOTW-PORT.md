@@ -105,16 +105,45 @@ Esta máquina já tem o Android SDK/NDK (usados pelo LASRecompAndroid), mas **n�
 - **Falta:** o ambiente MSYS2 do Windows (`tools/setup_windows.ps1` instala MSYS2, pacotes e Python; não rodei sem
   você) e o build desktop.
 
-### Fase 2: gerar o código do jogo
+### Fase 2: gerar o código do jogo — **gerado (2026-10-18)**
 
-- `gen.py` em `sdk` e `main` (e decidir se algum `subsdk` precisa ser recompilado em vez de HLE).
-- Corrigir instruções não suportadas, descoberta de funções, tabelas de salto. Medir o tempo de geração e o tamanho
-  do C gerado; compilar o `botwgame.dll`.
+O gerador do LAS funcionou no BOTW sem mudanças (para Android: `--simd asm --dyn-base`, em `generated-android-dyn/`):
 
-### Fase 3: boot até o primeiro quadro
+| Módulo | Funções | Arquivos C | Instruções não suportadas | Tempo |
+|---|---|---|---|---|
+| `sdk` | 17.689 | 98 | 0 | 6 s |
+| `main` | 104.671 (1.056 tabelas de salto) | 581 | 0 | 53 s |
 
-- Carregador com os 5 módulos importados pelo `main` e as importações resolvidas por HLE.
-- Serviços e IPC na versão do SDK de 2017; `nvnBootstrapLoader` do `nvn.nss`; `nnDisplay`.
+(Os poucos `rt_udf` no C gerado são `udf` / `brk` de verdade do código e o cabeçalho do módulo.) Os `subsdk` não são
+recompilados, como no LAS: o que o `main` usa deles é HLE (abaixo).
+
+- `android/build_gamelib.sh <exefs>` compila o `botwgame.so` com o NDK (683 arquivos; demora, como no LAS).
+
+### Fase 3: boot até o primeiro quadro — **em andamento**
+
+Feito sem rodar o jogo (análise estática; `tools/imports.py <exefs>` refaz):
+
+- **Importações do `main` (483):** 431 vêm do `sdk`, o resto de HLE. Faltavam 5, agora implementadas:
+  `nn::vi::SetLayerScalingMode`, `movie::Buffer::Size/Offset` (sem `const` no SDK de 2017),
+  `movie::Decoder` com 2 argumentos e `movie::MediaData::FindRect`. Sobram as mesmas 12 do LAS (glslc e marcadores
+  do linker, que nunca são chamados).
+- **NVN:** das ~225 funções que o BOTW pede por nome, só `nvnDeviceWaitForError` faltava (implementada: espera
+  100 ms e diz "sem erro"). 7 outras faltam também no LAS, que rodava sem elas.
+- **Boot do SDK antigo:** o SDK de 2017 não tem `nn::init::Start`. Lá o próprio `rtld` fazia a sequência:
+  `__nnDetailInitLibc0` → `nnosInitialize(handle, args)` → `__nnDetailInitLibc1` → `nndiagStartup` →
+  `nninitInitializeSdkModule` → `nninitStartup` → `__nnDetailInitLibc2` → `DT_INIT` de cada módulo (main, depois sdk)
+  → `nnMain` → `nninitFinalizeSdkModule` → `nnosQuickExit` (lido do `rtld` do BOTW). `runtime/main.c`
+  (`rtld_start_legacy`) faz isso quando não acha `nn::init::Start`.
+- **Serviços:** o SDK do BOTW abre quase os mesmos serviços que o do LAS; a mais: `nifm:u`, `prepo:a`, `csrng` (sem
+  implementação: viram stubs que registram no log).
+- **Símbolos que o runtime procura por nome no SDK:** todos existem no BOTW, menos `nn::init::Start` (acima).
+
+Falta (precisa rodar o jogo):
+
+- Rodar: no PC (falta o MSYS2, ver Fase 1) ou no celular (`android/push_game.sh`, com o celular no adb).
+- Comandos de IPC do SDK de 2017 que o runtime não conhece; a ordem de construtores entre `main` e `sdk`.
+- Os slots das vtables de `movie::Extractor` / `Decoder` no SDK de 2017 (o `movie.c` usa os de 2019).
+- `romfs.bin` de 13,4 GiB + a cópia do `romfs/` (o `movie.c` e o fundo do launcher leem arquivos soltos): ~27 GB.
 - Meta: a tela de carregamento / logo da Nintendo.
 
 ### Fase 4: gráficos

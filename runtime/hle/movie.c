@@ -84,6 +84,21 @@ HLE_FUNC("_ZNK5movie9MediaData10FindStringEPKcPS2_", md_find_string) {
         if (m->e[i].is_str && !strcmp(m->e[i].key, k)) { *(uint64_t *)(uintptr_t)c->x[2] = (uint64_t)(uintptr_t)m->e[i].sval; c->x[0] = 1; return; }
     c->x[0] = 0;
 }
+// FindRect(key, left, top, right, bottom) (BOTW's 2017 SDK; Android's MediaFormat "crop"): the whole picture, from
+// the format's width / height, when there is one
+HLE_FUNC("_ZNK5movie9MediaData8FindRectEPKcPiS3_S3_S3_", md_find_rect) {
+    MediaData *m = md(c->x[0]);
+    int64_t w = -1, h = -1;
+    for (int i = 0; i < m->n; i++) {
+        if (m->e[i].is_str) continue;
+        if (!strcmp(m->e[i].key, "width")) w = m->e[i].ival;
+        if (!strcmp(m->e[i].key, "height")) h = m->e[i].ival;
+    }
+    if (w <= 0 || h <= 0) { c->x[0] = 0; return; }
+    *(int32_t *)(uintptr_t)c->x[2] = 0, *(int32_t *)(uintptr_t)c->x[3] = 0;
+    *(int32_t *)(uintptr_t)c->x[4] = (int32_t)w - 1, *(int32_t *)(uintptr_t)c->x[5] = (int32_t)h - 1;
+    c->x[0] = 1;
+}
 
 // ------------------------------------------------------------------ Buffer (opaque, <= 0x40 bytes)
 typedef struct {
@@ -117,6 +132,9 @@ HLE_FUNC("_ZN5movie6BufferD1Ev", buf_dtor) { (void)c; }
 HLE_FUNC("_ZNK5movie6Buffer4BaseEv", buf_base) { c->x[0] = BUF(c->x[0])->base; }
 HLE_FUNC("_ZNK5movie6Buffer4SizeEv", buf_size) { c->x[0] = (uint32_t)BUF(c->x[0])->size; }
 HLE_FUNC("_ZNK5movie6Buffer6OffsetEv", buf_offset) { c->x[0] = (uint32_t)BUF(c->x[0])->offset; }
+// (BOTW's 2017 SDK: the same, not const)
+HLE_FUNC("_ZN5movie6Buffer4SizeEv", buf_size_old) { buf_size(c); }
+HLE_FUNC("_ZN5movie6Buffer6OffsetEv", buf_offset_old) { buf_offset(c); }
 HLE_FUNC("_ZNK5movie6Buffer8CapacityEv", buf_capacity) { c->x[0] = BUF(c->x[0])->capacity; }
 HLE_FUNC("_ZN5movie6Buffer8SetRangeEii", buf_set_range) { BUF(c->x[0])->offset = (int32_t)c->x[1]; BUF(c->x[0])->size = (int32_t)c->x[2]; }
 HLE_FUNC("_ZN5movie6Buffer18SetDataAndCapacityEPvm", buf_set_data) {
@@ -800,3 +818,6 @@ HLE_FUNC("_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11Dec
     self[0] = vt;
     self[1] = (uint64_t)(uintptr_t)d;
 }
+// BOTW's 2017 SDK: no mode / thread arguments (the constructor above doesn't use them). Its decoder's virtual methods
+// are assumed to be in the same slots as the 2019 SDK's: not checked yet (docs/BOTW-PORT.md, Fase 5).
+HLE_FUNC("_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatE", movie_decoder_ctor_old) { movie_decoder_ctor(c); }
