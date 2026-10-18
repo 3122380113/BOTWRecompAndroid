@@ -216,9 +216,14 @@ a imagem certa, a tela de título com o menu e os textos, ~35 fps, ~950 texturas
 
 Controles (Android): o overlay de toque ganhou o analógico direito (câmera: flutuante, em qualquer ponto livre da
 metade direita), o d-pad e L3 / R3, todos no editor de layout (`TOUCH_NCTL` 12 -> 19; layouts salvos continuam
-valendo). Todos os controles conectados são abertos e lidos juntos (antes só o primeiro da lista do SDL). **Não
-testado no aparelho:** o MIUI bloqueia injetar toques pelo adb (`INJECT_EVENTS`, opção "Depuração USB (configurações
-de segurança)" desligada).
+valendo). Todos os controles conectados são abertos e lidos juntos (antes só o primeiro da lista do SDL). Testado no
+aparelho com toques injetados pelo adb (com a opção "Depuração USB (configurações de segurança)" do MIUI ligada): os
+dois analógicos (movimento e câmera) e o botão de menu funcionam. **Menu do jogo e toque:** toques rápidos não
+trocavam de aba - as abas do ImGui só aceitam o clique se já estavam sob o ponteiro no quadro anterior, e um dedo
+aparece e clica no mesmo quadro; os eventos de mouse que o SDL faz de um dedo agora vão ao ImGui como
+`ImGuiMouseSource_TouchScreen` (como o backend SDL3 da tela inicial já fazia). Arrastar o dedo na vertical rola a
+página do menu. `LARECOMP_LOG_POINTER=1` mostra os eventos de ponteiro que o menu recebe. O controle físico ainda
+não foi testado (nenhum conectado).
 
 Ferramentas de diagnóstico novas: `LARECOMP_LOG_FILE=<caminho absoluto>` (o log também num arquivo: o logcat perde
 linhas num debug frame), `LARECOMP_DEBUG_TEXSTATE=1` (no debug frame: de onde vêm os texels de cada textura, view,
@@ -228,8 +233,8 @@ e com o alfa; screenshots no Android vão para o diretório de dados (o SDL trat
 Para rodar sem tocar no aparelho: `android/run_boot.sh <s> "LARECOMP_INPUT=700:A:6,..."` (A em 700 abre a lista de
 saves; ~3 As levam ao santuário).
 
-Ainda a ver: o usuário viu vértices "estourando" às vezes no santuário (não reproduzido nas capturas); toque no menu
-de configurações; o controle físico com o BOTW; a miniatura do save na lista não aparece; upload de ~500 MB/s
+Ainda a ver: o usuário viu vértices "estourando" às vezes no santuário (não reproduzido nas capturas);
+o controle físico com o BOTW; a miniatura do save na lista não aparece; upload de ~500 MB/s
 (`upload` no log de fps).
 
 Falta (precisa rodar o jogo):

@@ -41,6 +41,7 @@ struct QEvent {
     enum { KEY, ANALOG, MOUSE_POS, MOUSE_BUTTON, WHEEL, TEXT } kind;
     ImGuiKey key;
     bool down;
+    bool touch;  // (MOUSE_POS / MOUSE_BUTTON) SDL's mouse events made from a finger
     float value, x, y;
     int button;
     char text[32];
@@ -150,6 +151,15 @@ extern "C" bool menu_input_captured(void) { return capturing(); }
 
 bool menu_handle_event(const SDL_Event *e) {
     static bool back_down, start_down;
+    {   // LARECOMP_LOG_POINTER=1 (debugging touch in the menu): the pointer events the menu gets
+        static int logp = -1;
+        if (logp < 0) logp = getenv("LARECOMP_LOG_POINTER") != NULL;
+        if (logp && (e->type == SDL_EVENT_MOUSE_MOTION || e->type == SDL_EVENT_MOUSE_BUTTON_DOWN || e->type == SDL_EVENT_MOUSE_BUTTON_UP ||
+                     e->type == SDL_EVENT_FINGER_DOWN || e->type == SDL_EVENT_FINGER_UP))
+            LOG("[menu] event %#x which %u button %d at %.0f %.0f (open %d)\n", e->type, (unsigned)e->button.which, e->button.button,
+                e->type == SDL_EVENT_FINGER_DOWN || e->type == SDL_EVENT_FINGER_UP ? e->tfinger.x : e->button.x,
+                e->type == SDL_EVENT_FINGER_DOWN || e->type == SDL_EVENT_FINGER_UP ? e->tfinger.y : e->button.y, (int)g_open.load());
+    }
     if (g_open.load() && bind_capture_event(e)) return true;  // Controls tab waiting for a new binding: it takes the press
     if (e->type == SDL_EVENT_KEY_DOWN) g_last_pad = false;
     if (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) g_last_pad = true;
@@ -231,7 +241,13 @@ bool menu_handle_event(const SDL_Event *e) {
     }
     case SDL_EVENT_MOUSE_MOTION:
         if (!capturing()) return false;
-        { QEvent q = {}; q.kind = QEvent::MOUSE_POS; q.x = e->motion.x * g_pixel_density; q.y = e->motion.y * g_pixel_density; push(q); }
+        {
+            QEvent q = {};
+            q.kind = QEvent::MOUSE_POS;
+            q.x = e->motion.x * g_pixel_density, q.y = e->motion.y * g_pixel_density;
+            q.touch = e->motion.which == SDL_TOUCH_MOUSEID;
+            push(q);
+        }
         return true;
     case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP:
         if (!capturing()) return false;
@@ -240,6 +256,7 @@ bool menu_handle_event(const SDL_Event *e) {
             q.kind = QEvent::MOUSE_BUTTON;
             q.button = e->button.button == SDL_BUTTON_LEFT ? 0 : e->button.button == SDL_BUTTON_RIGHT ? 1 : 2;
             q.down = e->type == SDL_EVENT_MOUSE_BUTTON_DOWN;
+            q.touch = e->button.which == SDL_TOUCH_MOUSEID;
             push(q);
         }
         return true;
@@ -383,8 +400,16 @@ static void drain_events(ImGuiIO &io) {
         switch (q.kind) {
         case QEvent::KEY: io.AddKeyEvent(q.key, q.down); break;
         case QEvent::ANALOG: io.AddKeyAnalogEvent(q.key, q.value > 0.1f, q.value); break;
-        case QEvent::MOUSE_POS: io.AddMousePosEvent(q.x, q.y); break;
-        case QEvent::MOUSE_BUTTON: io.AddMouseButtonEvent(q.button, q.down); break;
+        // (a finger: ImGui's touch source - it gives the item a frame under the pointer before the press; a tab,
+        // which needs to have been hovered the frame before (overlap), ignored quick taps as a mouse's clicks)
+        case QEvent::MOUSE_POS:
+            io.AddMouseSourceEvent(q.touch ? ImGuiMouseSource_TouchScreen : ImGuiMouseSource_Mouse);
+            io.AddMousePosEvent(q.x, q.y);
+            break;
+        case QEvent::MOUSE_BUTTON:
+            io.AddMouseSourceEvent(q.touch ? ImGuiMouseSource_TouchScreen : ImGuiMouseSource_Mouse);
+            io.AddMouseButtonEvent(q.button, q.down);
+            break;
         case QEvent::WHEEL: io.AddMouseWheelEvent(q.x, q.y); break;
         case QEvent::TEXT: io.AddInputCharactersUTF8(q.text); break;
         }
@@ -816,6 +841,19 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
                 case 1: tab_audio(); break;
                 case 8: tab_about(); break;
                 case 9: tab_quit(scale, in_game); break;
+                }
+                {   // a finger dragged up / down scrolls the page (ImGui scrolls with a wheel or the scrollbar only); a
+                    // vertical drag that started on a button or a row lets go of it (sliders are dragged sideways)
+                    ImGuiIO &tio = ImGui::GetIO();
+                    static bool drag_scroll;
+                    if (!tio.MouseDown[0]) drag_scroll = false;
+                    else if (tio.MouseSource == ImGuiMouseSource_TouchScreen && !drag_scroll &&
+                             ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows | ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
+                             ImGui::IsMouseDragging(0, 12 * scale)) {
+                        ImVec2 d = ImGui::GetMouseDragDelta(0);
+                        if (fabsf(d.y) > 2 * fabsf(d.x)) { drag_scroll = true; ImGui::ClearActiveID(); }
+                    }
+                    if (drag_scroll) ImGui::SetScrollY(ImGui::GetScrollY() - tio.MouseDelta.y);
                 }
                 static const char *scroll_test = getenv("LARECOMP_MENU_SCROLL");  // test hook: page scroll, 0..1
                 if (scroll_test) ImGui::SetScrollY(ImGui::GetScrollMaxY() * (float)atof(scroll_test));
