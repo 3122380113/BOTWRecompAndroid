@@ -963,11 +963,11 @@ static id<MTLSamplerState> sampler_for(NvnSamplerDesc *d) {
     MTLSamplerAddressMode modes[3];
     for (int i = 0; i < 3; i++) {
         switch (d->wrap[i]) {
-        case 0: case 7: modes[i] = MTLSamplerAddressModeClampToEdge; break;
+        case 0: case 6: modes[i] = MTLSamplerAddressModeClampToEdge; break;
         case 1: modes[i] = MTLSamplerAddressModeRepeat; break;
         case 2: case 3: modes[i] = MTLSamplerAddressModeMirrorClampToEdge; break;
         case 4: case 5: modes[i] = MTLSamplerAddressModeClampToBorderColor; break;
-        case 6: modes[i] = MTLSamplerAddressModeMirrorRepeat; break;
+        case 7: modes[i] = MTLSamplerAddressModeMirrorRepeat; break;
         default: modes[i] = MTLSamplerAddressModeRepeat;
         }
     }
