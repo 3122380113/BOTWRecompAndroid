@@ -321,6 +321,19 @@ Rodada 3, com referências do Switch (vídeo, porta abrindo e terminal Sheikah):
 - Diagnóstico novo: `LARECOMP_WATCH_TEXID=<hex>` / `LARECOMP_WATCH_SMPID=<dec>` registram os registros de um slot;
   o log do debug frame mostra o sampler (LOD, filtros, handle) de cada textura e o banco/offset dos bindless.
 - Descartado: modo de profundidade 1 (`NEAR_IS_ZERO`) deixa a tela preta; o BOTW usa o padrão -1..1.
+- Referência (vídeo 4K do Switch, youtu.be/7zX3D98tt-U, 3:19-4:15): o brilho laranja/azul do pedestal é liso (o nosso
+  agora também); no flash da ativação (3:35) há um anel, partículas e um traço de lente fino; a luz da porta (4:05)
+  tem o sol em estrela e uma faixa horizontal de feixes com borda superior reta, como a nossa (é o desenho do jogo);
+  a névoa da porta no nosso ainda é maior e mais clara; a névoa do chão à esquerda é branca no Switch e esverdeada
+  aqui.
+- Retângulo azul da ativação: é o traço de lente (fs `36e1fc700`, hash `e97e29b6a86cf9ae`; vs `36e1fa100`, 1 quad em
+  strip de 4 vértices, cantos pelo `gl_VertexIndex`), textura BC4 256x78 (um quadrante do traço, centro no canto
+  inferior direito; swizzle R R R R, alpha = R) com sampler wrap 7 (clamp). A textura decodificada está certa
+  (`LARECOMP_DUMP_TEXADDR`, despejo dos blocos). No nosso o `v` da textura fica constante (>= 1) em todo o quad: faixa
+  uniforme com bordas duras. Wrap 7 como espelho não muda nada. Falta rastrear o `v2.y` do vs (`-r3 * cb9[48].y /
+  cb9[48].w`). Os streams desse draw têm 16 bytes (um vértice) para 4 vértices: agora a leitura além do tamanho dá
+  zero, como no Switch (antes lia os buffers vizinhos); não resolveu a faixa.
+- Tela preta ao ativar (relato): não reproduzida em ~10 execuções roteirizadas.
 
 Também anotado: o jogo fechou sozinho uma vez ao carregar um save (SIGSEGV no código do jogo, `f_1010c1a04+284`,
 leitura do endereço 0, x0 = 0; backtrace no logcat). Não reproduzido ainda.
