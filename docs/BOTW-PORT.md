@@ -263,6 +263,10 @@ dos feixes, fs `8d989710b28bd28a` e outros), que leem uma profundidade linear R1
 `71ac217f9871658e` a partir do depth, com snapshot de feedback) para o fade contra a geometria. A suspeita é essa
 profundidade (ou a comparação dela); não confirmada. Nenhum formato sem filtro linear é amostrado (o runtime avisa
 uma vez por formato se houver).
+Bisseção: o fs `0363359e11684e85` (feixes) faz `TMML.B` (LOD via handle bindless, lido de `cb2`). O tradutor tinha os
+opcodes trocados (0xdf58 é TMML, 0xdf60 é TMML.B) e consultava uma textura inexistente. Corrigido: o TMML.B usa a
+textura do próximo TEX / TEXS com o mesmo registrador de coordenada. A imagem mudou pouco: a borda horizontal coincide
+com a verga da porta (geometria na frente da luz), o que parece ser o comportamento do jogo.
 
 Ainda a ver:
 o controle físico com o BOTW; a miniatura do save na lista não aparece; upload de ~500 MB/s

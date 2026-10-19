@@ -972,15 +972,27 @@ static void emit_tld4s(Ctx *c, uint64_t w) {
     write_tex_result(c, slot, call, 0xf, d0, d1, true, f16);
 }
 
-// TMML (Texture MipMap Level, 0xdf60 / 0xdf58): .x the mip level accessed, .y the computed LOD (textureQueryLod), as
-// 24.8 fixed point (yuzu: texture_mipmap_level.cpp).
-static void emit_tmml(Ctx *c, uint64_t w, bool bindless) {
+// TMML (Texture MipMap Level, 0xdf58; TMML.B 0xdf60, the handle in register b): .x the mip level accessed, .y the
+// computed LOD (textureQueryLod), as 24.8 fixed point (yuzu: texture_mipmap_level.cpp).
+// The bindless form (BOTW's light rays through the shrine door: the handle read from a user constant buffer) takes the
+// texture of the next TEX / TEXS sampling the same coordinate register: the LOD queried is the one that sample uses.
+static void emit_tmml(Ctx *c, uint64_t w, bool bindless, uint32_t pc) {
     int d = (int)bits(w, 0, 8), a = (int)bits(w, 8, 8);
     uint32_t index = bindless ? 0 : (uint32_t)bits(w, 36, 13);
     int target = (int)bits(w, 29, 2);
     bool array = bits(w, 28, 1);
     uint32_t mask = (uint32_t)bits(w, 31, 4);
-    if (bindless) { fail(c, "bindless tmml"); return; }
+    if (bindless) {
+        const uint64_t *code = (const uint64_t *)c->code;
+        bool found = false;
+        for (size_t i = pc / 8 + 1; i < c->ninsts && i < pc / 8 + 64 && !found; i++) {
+            if (i % 4 == 0) continue;
+            uint64_t x = code[i];
+            bool tex = (x & 0xfc38000000000000ull) == 0xc038000000000000ull, texs = (x & 0xf600000000000000ull) == 0xd000000000000000ull;
+            if ((tex || texs) && (int)bits(x, 8, 8) == a) index = (uint32_t)bits(x, 36, 13), found = true;
+        }
+        if (!found) { fail(c, "bindless tmml"); return; }
+    }
     int type = target == 0 ? (array ? TEXTYPE_1D_ARRAY : TEXTYPE_1D)
              : target == 1 ? (array ? TEXTYPE_2D_ARRAY : TEXTYPE_2D)
              : target == 2 ? TEXTYPE_3D
@@ -1133,10 +1145,10 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         emit_tld4(c, w);
     } else if (OPM(0xdf00000000000000ull, 0xff40000000000000ull)) {  // TLD4S
         emit_tld4s(c, w);
-    } else if (OPM(0xdf60000000000000ull, 0xfff8000000000000ull)) {  // TMML
-        emit_tmml(c, w, false);
-    } else if (OPM(0xdf58000000000000ull, 0xfff8000000000000ull)) {  // TMML.B (bindless)
-        emit_tmml(c, w, true);
+    } else if (OPM(0xdf58000000000000ull, 0xfff8000000000000ull)) {  // TMML
+        emit_tmml(c, w, false, pc);
+    } else if (OPM(0xdf60000000000000ull, 0xfff8000000000000ull)) {  // TMML.B (bindless)
+        emit_tmml(c, w, true, pc);
     } else if (OPM(0xdf48000000000000ull, 0xfff8000000000000ull)) {  // TXQ
         uint32_t index = (uint32_t)bits(w, 36, 13);
         int qt = (int)bits(w, 22, 6);
@@ -2614,6 +2626,8 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
         if (w == 0 && i > 4) break;
         end = i + 1;
     }
+    c->code = code;
+    c->ninsts = end;
     // collect branch targets (labels)
     uint8_t *label = calloc(end + 4, 1);
     label[1] = 1;

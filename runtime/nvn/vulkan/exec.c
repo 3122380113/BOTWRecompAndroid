@@ -4234,7 +4234,14 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
     for (int i = 0; i < pr->fi->ntex && i < 64; i++) {  // fragment textures: guest size / format, allocation, scale
         NvnTexture *t = shader_texture_object(1, &pr->fi->tex[i]);
         const TexBackend *b = t ? (const TexBackend *)t->backend : NULL;
-        if (!t) { LOG("[draw]   tex%d: none\n", i); continue; }
+        if (!t) {
+            const ShaderTexture *stx = &pr->fi->tex[i];
+            int slot = ((int)stx->handle_offset - 0x20) / 8;
+            uint64_t h = slot >= 0 && slot < 32 ? st.tex[1][slot] : 0;
+            LOG("[draw]   tex%d: none (handle offset %#x slot %d handle %llx, pool %d entries, type %d)\n", i, stx->handle_offset, slot,
+                (unsigned long long)h, st.tpool ? st.tpool->count : -1, stx->type);
+            continue;
+        }
         LOG("[draw]   tex%d: %p %ux%u f%#x lv %u -> %ux%u scale %.4f %.4f%s\n", i, (void *)t, t->width, t->height, t->format,
             b ? b->levels : 0, b ? b->width : 0, b ? b->height : 0, b ? b->sx : 0, b ? b->sy : 0, b && b->scalable ? " scalable" : "");
         if (getenv("LARECOMP_DEBUG_TEXSTATE") && !b) {
