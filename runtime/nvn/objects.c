@@ -1,6 +1,7 @@
 // NVN objects, builders, and state objects (everything except command recording).
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "../kernel.h"
 #include "nvn.h"
@@ -753,7 +754,7 @@ NVN(nvnSamplerBuilderSetWrapMode) {
         while (i < ns && seen[i] != k) i++;
         if (i == ns && ns < 256) {
             seen[ns++] = k;
-            LOG("[nvn] SetWrapMode %llu %llu %llu (lr %llx; callers", (unsigned long long)A(1), (unsigned long long)A(2), (unsigned long long)A(3), (unsigned long long)c->x[30]);
+            LOG("[nvn] SetWrapMode %llu %llu %llu (thread %d, lr %llx; callers", (unsigned long long)A(1), (unsigned long long)A(2), (unsigned long long)A(3), (int)gettid(), (unsigned long long)c->x[30]);
             uint64_t fp = c->x[29];  // frame records: [previous fp, return address]
             for (int d = 0; d < 8 && fp && (fp & 7) == 0; d++) {
                 LOG(" %llx", (unsigned long long)((const uint64_t *)(uintptr_t)fp)[1]);
@@ -789,7 +790,14 @@ NVN(nvnSamplerInitialize) {
     NvnSamplerDesc *d = malloc(sizeof *d);
     *d = *(NvnSamplerDesc *)(AP(1) + 8);
     d->backend = NULL;
+    if (getenv("LARECOMP_LOG_SMPREG"))
+        LOG("[nvn] SamplerInitialize object %llx wrap %u %u %u min %u (old host %p, lr %llx, thread %d)\n", (unsigned long long)A(0), d->wrap[0], d->wrap[1],
+            d->wrap[2], d->min_filter, (void *)HOST(NvnSamplerDesc, A(0)), (unsigned long long)c->x[30], (int)gettid());
     SET_HOST(A(0), d);
+    // The guest object (96 bytes in NVN) holds the descriptor too, after our pointer: games compare sampler objects -
+    // BOTW's agl reuses the pool slot of an equal one it already registered; with only stale bytes there, the eft's
+    // mirrored lens-streak sampler matched the clamped default and took its slot (the hard-edged streaks and haze).
+    memcpy(AP(0) + 8, d, offsetof(NvnSamplerDesc, backend));
     RET(1);
 }
 NVN(nvnSamplerFinalize) { free(HOST(NvnSamplerDesc, A(0))); SET_HOST(A(0), 0); }
@@ -929,6 +937,11 @@ NVN(nvnSamplerPoolRegisterSampler) {
     NvnDescPool *d = HOST(NvnDescPool, A(0));
     int id = (int)A(1);
     if (id >= 0 && id < d->count) register_sampler(&((NvnSamplerDesc *)d->entries)[id], HOST(NvnSamplerDesc, A(2)));
+    if (getenv("LARECOMP_LOG_SMPREG") && id >= 0 && id < d->count) {  // every registration (diagnosis)
+        const NvnSamplerDesc *sd = &((NvnSamplerDesc *)d->entries)[id];
+        LOG("[nvn] RegisterSampler %d <- object %llx wrap %u %u %u min %u lod %.1f..%.1f (lr %llx)\n", id, (unsigned long long)A(2), sd->wrap[0], sd->wrap[1],
+            sd->wrap[2], sd->min_filter, sd->lod_min, sd->lod_max, (unsigned long long)c->x[30], (int)gettid());
+    }
     static int watch_id = -2;  // LARECOMP_WATCH_SMPID=<dec id>
     if (watch_id == -2) watch_id = getenv("LARECOMP_WATCH_SMPID") ? atoi(getenv("LARECOMP_WATCH_SMPID")) : -1;
     if (id == watch_id && id < d->count) {
@@ -940,6 +953,8 @@ NVN(nvnSamplerPoolRegisterSamplerBuilder) {
     NvnDescPool *d = HOST(NvnDescPool, A(0));
     int id = (int)A(1);
     if (id >= 0 && id < d->count) register_sampler(&((NvnSamplerDesc *)d->entries)[id], (const NvnSamplerDesc *)(AP(2) + 8));
+    if (getenv("LARECOMP_LOG_SMPREG") && id >= 0 && id < d->count)
+        LOG("[nvn] RegisterSamplerBuilder %d (lr %llx)\n", id, (unsigned long long)c->x[30]);
 }
 
 NvnDescPool *nvn_find_pool(NvnDescPool **reg, uint64_t guest_pool) {
