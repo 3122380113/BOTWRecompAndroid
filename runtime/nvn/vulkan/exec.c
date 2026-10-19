@@ -1277,8 +1277,11 @@ static void begin_pass(void) {
         uint64_t wa = nvn_watch_texaddr();
         for (int i = 0; wa && i < st.rt.ncolor; i++)
             if (st.rt.color[i] && st.rt.color[i]->addr <= wa && wa < st.rt.color[i]->addr + tegra_total_size(&st.rt.color[i]->layout))
-                LOG("[watch] frame %llu: render target %d %ux%u fmt %#x (%p)\n", (unsigned long long)renderer_present_count(), i,
-                    st.rt.color[i]->width, st.rt.color[i]->height, st.rt.color[i]->format, (void *)st.rt.color[i]);
+                LOG("[watch] frame %llu: render target %d %ux%ux%u fmt %#x target %u at %llx (%p) view %d setmask %#x layer %u+%u level %u\n",
+                    (unsigned long long)renderer_present_count(), i, st.rt.color[i]->width, st.rt.color[i]->height,
+                    st.rt.color[i]->depth, st.rt.color[i]->format, st.rt.color[i]->target, (unsigned long long)st.rt.color[i]->addr,
+                    (void *)st.rt.color[i], st.rt.has_cview[i], st.rt.cview[i].setmask, st.rt.cview[i].min_layer,
+                    st.rt.cview[i].num_layers, st.rt.cview[i].base_level);
     }
     ss_forget();  // (whatever ran between the passes may have set its own state)
     in_pass = true;
@@ -2053,9 +2056,20 @@ typedef struct { NvnTexture *key; TexBackend copy; } Snap;
 static Snap snaps[16];
 static int nsnaps;
 
-static NvnTexEntry *shader_texture_entry(int stage, ShaderTexture *st_) {
+// A shader texture's handle: the bound texture's (64-bit handles from cbuf offset 0x20), or for a bindless access the
+// 32-bit handle the shader reads from a constant buffer (translate.c: the cbuf load that defines the handle register)
+static uint64_t shader_texture_handle(int stage, const ShaderTexture *st_) {
+    if (st_->bindless) {
+        const Range *u = st_->bindless_cbuf < 18 ? &st.ubuf[stage][st_->bindless_cbuf] : NULL;
+        if (!u || !u->addr || (uint64_t)st_->bindless_offset + 4 > u->size) return 0;
+        return *(const uint32_t *)(uintptr_t)(u->addr + st_->bindless_offset);
+    }
     int slot = ((int)st_->handle_offset - 0x20) / 8;
-    uint64_t h = (slot >= 0 && slot < 32) ? st.tex[stage][slot] : 0;
+    return (slot >= 0 && slot < 32) ? st.tex[stage][slot] : 0;
+}
+
+static NvnTexEntry *shader_texture_entry(int stage, ShaderTexture *st_) {
+    uint64_t h = shader_texture_handle(stage, st_);
     uint32_t tic = h & 0xFFFFF;
     if (!h || !st.tpool || tic >= (uint32_t)st.tpool->count) return NULL;
     return &((NvnTexEntry *)st.tpool->entries)[tic];
@@ -3410,8 +3424,7 @@ void vk_exec_reset(void) {
 
 static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo *out, float sc[2], uint32_t wh[2]) {
     ShaderTexture *st_ = &si->tex[i];
-    int slot = ((int)st_->handle_offset - 0x20) / 8;  // 64-bit handles from offset 0x20
-    uint64_t h = (slot >= 0 && slot < 32) ? st.tex[stage][slot] : 0;
+    uint64_t h = shader_texture_handle(stage, st_);
     VkImageView view = VK_NULL_HANDLE;
     VkSampler smp = VK_NULL_HANDLE;
     uint32_t tic = h & 0xFFFFF, tsc = (uint32_t)(h >> 20) & 0xFFF;

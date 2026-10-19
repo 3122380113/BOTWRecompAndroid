@@ -972,17 +972,64 @@ static void emit_tld4s(Ctx *c, uint64_t w) {
     write_tex_result(c, slot, call, 0xf, d0, d1, true, f16);
 }
 
+// The constant buffer word a bindless handle register holds: the MOV c[bank][off] / LDC c[bank][RZ+off] that last
+// wrote it before pc (straight-line search). false when something else defines it.
+static bool handle_cbuf(const Ctx *c, uint32_t pc, int reg, uint32_t *bank, uint32_t *off) {
+    const uint64_t *code = (const uint64_t *)c->code;
+    for (size_t i = pc / 8; i-- > 0;) {
+        if (i % 4 == 0) continue;
+        uint64_t x = code[i];
+        if ((int)bits(x, 0, 8) != reg) continue;
+        if ((x & 0xfff8000000000000ull) == 0x4c98000000000000ull) {  // MOV cbuf
+            *bank = (uint32_t)bits(x, 34, 5), *off = (uint32_t)bits(x, 20, 14) * 4;
+            return true;
+        }
+        if ((x & 0xfff8000000000000ull) == 0xef90000000000000ull && (int)bits(x, 8, 8) == RZ) {  // LDC, absolute
+            *bank = (uint32_t)bits(x, 36, 5), *off = (uint32_t)bits(x, 20, 16);
+            return true;
+        }
+        return false;
+    }
+    return false;
+}
+
+// A texture slot for a bindless handle read from c[bank][off] (the runtime reads it there at draw time)
+static int bindless_slot(Ctx *c, uint32_t bank, uint32_t off, int type, bool array) {
+    for (int s = 0; s < c->info->ntex; s++)
+        if (c->info->tex[s].bindless && c->info->tex[s].bindless_cbuf == bank && c->info->tex[s].bindless_offset == off) return s;
+    int s = c->info->ntex++;
+    if (s >= 31) { fail(c, "too many textures"); return 0; }
+    c->tex_weak[s] = false;
+    ShaderTexture *t = &c->info->tex[s];
+    memset(t, 0, sizeof *t);
+    t->type = (uint8_t)type;
+    t->is_array = array;
+    t->bindless = true;
+    t->bindless_cbuf = bank;
+    t->bindless_offset = off;
+    return s;
+}
+
 // TMML (Texture MipMap Level, 0xdf58; TMML.B 0xdf60, the handle in register b): .x the mip level accessed, .y the
 // computed LOD (textureQueryLod), as 24.8 fixed point (yuzu: texture_mipmap_level.cpp).
-// The bindless form (BOTW's light rays through the shrine door: the handle read from a user constant buffer) takes the
-// texture of the next TEX / TEXS sampling the same coordinate register: the LOD queried is the one that sample uses.
+// TMML.B (BOTW: light rays, terrain): the handle comes from a constant buffer (handle_cbuf); else the texture of the
+// next TEX / TEXS sampling the same coordinate register, the LOD queried being the one that sample uses.
 static void emit_tmml(Ctx *c, uint64_t w, bool bindless, uint32_t pc) {
-    int d = (int)bits(w, 0, 8), a = (int)bits(w, 8, 8);
+    int d = (int)bits(w, 0, 8), a = (int)bits(w, 8, 8), b = (int)bits(w, 20, 8);
     uint32_t index = bindless ? 0 : (uint32_t)bits(w, 36, 13);
     int target = (int)bits(w, 29, 2);
     bool array = bits(w, 28, 1);
     uint32_t mask = (uint32_t)bits(w, 31, 4);
-    if (bindless) {
+    int type = target == 0 ? (array ? TEXTYPE_1D_ARRAY : TEXTYPE_1D)
+             : target == 1 ? (array ? TEXTYPE_2D_ARRAY : TEXTYPE_2D)
+             : target == 2 ? TEXTYPE_3D
+                           : (array ? TEXTYPE_CUBE_ARRAY : TEXTYPE_CUBE);
+    int slot = -1;
+    uint32_t hbank, hoff;
+    if (bindless && handle_cbuf(c, pc, b, &hbank, &hoff)) {
+        slot = bindless_slot(c, hbank, hoff, type, array);
+        if (c->fail) return;
+    } else if (bindless) {
         const uint64_t *code = (const uint64_t *)c->code;
         bool found = false;
         for (size_t i = pc / 8 + 1; i < c->ninsts && i < pc / 8 + 64 && !found; i++) {
@@ -993,11 +1040,7 @@ static void emit_tmml(Ctx *c, uint64_t w, bool bindless, uint32_t pc) {
         }
         if (!found) { fail(c, "bindless tmml"); return; }
     }
-    int type = target == 0 ? (array ? TEXTYPE_1D_ARRAY : TEXTYPE_1D)
-             : target == 1 ? (array ? TEXTYPE_2D_ARRAY : TEXTYPE_2D)
-             : target == 2 ? TEXTYPE_3D
-                           : (array ? TEXTYPE_CUBE_ARRAY : TEXTYPE_CUBE);
-    int slot = tex_slot(c, index, -1, false, false);
+    if (slot < 0) slot = tex_slot(c, index, -1, false, false);
     if (c->tex_weak[slot]) {
         c->info->tex[slot].type = (uint8_t)type;
         c->info->tex[slot].is_array = array;

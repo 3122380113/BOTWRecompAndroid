@@ -268,6 +268,30 @@ opcodes trocados (0xdf58 é TMML, 0xdf60 é TMML.B) e consultava uma textura ine
 textura do próximo TEX / TEXS com o mesmo registrador de coordenada. A imagem mudou pouco: a borda horizontal coincide
 com a verga da porta (geometria na frente da luz), o que parece ser o comportamento do jogo.
 
+TMML.B com handle em constant buffer: três fragment shaders (luz da porta, terreno e outros) só consultam o LOD, sem
+amostragem depois, e falhavam na tradução ("bindless tmml"). Todo draw com eles era pulado, uns 700 por segundo
+(o "skipped" do log de fps). Agora o tradutor acha o `MOV c[banco][off]` / `LDC` que carrega o registrador do handle
+(`handle_cbuf`) e cria um slot bindless (`ShaderTexture.bindless_cbuf/offset`). O runtime lê o handle de 32 bits
+nesse cbuf na hora do draw (`shader_texture_handle`, exec.c). Resultado: 0 draws pulados, e o santuário ficou bem menos
+enevoado (paredes nítidas).
+
+Link com as pernas "dentro do chão" (sala da porta, save 2, quadro ~2800, `bis3.sh`): NÃO resolvido. Achados:
+- Com os shaders do santuário pulados (`LARECOMP_SKIP_FSHASH`), aparece o terreno de fora (chão rochoso do Planalto,
+  céu, paredões), com a superfície na altura do joelho do Link. O terreno parece estar alto demais e atravessar o chão
+  do santuário, mas pode ser outra coisa (perna dobrada por IK do pé, ou o Link afundado pela física). Falta uma vista
+  lateral para decidir.
+- Alturas do terreno: array 1024x1024x8 R16_UNORM (`f0x6`, 4 níveis, em `362ab4000` neste save), renderizado pela GPU
+  camada a camada e nível a nível (views certas, `LARECOMP_WATCH_TEXADDR`). Cada camada vem de um tile 256x256 R16 com
+  flag `0x40` ampliado 4x (fs `384947400`: amostra + offset de `cb3[2]`). O vs do terreno (`3dabe0800`) lê o array
+  com `textureLod` (camada de `cb6[7].x`, LOD `cb6[7].y`, morph com `cb7`); a decodificação parece certa.
+- Tentativa descartada: marcar os tiles `0x40` como dinâmicos (re-hash a cada uso, textures.c `upload_texture`) não
+  mudou as pernas e deixou a imagem toda verde (sobrescreve conteúdo escrito pela GPU). Revertida.
+- Próximos passos: comparar as alturas do array com o tile de origem (ler de volta), conferir se o tile tem
+  conteúdo velho no momento do passe de alturas (frames ~1086-1222 e 1744), e tirar uma vista lateral do Link.
+
+Também anotado: o jogo fechou sozinho uma vez ao carregar um save (SIGSEGV no código do jogo, `f_1010c1a04+284`,
+leitura do endereço 0, x0 = 0; backtrace no logcat). Não reproduzido ainda.
+
 Ainda a ver:
 o controle físico com o BOTW; a miniatura do save na lista não aparece; upload de ~500 MB/s
 (`upload` no log de fps).
