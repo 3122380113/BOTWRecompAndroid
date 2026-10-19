@@ -56,7 +56,16 @@ NVN(nvnDeviceGetTimestampInNanoseconds) {  // counter.timestamp: Switch GPU tick
     RET((uint64_t)((unsigned __int128)G(uint64_t, A(1), 8) * 625 / 384));
 }
 NVN(nvnDeviceSetIntermediateShaderCache) { (void)c; }
-NVN(nvnDeviceGetTextureHandle) { RET((A(1) & 0xFFFFF) | ((A(2) & 0xFFF) << 20)); }
+int nvn_watch_texid(void) {  // LARECOMP_WATCH_HANDLE_TEX=<hex texture id>: handles made / bound with it (diagnosis)
+    static int w = -2;
+    if (w == -2) w = getenv("LARECOMP_WATCH_HANDLE_TEX") ? (int)strtol(getenv("LARECOMP_WATCH_HANDLE_TEX"), NULL, 16) : -1;
+    return w;
+}
+NVN(nvnDeviceGetTextureHandle) {
+    if ((int)(A(1) & 0xFFFFF) == nvn_watch_texid())
+        LOG("[watch] GetTextureHandle tex %#llx sampler %llu (lr %llx)\n", (unsigned long long)A(1), (unsigned long long)A(2), (unsigned long long)c->x[30]);
+    RET((A(1) & 0xFFFFF) | ((A(2) & 0xFFF) << 20));
+}
 NVN(nvnDeviceGetTexelFetchHandle) { RET(A(1) & 0xFFFFF); }
 NVN(nvnDeviceGetImageHandle) { RET(A(1) & 0xFFFFF); }
 NVN(nvnDeviceGetSeparateTextureHandle) { RET(A(1) & 0xFFFFF); }
@@ -729,7 +738,16 @@ NVN(nvnSamplerBuilderSetWrapMode) {
         uint64_t k = (A(1) & 0xF) | (A(2) & 0xF) << 4 | (A(3) & 0xF) << 8 | (uint64_t)c->x[30] << 12;
         int i = 0;
         while (i < ns && seen[i] != k) i++;
-        if (i == ns && ns < 256) { seen[ns++] = k; LOG("[nvn] SetWrapMode %llu %llu %llu (lr %llx)\n", (unsigned long long)A(1), (unsigned long long)A(2), (unsigned long long)A(3), (unsigned long long)c->x[30]); }
+        if (i == ns && ns < 256) {
+            seen[ns++] = k;
+            LOG("[nvn] SetWrapMode %llu %llu %llu (lr %llx; callers", (unsigned long long)A(1), (unsigned long long)A(2), (unsigned long long)A(3), (unsigned long long)c->x[30]);
+            uint64_t fp = c->x[29];  // frame records: [previous fp, return address]
+            for (int d = 0; d < 8 && fp && (fp & 7) == 0; d++) {
+                LOG(" %llx", (unsigned long long)((const uint64_t *)(uintptr_t)fp)[1]);
+                fp = ((const uint64_t *)(uintptr_t)fp)[0];
+            }
+            LOG(")\n");
+        }
     }
 }
 NVN(nvnSamplerBuilderSetLodClamp) { SD->lod_min = AF(0); SD->lod_max = AF(1); }
@@ -804,6 +822,8 @@ static NvnDescPool *desc_pool_init(uint64_t guest, uint64_t pool, uint64_t off, 
     g_all_desc_pools = d;
     for (int i = 0; i < 64; i++) if (!reg[i]) { reg[i] = d; break; }
     pthread_mutex_unlock(&g_live_lock);
+    LOG("[nvn] %s pool %p: memory %llx, %d entries of %zu bytes (lr %llx)\n", reg == g_sampler_pools ? "sampler" : "texture", (void *)d,
+        (unsigned long long)d->addr, count, entry, 0ull);
     SET_HOST(guest, d);
     G(uint64_t, guest, 8) = pool;
     G(uint64_t, guest, 16) = off;

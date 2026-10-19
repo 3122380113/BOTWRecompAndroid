@@ -294,6 +294,10 @@ NVN(nvnCommandBufferBindStorageBuffer) {
 // (cmd, stage, first, count, const handle*)
 NVN(nvnCommandBufferBindTextures) { record_copy(c, CMD_BIND_TEXTURES, 4, (uint32_t)A(3) * 8); }
 NVN(nvnCommandBufferBindTexture) {
+    {   extern int nvn_watch_texid(void);
+        if ((int)(A(3) & 0xFFFFF) == nvn_watch_texid())
+            LOG("[watch] BindTexture stage %llu slot %llu handle %llx (lr %llx)\n", (unsigned long long)A(1), (unsigned long long)A(2), (unsigned long long)A(3), (unsigned long long)c->x[30]);
+    }
     Snap s = snap(c);
     CmdRec *r = record(c, CMD_BIND_TEXTURES, 8, &s);
     r->x[0] = s.x[1]; r->x[1] = s.x[2]; r->x[2] = 1;
