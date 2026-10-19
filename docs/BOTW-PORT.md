@@ -390,6 +390,16 @@ Rodada 3, com referências do Switch (vídeo, porta abrindo e terminal Sheikah):
   `pick(1.5 x altura em GOBs)`, arredondando para baixo até 16, enquanto o nosso arredondava a contagem para cima.
   Isso muda poucas texturas não empacotadas (`LARECOMP_LOG_BHDIFF=1` lista; `LARECOMP_TEGRA_OLD_BH=1` volta a regra
   antiga). O céu agora fica azul-claro com névoa branca, e a cena perdeu o tom sépia.
+- Write-back de alvos pequenos (2026-10-19): o jogo lê na CPU (f_10120fdc4) os limites de profundidade que reduz
+  na GPU até 3x3 RGBA16F (do depth 1600x900 -> 800x450 f0xa -> 192 -> ... -> 3x3, provavelmente para ajustar as
+  cascatas de sombra). A memória nunca recebia esses texels. Agora alvos de cor minúsculos (1 nível, sem escala,
+  até 4 KiB) são copiados no fim do pass e escritos na memória do guest quando a GPU termina
+  (`LARECOMP_NO_WRITEBACK=1` desliga, `LARECOMP_LOG_WRITEBACK=1` lista). `LARECOMP_WATCH_READ_ADDR=<hex>:<len>[+...]`
+  vigia leituras da CPU em bytes do guest (armado depois de `LARECOMP_WATCH_READ_DELAY`).
+- Véu branco no planalto (aberto): comparado com o Switch (vídeo 4:41: céu azul, montanhas nítidas), a cena tem um
+  véu branco-esverdeado. Ele já está no HDR antes do tonemap (pass 129 do debug frame de frente para o sol); o bloom
+  (320x180) é fraco. A exposição não vem dessa redução (que é de profundidade). Suspeitos: neblina / perspectiva
+  aérea (outras LUTs 3D: 8x8x8 f0x3f, 7x1x8 f0x29), ou parâmetros de ambiente.
 - Brilho Sheikah em blocos (ainda aberto): a textura do bloom (320x180, 5 níveis) é registrada uma vez, sem view
   (`LARECOMP_WATCH_TEXID=7fffffff` registra a do bloom); todas as passadas de redução / blur leem com um sampler de LOD
   0..0 (nível 0) e escrevem no nível k (view do render target); a composição final lê com LOD 1..1 (nível 1). O jogo

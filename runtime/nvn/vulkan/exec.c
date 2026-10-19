@@ -90,6 +90,7 @@ static void wait_account(uint64_t ns) {
 }
 
 static void cq_resolve_done(uint64_t done);
+static void wb_apply(uint64_t done);
 
 #ifdef __ANDROID__
 static bool gcopy_mode;   // (no heap import: global memory copied by the CPU, gcopy_prepare)
@@ -185,6 +186,10 @@ static uint64_t stat_pace_over;
 static int pace_on = -1;
 
 void vk_pace_frame(void) {
+    {   // (write-backs of passes the GPU has finished since: the game may read them this frame)
+        uint64_t v = 0;
+        if (vkGetSemaphoreCounterValue(g_vk.dev, g_vk.timeline, &v) == VK_SUCCESS) wb_apply(v);
+    }
     if (pace_on < 0) { const char *e = getenv("LARECOMP_PACE"); pace_on = !e || atoi(e) != 0; }
     static uint64_t last, last_wait;
     static uint8_t over[60];
@@ -402,6 +407,7 @@ static void cq_resolve(int i) {  // (cq_lock held) submission slot i is done: it
 }
 
 static void cq_resolve_done(uint64_t done) {  // every slot whose submission is done
+    wb_apply(done);
     pthread_mutex_lock(&cq_lock);
 #ifdef __ANDROID__
     for (;;) {  // oldest first
@@ -1152,6 +1158,93 @@ static inline bool ss_need(uint32_t bit, bool same) {
     return true;
 }
 
+// ---- write-backs: GPU results the game's CPU reads from the texture's own memory
+// On the Switch a render target's texels land in its memory, and BOTW reads some back on the CPU: the depth bounds
+// it reduces on the GPU down to 3x3 (RGBA16F, view-space depth per screen region, read by f_10120fdc4 - shadow
+// cascade fitting, most likely). We render into Vulkan images only, so the CPU read stale memory. Tiny color
+// targets (one level, unscaled, up to WB_MAX bytes) are copied out at the end of their pass and swizzled into guest
+// memory once the GPU is done (cq_resolve_done / each present). LARECOMP_NO_WRITEBACK=1: off;
+// LARECOMP_LOG_WRITEBACK=1 (or =<width>): the targets.
+#define WB_MAX 4096
+#define WB_SLOTS 32
+typedef struct { uint64_t seq, addr; uint32_t wb, hb, bpb, bh; bool busy; } WbEntry;
+static WbEntry wb_ent[WB_SLOTS];
+static int wb_next;
+static VkBuffer wb_buf;
+static VmaAllocation wb_mem;
+static uint8_t *wb_ptr;
+static pthread_mutex_t wb_lock = PTHREAD_MUTEX_INITIALIZER;
+static NvnTexture *wb_pass[8];
+static int wb_npass;
+static uint64_t stat_wb, stat_wb_dropped;
+
+static bool wb_on(void) {
+    static int on = -1;
+    if (on < 0) on = getenv("LARECOMP_NO_WRITEBACK") == NULL;
+    return on;
+}
+
+static bool wb_eligible(NvnTexture *t, TexBackend *b, uint32_t lv) {
+    if (!wb_on() || !t || !b || lv || t->depth > 1 || t->levels > 1 || t->layout.layers > 1 || b->samples > 1) return false;
+    if (!(b->aspect & VK_IMAGE_ASPECT_COLOR_BIT) || b->width != t->width || b->height != t->height) return false;
+    const FormatInfo *fi = t->layout.fmt;
+    if (!fi || !fi->bpb || fi->bw != 1 || fi->bh != 1 || fi->bpb == 3) return false;
+    return t->addr >= HEAP_BASE && tegra_total_size(&t->layout) <= WB_MAX;
+}
+
+static void wb_queue(NvnTexture *t) {
+    TexBackend *b = t->backend;
+    pthread_mutex_lock(&wb_lock);
+    if (!wb_buf) {
+        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = WB_MAX * WB_SLOTS,
+                                 .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+                                      .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT};
+        VmaAllocationInfo info;
+        VK_CHECK(vmaCreateBuffer(g_vk.vma, &bi, &ai, &wb_buf, &wb_mem, &info));
+        wb_ptr = info.pMappedData;
+    }
+    WbEntry *e = &wb_ent[wb_next];
+    if (e->busy) { stat_wb_dropped++; pthread_mutex_unlock(&wb_lock); return; }  // (the GPU is that far behind)
+    int slot = wb_next;
+    wb_next = (wb_next + 1) % WB_SLOTS;
+    const FormatInfo *fi = t->layout.fmt;
+    LevelLayout l = tegra_level(&t->layout, 0);
+    *e = (WbEntry){.seq = submit_seq + 1, .addr = t->addr, .wb = l.wb, .hb = l.hb, .bpb = fi->bpb,
+                   .bh = l.block_height_log2, .busy = true};
+    pthread_mutex_unlock(&wb_lock);
+    VkCommandBuffer cb = vk_cmd();
+    vk_full_barrier(cb);
+    VkBufferImageCopy c = {.bufferOffset = (VkDeviceSize)slot * WB_MAX, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                           .imageExtent = {t->width, t->height, 1}};
+    vkCmdCopyImageToBuffer(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, wb_buf, 1, &c);
+    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                           .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT, .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+                           .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+    vkCmdPipelineBarrier2(cb, &di);
+    stat_wb++;
+    static int nlog;  // LARECOMP_LOG_WRITEBACK=1: the targets written back
+    static int lw = -2;  // (=<w> > 1: only targets that wide)
+    if (lw == -2) lw = getenv("LARECOMP_LOG_WRITEBACK") ? atoi(getenv("LARECOMP_LOG_WRITEBACK")) : -1;
+    if (lw >= 0 && (lw <= 1 || (int)t->width == lw) && nlog++ < 40)
+        LOG("[vk] write-back %ux%u f%#x at %llx (submission %llu)\n", t->width, t->height, t->format,
+            (unsigned long long)t->addr, (unsigned long long)e->seq);
+}
+
+static void wb_apply(uint64_t done) {
+    if (!wb_ptr) return;
+    pthread_mutex_lock(&wb_lock);
+    for (int i = 0; i < WB_SLOTS; i++) {
+        WbEntry *e = &wb_ent[i];
+        if (!e->busy || e->seq > done) continue;
+        vmaInvalidateAllocation(g_vk.vma, wb_mem, (VkDeviceSize)i * WB_MAX, WB_MAX);
+        tegra_swizzle(wb_ptr + (size_t)i * WB_MAX, (uint8_t *)(uintptr_t)e->addr, e->wb, e->hb, 1, e->bpb, e->bh, 0);
+        e->busy = false;
+    }
+    pthread_mutex_unlock(&wb_lock);
+}
+
 static void vk_end_pass_at(int line);
 static TexBackend *pass_dump_b;  // (debug frame) the color target the open pass draws into
 static uint32_t pass_dump_layer = ~0u;  // (a depth-only pass: its depth target's layer, dumped as red)
@@ -1162,6 +1255,8 @@ static void vk_end_pass_at(int line) {
     if (prof && line < 4096) prof_end_line[line]++;
     vkCmdEndRendering(vk_cmd());
     in_pass = false;
+    for (int i = 0; i < wb_npass; i++) wb_queue(wb_pass[i]);
+    wb_npass = 0;
     // (the pass's own first color target: by now st.rt may already name the next pass's)
     static int nodump = -1;  // LARECOMP_DEBUG_NO_PASSES=1: the draw log alone (each dump waits for the GPU: timing changes)
     if (nodump < 0) nodump = getenv("LARECOMP_DEBUG_NO_PASSES") != NULL;
@@ -1224,6 +1319,7 @@ static void begin_pass(void) {
     uint32_t w = 0, minw = UINT32_MAX, minh = UINT32_MAX;  // w: first attachment seen
     pass_ncolor = (uint32_t)st.rt.ncolor;
     pass_samples = 1;
+    wb_npass = 0;
     for (int i = 0; i < st.rt.ncolor; i++) {
         NvnTexture *t = st.rt.color[i];
         ca[i] = (VkRenderingAttachmentInfo){.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
@@ -1246,6 +1342,8 @@ static void begin_pass(void) {
                       ? vk_format(st.rt.cview[i].format) : b->format;
         uint32_t lv = st.rt.has_cview[i] && (st.rt.cview[i].setmask & 1) ? st.rt.cview[i].base_level : 0;
         uint32_t ew = level_extent(b->width, lv), eh = level_extent(b->height, lv);
+        if (wb_eligible(t, b, lv) && !(st.rt.has_cview[i] && ((st.rt.cview[i].setmask & ~3u) || st.rt.cview[i].min_layer)))
+            wb_pass[wb_npass++] = t;  // (a view of its level 0 / layer 0 only)
         if (!w) { renderer_texture_scale(t, &pass_sx, &pass_sy); w = ew; }
         if (ew < minw) minw = ew;
         if (eh < minh) minh = eh;

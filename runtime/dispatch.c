@@ -327,7 +327,22 @@ static void *watch_thread(void *a) {
     for (;;) { plat_protect(watch_page, PLAT_PAGE, PLAT_PROT_NONE); usleep(100); }
     return NULL;
 }
+void rt_range_watch(uint64_t lo, uint64_t hi);
 void watch_arm(void) {
+    {   // LARECOMP_WATCH_READ_ADDR=<hex>:<len>[+<hex>:<len>...]: read watch over those guest bytes (rt_range_watch)
+        static int done;
+        const char *e = getenv("LARECOMP_WATCH_READ_ADDR");
+        if (e && !done) {
+            done = 1;
+            while (*e) {
+                char *q;
+                uint64_t a = strtoull(e, &q, 16), n = *q == ':' ? strtoull(q + 1, &q, 0) : 8;
+                rt_range_watch(a, a + n);
+                e = *q == '+' ? q + 1 : q;
+                if (*q != '+') break;
+            }
+        }
+    }
     static int env_done;
     if (!env_done) {  // LARECOMP_WATCH=<offset in main, hex>[,<length>]: watch those bytes of main's image
         env_done = 1;
@@ -350,7 +365,7 @@ void watch_arm(void) {
 // nvn/objects.c): its pages are closed, each access is attributed once per function, the faulting page reopens and a
 // thread closes the range again every 50 ms.
 #define RW_MAX 16
-static uint64_t rw_lo[RW_MAX], rw_hi[RW_MAX];
+static uint64_t rw_lo[RW_MAX], rw_hi[RW_MAX], rw_exact_lo[RW_MAX], rw_exact_hi[RW_MAX];
 static int rw_n;
 static volatile int rw_armed;
 static void *range_watch_thread(void *a) {
@@ -369,11 +384,12 @@ static void *range_watch_thread(void *a) {
     return NULL;
 }
 void rt_range_watch(uint64_t lo, uint64_t hi) {
+    uint64_t elo = lo, ehi = hi;
     lo &= ~(uint64_t)(PLAT_PAGE - 1), hi = (hi + PLAT_PAGE - 1) & ~(uint64_t)(PLAT_PAGE - 1);
     for (int i = 0; i < rw_n; i++)
         if (rw_lo[i] == lo) return;
     if (rw_n == RW_MAX || rw_armed) return;  // (a range added after arming: its pages may be the loader's right now)
-    rw_lo[rw_n] = lo, rw_hi[rw_n] = hi;
+    rw_lo[rw_n] = lo, rw_hi[rw_n] = hi, rw_exact_lo[rw_n] = elo, rw_exact_hi[rw_n] = ehi;
     LOG("[rwatch] range %d: %llx..%llx\n", rw_n, (unsigned long long)lo, (unsigned long long)hi);
     if (rw_n++ == 0) {
         pthread_t t;
@@ -386,6 +402,10 @@ static bool range_watch_fault(uint64_t fa, uint64_t pc) {
     for (int i = 0; i < rw_n; i++)
         if (fa >= rw_lo[i] && fa < rw_hi[i]) { r = i; break; }
     if (r < 0) return false;
+    if (fa < rw_exact_lo[r] || fa >= rw_exact_hi[r]) {  // (a neighbour on the same page: just reopen it)
+        plat_protect(fa & ~(uint64_t)(PLAT_PAGE - 1), PLAT_PAGE, PLAT_PROT_RW);
+        return true;
+    }
     static char seen[128][48];
     static int nseen, nhits;
     const char *nm = host_sym(pc, NULL);
@@ -403,7 +423,7 @@ static bool range_watch_fault(uint64_t fa, uint64_t pc) {
         Dl_info di;
         if (dladdr((void *)(uintptr_t)pc, &di)) lib = pc - (uint64_t)(uintptr_t)di.dli_fbase;
 #endif
-        LOG("[rwatch] range %d +%#llx %s by %s (host pc %llx, library +%llx) thread t%llu hit %d\n", r, (unsigned long long)(fa - rw_lo[r]),
+        LOG("[rwatch] range %d +%#llx %s by %s (host pc %llx, library +%llx) thread t%llu hit %d\n", r, (unsigned long long)(fa - rw_exact_lo[r]),
             g_fault_wnr == 1 ? "write" : g_fault_wnr == 0 ? "read" : "access", nm, (unsigned long long)pc, (unsigned long long)lib, (unsigned long long)(kt ? kt->id : 0), nhits);
     }
     plat_protect(fa & ~(uint64_t)(PLAT_PAGE - 1), PLAT_PAGE, PLAT_PROT_RW);
