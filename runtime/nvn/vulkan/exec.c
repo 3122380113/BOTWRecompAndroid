@@ -3926,7 +3926,7 @@ static void draw_(CmdRec *r, bool indexed) {
             nskip = 0;
             for (const char *p = getenv("LARECOMP_SKIP_FSHASH"); p && *p && nskip < 128;) {
                 skip[nskip++] = strtoull(p, (char **)&p, 16);
-                while (*p == ',') p++;
+                while (*p == ',' || *p == '+') p++;
             }
         }
         for (int i = 0; i < nskip; i++) if (last_hash == skip[i]) { stat_skipped++; return; }
@@ -4085,6 +4085,21 @@ static void draw_(CmdRec *r, bool indexed) {
     // ---- rasterizer
     uint8_t cull = st.poly[0];
     if (vkey.flip_x) cull = 0;  // (mirror mode's composite: one full-screen quad, either winding)
+    {   // LARECOMP_VK_NO_CULL=1: no face culling at all; =<fs hash>+<fs hash>...: not for those (diagnosis: missing faces)
+        static int nn = -1;
+        static uint64_t hs[64];
+        if (nn < 0) {
+            nn = 0;
+            const char *e = getenv("LARECOMP_VK_NO_CULL");
+            if (e && !strcmp(e, "1")) nn = 1000;
+            else for (const char *p = e; p && *p && nn < 64;) {
+                hs[nn++] = strtoull(p, (char **)&p, 16);
+                while (*p == '+') p++;
+            }
+        }
+        if (nn == 1000) cull = 0;
+        else for (int i = 0; i < nn; i++) if (g_cur_fs_hash == hs[i]) cull = 0;
+    }
     VkCullModeFlags cm = cull == 1 ? VK_CULL_MODE_FRONT_BIT : cull == 2 ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
     if (ss_need(SS_CULL, ss.cull == cm)) { ss.cull = cm; vkCmdSetCullMode(cb, cm); }
     bool ccw = st.poly[1] == 1;

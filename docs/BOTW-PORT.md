@@ -410,6 +410,14 @@ Rodada 3, com referências do Switch (vídeo, porta abrindo e terminal Sheikah):
   - Outras ferramentas: `LARECOMP_DEBUG_RAW_PASSES=1` (texels float dos passes), `LARECOMP_DEBUG_DATA` (bancos
     certos do fragment shader), `LARECOMP_LOG_UBO_UPDATE=<endereço>`, `LARECOMP_WRITEBACK_MAX=<bytes>`.
   - Ainda visível: buracos brancos nas serras distantes (o terreno distante com falhas já anotado).
+- Buracos nas serras distantes (aberto, 2026-10-19). Não são do terreno: sem os 7 shaders do terreno, as
+  silhuetas e os buracos ficam iguais. Com `LARECOMP_VK_NO_CULL=1` (sem culling) a serra fica contínua, como no
+  Switch. Então algum draw chega com a orientação errada ou deveria ser dupla face. Na G-buffer todos usam
+  triângulos em lista, CCW, cull back. `LARECOMP_VK_NO_CULL=<fs hash>+<fs hash>` desliga o culling só nesses.
+  Bissecção em `scratchpad/bis_cull.sh`: as duas metades da lista de shaders da G-buffer e os 7 do terreno
+  sozinhos não fecham os buracos, então o draw culpado está em outro pass ou fora dessa lista. Próximo passo:
+  listar os draws de todos os passes do debug frame com culling ligado e bissectar por eles.
+  `LARECOMP_SKIP_FSHASH` aceita `+` como separador.
 - Brilho Sheikah em blocos (ainda aberto): a textura do bloom (320x180, 5 níveis) é registrada uma vez, sem view
   (`LARECOMP_WATCH_TEXID=7fffffff` registra a do bloom); todas as passadas de redução / blur leem com um sampler de LOD
   0..0 (nível 0) e escrevem no nível k (view do render target); a composição final lê com LOD 1..1 (nível 1). O jogo
