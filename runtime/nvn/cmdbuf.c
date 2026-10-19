@@ -313,8 +313,19 @@ NVN(nvnCommandBufferBindSeparateTexture) {
     r->x[0] = s.x[1]; r->x[1] = s.x[2]; r->x[2] = 1;
     memcpy(r->extra, &s.x[3], 8);
 }
-NVN(nvnCommandBufferBindSeparateSamplers) { (void)c; }
-NVN(nvnCommandBufferBindSeparateSampler) { (void)c; }
+// (not translated yet: logged, the first calls and a count - does the game override a slot's sampler this way?)
+NVN(nvnCommandBufferBindSeparateSamplers) {
+    static unsigned n;
+    if (n++ < 20 || (n & (n - 1)) == 0)
+        LOG("[nvn] BindSeparateSamplers #%u stage %llu first %llu count %llu: %llx...\n", n, (unsigned long long)A(1), (unsigned long long)A(2),
+            (unsigned long long)A(3), A(3) ? (unsigned long long)*(const uint64_t *)AP(4) : 0ull);
+}
+NVN(nvnCommandBufferBindSeparateSampler) {
+    static unsigned n;
+    if (n++ < 20 || (n & (n - 1)) == 0)
+        LOG("[nvn] BindSeparateSampler #%u stage %llu slot %llu handle %llx\n", n, (unsigned long long)A(1), (unsigned long long)A(2),
+            (unsigned long long)A(3));
+}
 NVN(nvnCommandBufferBindTransformFeedbackBuffers) { (void)c; }
 NVN(nvnCommandBufferBindTransformFeedbackBuffer) { (void)c; }
 NVN(nvnCommandBufferBindCoverageModulationTable) { (void)c; }
