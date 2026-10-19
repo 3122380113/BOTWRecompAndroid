@@ -236,6 +236,22 @@ static void icmp_expr(char *out, int op, const char *a, const char *b, bool is_s
     else sprintf(out, "(%s %s %s)", a, ops[op], b);
 }
 
+// A condition-code test (CSETP, BRA CC.xx): the zero / sign flags of the last .CC result (ccz, ccs). Float and
+// integer forms map alike (the U variants differ only for NaN, which a flag-setting FSET never yields). NULL: unknown.
+static const char *cc_test(int test) {
+    switch (test) {
+    case 0: return "false";
+    case 15: return "true";
+    case 2: case 10: return "ccz";
+    case 5: case 13: return "!ccz";
+    case 1: case 9: return "ccs";
+    case 6: case 14: return "!ccs";
+    case 4: case 12: return "(!ccz && !ccs)";
+    case 3: case 11: return "(ccz || ccs)";
+    default: return NULL;
+    }
+}
+
 // ------------------------------------------------------------------ attributes
 // Maxwell attribute space: 0x70 position, 0x80 + 16*i generic attribute i, 0x2F8 instance id,
 // 0x2FC vertex id, 0x3FC front facing, 0x6C point size.
@@ -1114,7 +1130,12 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
     } else if (OPM(0xe240000000000000ull, 0xfff0000000000020ull)) {  // BRA
         uint32_t target = norm_target((int64_t)pc + 8 + sbits(w, 20, 24));
         c->uses_branches = true;
-        sp(&c->body, "    pc = %uu; continue;\n", target);
+        int test = (int)bits(w, 0, 5);  // (CC.T: always; anything else tests the flags of the last .CC result)
+        if (test != 15) {
+            const char *cond = cc_test(test);
+            if (!cond) fail(c, "bra cc test %d", test);
+            else { c->uses_cc = true; sp(&c->body, "    if (%s) { pc = %uu; continue; }\n", cond, target); }
+        } else sp(&c->body, "    pc = %uu; continue;\n", target);
     } else if (c->static_stacks && (OPM(0xe290000000000000ull, 0xfff0000000000020ull) || OPM(0xe2a0000000000000ull, 0xfff0000000000020ull) ||
                                     OPM(0xe2b0000000000000ull, 0xfff0000000000020ull))) {  // SSY / PBK / PCNT, resolved
         c->uses_branches = true;
@@ -1300,6 +1321,10 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         fcmp_expr(cmp, (int)bits(w, 48, 4), x, y);
         sprintf(t, "((%s) %s %s)", cmp, bool_op((int)bits(w, 45, 2)), P((int)bits(w, 39, 3), bits(w, 42, 1)));
         sprintf(u, bits(w, 52, 1) ? "(%s ? 0x3f800000u : 0u)" : "(%s ? 0xFFFFFFFFu : 0u)", t);
+        if (bits(w, 47, 1)) {  // .CC (often into RZ, for a following BRA CC.xx: the sky's ground test)
+            c->uses_cc = true;
+            sp(&c->body, "    { uint ccv = %s; ccz = ccv == 0u; ccs = int(ccv) < 0; }\n", u);
+        }
         set_reg(c, d, u);
     } else if (OPM(0x5ba0000000000000ull, 0xfff0000000000000ull) || OPM(0x4ba0000000000000ull, 0xfff0000000000000ull) ||
                OPM(0x36a0000000000000ull, 0xfef0000000000000ull) || OPM(0x53a0000000000000ull, 0xfff0000000000000ull)) {  // FCMP
@@ -1449,6 +1474,10 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         icmp_expr(cmp, (int)bits(w, 49, 3), R(a), B(false), bits(w, 48, 1));
         sprintf(t, "((%s) %s %s)", cmp, bool_op((int)bits(w, 45, 2)), P((int)bits(w, 39, 3), bits(w, 42, 1)));
         sprintf(u, bits(w, 44, 1) ? "(%s ? 0x3f800000u : 0u)" : "(%s ? 0xFFFFFFFFu : 0u)", t);
+        if (bits(w, 47, 1)) {  // .CC
+            c->uses_cc = true;
+            sp(&c->body, "    { uint ccv = %s; ccz = ccv == 0u; ccs = int(ccv) < 0; }\n", u);
+        }
         set_reg(c, d, u);
     } else if (OPM(0x5c20000000000000ull, 0xfff8000000000000ull) || OPM(0x4c20000000000000ull, 0xfff8000000000000ull) ||
                OPM(0x3820000000000000ull, 0xfef8000000000000ull)) {  // IMNMX
@@ -1882,18 +1911,8 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
            (uint32_t)sbits(w, 20, 24));
     } else if (OPM(0x50a0000000000000ull, 0xfff8000000000000ull)) {  // CSETP (zero/sign flags only)
         int test = (int)bits(w, 8, 5);
-        const char *cond;
-        switch (test) {
-        case 0: cond = "false"; break;
-        case 15: cond = "true"; break;
-        case 2: case 10: cond = "ccz"; break;
-        case 5: case 13: cond = "!ccz"; break;
-        case 1: case 9: cond = "ccs"; break;
-        case 6: case 14: cond = "!ccs"; break;
-        case 4: case 12: cond = "(!ccz && !ccs)"; break;
-        case 3: case 11: cond = "(ccz || ccs)"; break;
-        default: cond = "false"; fail(c, "csetp test %d", test);
-        }
+        const char *cond = cc_test(test);
+        if (!cond) { cond = "false"; fail(c, "csetp test %d", test); }
         c->uses_cc = true;
         int p = (int)bits(w, 3, 3), q = (int)bits(w, 0, 3), bo = (int)bits(w, 45, 2);
         const char *pc_ = P((int)bits(w, 39, 3), bits(w, 42, 1));
@@ -2140,7 +2159,7 @@ static bool resolve_stacks(const Ctx *c, const uint64_t *code, size_t end, int32
                     (w & 0xfff0000000000020ull) == 0xe2b0000000000000ull;
         if (push || (w & 0xfff0000000000000ull) == 0xe270000000000000ull) pr = PT, prn = false;  // (as emit_insn)
         if (pr == PT && prn) { FLOW_GO(FLOW_NEXT(i), S); continue; }  // (never executes)
-        bool cond = !(pr == PT && !prn);
+        bool cond = !(pr == PT && !prn) || ((w & 0xfff0000000000020ull) == 0xe240000000000000ull && bits(w, 0, 5) != 15);
         int64_t t = norm_target((int64_t)pc + 8 + sbits(w, 20, 24));
         if ((w & 0xfff0000000000020ull) == 0xe240000000000000ull) {  // BRA
             if (t >= 0) FLOW_GO((size_t)t / 8, S);
@@ -2183,7 +2202,7 @@ static bool resolve_stacks(const Ctx *c, const uint64_t *code, size_t end, int32
 // branch over code is an if (with an else when the skipped part ends by jumping over what follows), a backward
 // branch closes a loop, and jumps to a loop's header or exit are continue / break. Anything else (a jump out of
 // nested ifs, out of two loops, into the middle of a region) fails, and the shader keeps the state machine.
-typedef struct { uint32_t s, e; int term, tgt, brx; bool code; char cond[8]; } SBlk;  // term: 0 none, 1 jump, 2 exit, 3 BRX
+typedef struct { uint32_t s, e; int term, tgt, brx; bool code; char cond[40]; } SBlk;  // term: 0 none, 1 jump, 2 exit, 3 BRX
 typedef struct {
     const Ctx *c;
     const char *src;
@@ -2421,6 +2440,12 @@ static bool structure(Ctx *c, const uint64_t *code, size_t end, const uint8_t *l
         prev_flow = true;
         if (pr == PT) strcpy(b->cond, "true");
         else snprintf(b->cond, sizeof b->cond, "%sp%d", prn ? "!" : "", pr);
+        if (bra && bits(w, 0, 5) != 15) {  // BRA CC.xx: the flags' test too (emit_insn checked it is a known one)
+            const char *cc = cc_test((int)bits(w, 0, 5));
+            char t2[40];
+            snprintf(t2, sizeof t2, "(%s && %s)", b->cond, cc ? cc : "false");
+            strcpy(b->cond, t2);
+        }
         int64_t t = bra ? (int64_t)norm_target((int64_t)i * 8 + 8 + sbits(w, 20, 24)) : ex ? -1 : c->flow_to[i];
         b->term = t < 0 || (size_t)(t / 8) >= end ? 2 : 1;  // (past the end, or a SYNC never reached: the default's exit)
         b->tgt = b->term == 1 ? (int)(t / 8) : -1;  // (instruction index for now)
