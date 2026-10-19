@@ -62,8 +62,21 @@ int nvn_watch_texid(void) {  // LARECOMP_WATCH_HANDLE_TEX=<hex texture id>: hand
     return w;
 }
 NVN(nvnDeviceGetTextureHandle) {
-    if ((int)(A(1) & 0xFFFFF) == nvn_watch_texid())
+    if ((int)(A(1) & 0xFFFFF) == nvn_watch_texid()) {
         LOG("[watch] GetTextureHandle tex %#llx sampler %llu (lr %llx)\n", (unsigned long long)A(1), (unsigned long long)A(2), (unsigned long long)c->x[30]);
+        // (BOTW's eft emitter draw f_70009dc924 -> f_700119992c: x23 the emitter, its +0x1e0 the texture binding with the
+        // particle file's bytes at +0x40/42/44 and the sampler object at +0x60; x25 that sampler object)
+        static int told;
+        if (told++ < 4 && c->x[23] > 0x100000000ull && c->x[25] > 0x100000000ull) {
+            const uint8_t *res = (const uint8_t *)(uintptr_t)*(const uint64_t *)(uintptr_t)(c->x[23] + 0x1e0);
+            const uint8_t *so = (const uint8_t *)(uintptr_t)c->x[25];
+            LOG("[watch]   binding %p: +40 %u +42 %u +44 %u +48 %llx +60 %llx | sampler object %p:", (void *)res, *(const uint16_t *)(res + 0x40),
+                *(const uint16_t *)(res + 0x42), *(const uint16_t *)(res + 0x44), (unsigned long long)*(const uint64_t *)(res + 0x48),
+                (unsigned long long)*(const uint64_t *)(res + 0x60), (void *)so);
+            for (int i = 0; i < 0x40; i += 4) LOG(" %08x", *(const uint32_t *)(so + i));
+            LOG("\n");
+        }
+    }
     RET((A(1) & 0xFFFFF) | ((A(2) & 0xFFF) << 20));
 }
 NVN(nvnDeviceGetTexelFetchHandle) { RET(A(1) & 0xFFFFF); }

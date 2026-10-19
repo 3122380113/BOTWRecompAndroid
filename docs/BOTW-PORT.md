@@ -340,6 +340,18 @@ Rodada 3, com referências do Switch (vídeo, porta abrindo e terminal Sheikah):
   coisas: um dos dois lados está errado no nosso (o uv do traço, 0..2 por `cb9[48] = (2, 2, 1, 1)` sobre um
   quadrante da imagem, ou o sampler que o traço realmente usa no Switch). `BindSeparateSampler(s)` nunca é chamado
   (log em cmdbuf.c), então não é um sampler separado sobrescrevendo o slot.
+- Tabela de wrap do NVN tirada do próprio jogo (main + 0x1c21ccc, GX2 -> NVN: [1, 6, 7, 5, 3, 0, 3, 4]): 1 repeat,
+  6 mirrored repeat, 7 clamp to edge, 5 mirror clamp to edge, 3 clamp to border, 0 mirror clamp, 4 mirror clamp to
+  border. O runtime tinha 3 e 5 trocados (corrigido, bd75f20; a barra da tela de carregamento confirma).
+- Traço / névoa, a cadeia inteira (`LARECOMP_WATCH_HANDLE_TEX=1bc`, `LARECOMP_LOG_WRAP=1`): o desenho do emissor
+  (eft, f_70009dc924) pega o sampler do binding do emissor (+0x60) e chama `GetTextureHandle(0x1bc, 257)`. O arquivo
+  de partículas pede wrap 0,0 (no enum do eft, 0 = mirror: a tabela do eft converte 0 -> GX2 1 -> NVN 6), e o eft cria
+  uma tabela de 16 samplers (4x4 combinações, f_70009d6fe8 -> SetWrapMode via 0x101199e9c), com mirror/mirror. Mas o
+  binding aponta para o sampler padrão do agl (índice 257, 7 7 7, criado na inicialização gráfica: 0x10120f0f4 ->
+  0x100a5e710). Falta achar por que o emissor cai no padrão (suspeita: ordem de inicialização entre threads, a
+  tabela ainda não existia quando o recurso foi montado).
+- O lifter contra o Unicorn com as instruções do próprio BOTW, no celular (`tools/test_lift_android.py`): 20000
+  codificações, 59952 casos, 0 falhas.
 - Ainda falta: a luz entrando por baixo da porta enquanto ela sobe (Switch 3:48, nosso ~3745-3765): no nosso a fresta
   fica escura. Os debug frames com despejo de passes mudam o tempo do jogo e não pegaram esse momento.
 
