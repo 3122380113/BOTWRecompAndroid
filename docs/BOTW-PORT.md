@@ -288,6 +288,24 @@ Link com as pernas "dentro do chão" (sala da porta, save 2, quadro ~2800, `bis3
   mudou as pernas e deixou a imagem toda verde (sobrescreve conteúdo escrito pela GPU). Revertida.
 - Próximos passos: comparar as alturas do array com o tile de origem (ler de volta), conferir se o tile tem
   conteúdo velho no momento do passe de alturas (frames ~1086-1222 e 1744), e tirar uma vista lateral do Link.
+- Rodada 2: pulando só os 7 shaders do terreno (`013b27bb`, `178b1629`, `31fe3974`, `4ec45c9b`, `5e869bb1`,
+  `8e67d14f`, `dfb4b02d`), as pernas continuam cortadas, então o terreno renderizado não é o que as cobre. Pulando
+  santuário e terreno juntos, o modelo inteiro do Link aparece: joelho esquerdo levantado, perna direita esticada
+  bem para baixo, quadril baixo. É pose de IK de pé (cada pé num chão diferente), não erro de skinning. A causa está
+  na CPU (raycast de chão / física / IK), não na GPU.
+- Pistas: SIMD e ponto flutuante rodam como asm nativo (`--simd asm`) e o FPCR é repassado (`rt_set_fpcr`), então a
+  precisão bate com o hardware. Na cutscene da porta os pés ficam certos (sem IK). Correndo, as pernas parecem
+  normais. Na mesma área o terreno renderizado também aparece alto demais (grama verde furando o chão perto da porta,
+  e o chão rochoso na altura do joelho com o santuário escondido). Se a física do terreno também estiver alta, o pé
+  esquerdo pisa nela: as duas coisas viriam dos dados de altura (lidos e descomprimidos pela CPU), ou de algum
+  mecanismo do jogo que esconde o terreno dentro do santuário e que não funciona aqui.
+
+Luz da porta, rodada 2 (debug frame 4300, `android/out/dbg48`): o buffer de luz 800x450 (pass 82) já sai com a borda
+dura e as colunas verticais. O fade dos feixes (fs `36ec29700`, hash `8d989710`) compara a profundidade linear da
+cena (R16F 1600x900, fs `3cb594e00`: `A/(1 - d*B) - A`) com a do fragmento. A fórmula parece certa, e a borda
+superior coincide com a verga da porta (geometria na frente da luz). Os feixes amostram uma textura BC5 128x128
+(`f0x4b`, view com swizzle R R R G). As colunas podem ser o desenho do jogo ou essa textura mal decodificada; não
+confirmado.
 
 Também anotado: o jogo fechou sozinho uma vez ao carregar um save (SIGSEGV no código do jogo, `f_1010c1a04+284`,
 leitura do endereço 0, x0 = 0; backtrace no logcat). Não reproduzido ainda.
