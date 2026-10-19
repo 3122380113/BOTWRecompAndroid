@@ -1028,7 +1028,7 @@ static void emit_tmml(Ctx *c, uint64_t w, bool bindless, uint32_t pc) {
                            : (array ? TEXTYPE_CUBE_ARRAY : TEXTYPE_CUBE);
     int slot = -1;
     uint32_t hbank, hoff;
-    if (bindless && handle_cbuf(c, pc, b, &hbank, &hoff) && hbank == 2) {
+    if (bindless && handle_cbuf(c, pc, b, &hbank, &hoff) && hbank == 2 && !getenv("LARECOMP_NO_BANK2")) {
         index = hoff / 4;  // NVN's bound texture table (c[2][0x20 + 8 * slot]): the same handle a TEX index reads
     } else if (bindless && handle_cbuf(c, pc, b, &hbank, &hoff)) {
         slot = bindless_slot(c, hbank, hoff, type, array);

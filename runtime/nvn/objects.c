@@ -877,7 +877,9 @@ static void register_sampler(NvnSamplerDesc *e, const NvnSamplerDesc *n) {
     o.backend = NULL;
     if (!memcmp(&o, &v, sizeof v)) return;
 #ifdef __ANDROID__
-    vk_async_drain();
+    static int off = -1;
+    if (off < 0) off = getenv("LARECOMP_NO_SMP_DRAIN") != NULL;
+    if (!off) vk_async_drain();
 #endif
     *e = v;
 }

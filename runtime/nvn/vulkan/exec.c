@@ -4150,6 +4150,24 @@ static void draw_(CmdRec *r, bool indexed) {
             Range v = st.vbuf[s];
             VkBuffer dbuf;
             VkDeviceSize doff;
+            // A draw that reads past the stream's bound size (BOTW's lens streaks: a 4-vertex strip over 16-byte
+            // streams, one vertex's worth, the corners from the vertex index) reads zeros there on the Switch; bound
+            // directly, the heap past the stream (the next buffers' data) bent the quad into a hard-edged band.
+            uint64_t reach = 0;
+            if (k.stride[s] && !use_index)
+                reach = k.divisor[s] ? ((uint64_t)base_inst + inst + k.divisor[s] - 1) / k.divisor[s] * k.stride[s]
+                                     : ((uint64_t)first + count) * k.stride[s];
+            if (v.addr && v.size && reach > v.size && reach <= (1u << 20)) {
+                sp = vk_transient(reach, 16);
+                memcpy(sp.ptr, (const void *)(uintptr_t)v.addr, v.size);
+                memset((uint8_t *)sp.ptr + v.size, 0, reach - v.size);
+                VkDeviceSize zoff = sp.off;
+                if (!(ss_on && (ss.vb_known >> s & 1) && ss.vb[s] == sp.buf && ss.vo[s] == zoff)) {
+                    ss.vb[s] = sp.buf; ss.vo[s] = zoff; ss.vb_known |= 1u << s;
+                    vkCmdBindVertexBuffers(cb, (uint32_t)s, 1, &sp.buf, &zoff);
+                }
+                continue;
+            }
             if (v.addr && v.size && guest_direct(v.addr, v.size, &dbuf, &doff)) {
                 if (ss_on && (ss.vb_known >> s & 1) && ss.vb[s] == dbuf && ss.vo[s] == doff) continue;
                 ss.vb[s] = dbuf; ss.vo[s] = doff; ss.vb_known |= 1u << s;
@@ -4211,6 +4229,15 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
     LOG(" | vp %.0f %.0f %.0f %.0f | attrs %#x blend %#x ds %02x%02x%02x poly %02x%02x chmask %08x\n", st.viewport[0][0], st.viewport[0][1],
         st.viewport[0][2], st.viewport[0][3], pr->vi->attr_mask, st.color_state[0], st.ds[0], st.ds[1], st.ds[2], st.poly[0], st.poly[1],
         st.channel_mask);
+    if (getenv("LARECOMP_DEBUG_TEXSTATE"))  // vertex attributes: guest format, stream, offset, stride
+        for (int i = 0; i < 16; i++)
+            if (pr->vi->attr_mask & (1u << i)) {
+                uint32_t a = i < st.nattrib ? st.attrib[i] : 0;
+                uint32_t sn = (a >> 8) & 0x1F;
+                LOG("[draw]   attr%d: fmt %#x stream %u off %u stride %u divisor %u buffer %llx size %llu\n", i, a & 0xFF, sn, a >> 13,
+                    sn < (uint32_t)st.nstream ? st.stream[sn][0] : 0, sn < (uint32_t)st.nstream ? st.stream[sn][1] : 0,
+                    sn < 16 ? (unsigned long long)st.vbuf[sn].addr : 0ull, sn < 16 ? (unsigned long long)st.vbuf[sn].size : 0ull);
+            }
     if (getenv("LARECOMP_DEBUG_DATA")) {  // vertex streams 0-1 and fragment cbufs: the first floats
         LOG("[draw]   depth range %.9g %.9g offset enables %#x factor %.9g units %.9g clamp %.9g\n",
             st.depth_range[0][0], st.depth_range[0][1], st.poly[3], st.poly_offset[0], st.poly_offset[1], st.poly_offset[2]);
