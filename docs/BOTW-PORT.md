@@ -351,6 +351,11 @@ Rodada 3, com referências do Switch (vídeo, porta abrindo e terminal Sheikah):
   grava o descritor no objeto do guest (+8). Traço da ativação, sol e feixes da porta, névoa e a luz entrando pela
   fresta da porta ficaram como no Switch. Diagnóstico: `LARECOMP_LOG_SMPREG=1` (registros), `LARECOMP_LOG_WRAP=1`,
   `LARECOMP_WATCH_HANDLE_TEX=<id>`.
+- Sol iluminando o santuário por dentro depois da porta aberta: o `nvnCommandBufferSetDepthClamp` era ignorado. As
+  cascatas de sombra do sol (896x896x3, `rt 0 d0x32`) recortavam a montanha acima do santuário (mais perto do sol que o
+  near plane): visto do sol, o chão do corredor aparecia sem nada em cima. Com o depth clamp (66d40a9) a sala fica
+  escura e com névoa, como no Switch em 3:56. Ainda aparece clara em algumas execuções (1 de 3): resta algo dependente
+  de tempo. O debug frame agora salva passes só de profundidade (as cascatas, em vermelho).
 - Brilho Sheikah em blocos (ainda aberto): a textura do bloom (320x180, 5 níveis) é registrada uma vez, sem view
   (`LARECOMP_WATCH_TEXID=7fffffff` registra a do bloom); todas as passadas de redução / blur leem com um sampler de LOD
   0..0 (nível 0) e escrevem no nível k (view do render target); a composição final lê com LOD 1..1 (nível 1). O jogo
