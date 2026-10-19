@@ -363,6 +363,14 @@ Rodada 3, com referências do Switch (vídeo, porta abrindo e terminal Sheikah):
 - Planalto (save 3, 2026-10-19 17:11): o Link aparece com as pernas cortadas no joelho na grama (o "afundando"),
   céu marrom e dessaturado; num quadro mais tarde (~2600) a cena ficou toda preta com o HUD intacto (suspeita de
   NaN na exposição automática), sem erro no log.
+- Link afundando, hipótese "a CPU lê memória que a GPU escreveu" (o *reactive flushing* do Eden): descartada para
+  o array de alturas do terreno (1024x1024x8 R16, f0x6, em 362ab4000). `LARECOMP_WATCH_READ_TEX=<w>x<h>x<d>` fecha as
+  páginas da primeira textura com esse formato (`rt_range_watch` em dispatch.c, rearmado a cada 50 ms). Cada acesso
+  é registrado uma vez por função, como leitura ou escrita (ESR WnR). Com o watch armado já no init, o jogo fechava
+  (f_1043283e8, nulo + 0x10): o loader também preenche essa memória pelo kernel, e com a página fechada a leitura
+  falha. Por isso arma depois de `LARECOMP_WATCH_READ_DELAY` s (padrão 60). Armado em jogo no planalto por ~60 s
+  (~49 fps): 0 acessos. Na carga, f_104327900 mexe nessa memória pela CPU. Os counters do jogo são só timestamps
+  (tipos 0 e 16); não há occlusion query. O pé deve vir da física / raycast (CPU), não da GPU.
 - Brilho Sheikah em blocos (ainda aberto): a textura do bloom (320x180, 5 níveis) é registrada uma vez, sem view
   (`LARECOMP_WATCH_TEXID=7fffffff` registra a do bloom); todas as passadas de redução / blur leem com um sampler de LOD
   0..0 (nível 0) e escrevem no nível k (view do render target); a composição final lê com LOD 1..1 (nível 1). O jogo

@@ -346,7 +346,57 @@ void watch_arm(void) {
     pthread_create(&t, NULL, watch_thread, NULL);
 }
 
+// Read watch over a whole range (rt_range_watch: e.g. a texture the GPU renders into, LARECOMP_WATCH_READ_TEX in
+// nvn/objects.c): its pages are closed, each access is attributed once per function, the faulting page reopens and a
+// thread closes the range again every 50 ms.
+static uint64_t rw_lo, rw_hi;
+static void *range_watch_thread(void *a) {
+#ifdef __ANDROID__
+    plat_thread_unpin();
+#endif
+    (void)a;  // (armed late: the loader fills it through the kernel too, which would just fail - LARECOMP_WATCH_READ_DELAY s)
+    const char *d = getenv("LARECOMP_WATCH_READ_DELAY");
+    sleep(d ? atoi(d) : 60);
+    LOG("[rwatch] armed\n");
+    for (;;) { plat_protect(rw_lo, rw_hi - rw_lo, PLAT_PROT_NONE); usleep(50000); }
+    return NULL;
+}
+void rt_range_watch(uint64_t lo, uint64_t hi) {
+    if (rw_lo) return;
+    rw_lo = lo & ~(uint64_t)(PLAT_PAGE - 1), rw_hi = (hi + PLAT_PAGE - 1) & ~(uint64_t)(PLAT_PAGE - 1);
+    LOG("[rwatch] %llx..%llx\n", (unsigned long long)rw_lo, (unsigned long long)rw_hi);
+    pthread_t t;
+    pthread_create(&t, NULL, range_watch_thread, NULL);
+}
+int g_fault_wnr = -1;  // (set by the platform's handler when it knows: 1 a write, 0 a read)
+static bool range_watch_fault(uint64_t fa, uint64_t pc) {
+    if (!rw_lo || fa < rw_lo || fa >= rw_hi) return false;
+    static char seen[128][48];
+    static int nseen, nhits;
+    const char *nm = host_sym(pc, NULL);
+    if (!nm) nm = "?";
+    nhits++;
+    bool found = false;
+    char key[48];
+    snprintf(key, sizeof key, "%.44s/%c", nm, g_fault_wnr == 1 ? 'w' : g_fault_wnr == 0 ? 'r' : '?');
+    for (int i = 0; i < nseen; i++) found |= !strcmp(seen[i], key);
+    if (!found && nseen < 128) {
+        snprintf(seen[nseen++], 48, "%s", key);
+        KThread *kt = kernel_current_thread();
+        uint64_t lib = 0;
+#ifndef _WIN32
+        Dl_info di;
+        if (dladdr((void *)(uintptr_t)pc, &di)) lib = pc - (uint64_t)(uintptr_t)di.dli_fbase;
+#endif
+        LOG("[rwatch] +%#llx %s by %s (host pc %llx, library +%llx) thread t%llu hit %d\n", (unsigned long long)(fa - rw_lo),
+            g_fault_wnr == 1 ? "write" : g_fault_wnr == 0 ? "read" : "access", nm, (unsigned long long)pc, (unsigned long long)lib, (unsigned long long)(kt ? kt->id : 0), nhits);
+    }
+    plat_protect(fa & ~(uint64_t)(PLAT_PAGE - 1), PLAT_PAGE, PLAT_PROT_RW);
+    return true;
+}
+
 bool rt_fault_watch(uint64_t fa, uint64_t pc) {
+    if (range_watch_fault(fa, pc)) return true;
     if (!watch_page || fa < watch_page || fa >= watch_page + PLAT_PAGE) return false;
     if (fa >= g_watch_lo && fa < g_watch_hi) {
         static char seen[64][48];

@@ -621,6 +621,20 @@ NVN(nvnTextureInitialize) {
         LOG("[watch] init %llx: %ux%ux%u fmt %#x flags %#x target %u levels %u at %llx (lr %llx)\n", (unsigned long long)A(0),
             t->width, t->height, t->depth, t->format, t->flags, t->target, t->levels, (unsigned long long)t->addr,
             (unsigned long long)c->x[30]);
+    {  // LARECOMP_WATCH_READ_TEX=<w>x<h>x<d>: who reads the storage of the first texture of that shape (dispatch.c)
+        static int ww = -1, wh, wd;
+        if (ww < 0) {
+            ww = 0;
+            const char *e = getenv("LARECOMP_WATCH_READ_TEX");
+            if (e) sscanf(e, "%dx%dx%d", &ww, &wh, &wd);
+        }
+        if (ww && (int)t->width == ww && (int)t->height == wh && (int)t->depth == wd) {
+            extern void rt_range_watch(uint64_t lo, uint64_t hi);
+            LOG("[rwatch] texture %llx fmt %#x at %llx size %#llx\n", (unsigned long long)A(0), t->format,
+                (unsigned long long)t->addr, (unsigned long long)tegra_total_size(&t->layout));
+            rt_range_watch(t->addr, t->addr + tegra_total_size(&t->layout));
+        }
+    }
     pthread_mutex_lock(&g_live_lock);
     NvnTexture *old = owner_take(A(0));
     NvnTexture *same = old && texture_same_desc(old, t) ? old : texture_find_same(t);
