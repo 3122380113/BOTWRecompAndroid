@@ -233,6 +233,18 @@ e com o alfa; screenshots no Android vão para o diretório de dados (o SDL trat
 Para rodar sem tocar no aparelho: `android/run_boot.sh <s> "LARECOMP_INPUT=700:A:6,..."` (A em 700 abre a lista de
 saves; ~3 As levam ao santuário).
 
+Desempenho medido no santuário (`LARECOMP_LOG_PACE=1`, `LARECOMP_GPUPROF_AT`): quadro de ~28 ms (~35 fps; o BOTW roda
+a 30 fps no Switch), a thread de render ocupada ~14 ms, a GPU ~19 ms de trabalho + ~6 ms parada no início do quadro.
+Na GPU: 16 ms de passes (o G-buffer de 6 alvos 1600x900: 3,7 ms) e 2,4 ms em 15 cópias de "feedback" por quadro -
+o jogo liga a mesma textura em dois slots de alvo e lê alvos depois de texture barriers (passes de decal / luz), e o
+runtime tira um snapshot a cada vez, quebrando o render pass (num tiler: guarda e recarrega os alvos). Evitá-las pede
+`VK_EXT_attachment_feedback_loop_layout` (o Turnip tem). O `upload` de ~500 MB/s do log de fps são as cópias por
+submissão dos constant buffers (`guest_copy`), CPU, fora do caminho crítico da GPU.
+
+A miniatura na lista de saves: o `caption.jpg` do save (feito com a build anterior) é um JPEG válido de 256x144, todo
+preto - a lista mostra certo o que foi gravado; falta ver se a captura na build atual sai certa (salvar exige a
+Pedra Sheikah).
+
 Ainda a ver: o usuário viu vértices "estourando" às vezes no santuário (não reproduzido nas capturas);
 o controle físico com o BOTW; a miniatura do save na lista não aparece; upload de ~500 MB/s
 (`upload` no log de fps).
