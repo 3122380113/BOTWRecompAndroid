@@ -241,9 +241,12 @@ runtime tira um snapshot a cada vez, quebrando o render pass (num tiler: guarda 
 `VK_EXT_attachment_feedback_loop_layout` (o Turnip tem). O `upload` de ~500 MB/s do log de fps são as cópias por
 submissão dos constant buffers (`guest_copy`), CPU, fora do caminho crítico da GPU.
 
-A miniatura na lista de saves: o `caption.jpg` do save (feito com a build anterior) é um JPEG válido de 256x144, todo
-preto - a lista mostra certo o que foi gravado; falta ver se a captura na build atual sai certa (salvar exige a
-Pedra Sheikah).
+A miniatura na lista de saves sai preta também na build atual (save novo, 2026-10-18): o jogo desenha uma textura
+854x480 RGB10A2 (objeto temporário na pilha, memória em `0x3dc60a000`) num alvo 256x144 e lê esse alvo de volta
+(`CopyTextureToBuffer`, que funciona: 256x144 RGBA8 para o heap). Mas nada no runtime escreve aquela memória antes:
+nenhum render target, cópia ou dispatch a cobre, e ela está zerada (`LARECOMP_WATCH_TEXADDR=<hex>` registra criações,
+alvos, cópias e dispatches sobre um endereço; `LARECOMP_LOG_READBACK=1` as leituras de volta). Falta achar quem a
+preenche no Switch (a função do jogo que cria o objeto: `main+0xa3e5bc`).
 
 Ainda a ver: o usuário viu vértices "estourando" às vezes no santuário (não reproduzido nas capturas);
 o controle físico com o BOTW; a miniatura do save na lista não aparece; upload de ~500 MB/s

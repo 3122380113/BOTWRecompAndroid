@@ -1273,6 +1273,13 @@ static void begin_pass(void) {
                           .pDepthAttachment = has_d ? &da : NULL, .pStencilAttachment = has_s ? &sa : NULL};
     vkCmdBeginRendering(cb, &ri);
     if (g_debug_frame) pass_dump_b = st.rt.ncolor && st.rt.color[0] ? st.rt.color[0]->backend : NULL;
+    {   extern uint64_t nvn_watch_texaddr(void);
+        uint64_t wa = nvn_watch_texaddr();
+        for (int i = 0; wa && i < st.rt.ncolor; i++)
+            if (st.rt.color[i] && st.rt.color[i]->addr <= wa && wa < st.rt.color[i]->addr + tegra_total_size(&st.rt.color[i]->layout))
+                LOG("[watch] frame %llu: render target %d %ux%u fmt %#x (%p)\n", (unsigned long long)renderer_present_count(), i,
+                    st.rt.color[i]->width, st.rt.color[i]->height, st.rt.color[i]->format, (void *)st.rt.color[i]);
+    }
     ss_forget();  // (whatever ran between the passes may have set its own state)
     in_pass = true;
     vp_sx = pass_sx; vp_sy = pass_sy; vp_ox = 0; vp_oy = 0;
@@ -3615,6 +3622,14 @@ static CsProg *compute_program(NvnProgram *np) {
 static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     snap_reason = "compute"; snapshots_invalidate(NULL);
     if (!st.program || !gx || !gy || !gz) return;
+    {   extern uint64_t nvn_watch_texaddr(void);
+        uint64_t wa = nvn_watch_texaddr();
+        for (int i = 0; wa && i < 16; i++)
+            if (st.sbuf[5][i].addr <= wa && wa < st.sbuf[5][i].addr + st.sbuf[5][i].size)
+                LOG("[watch] frame %llu: dispatch %ux%ux%u cs %llx, storage buffer %d %llx+%llx\n", (unsigned long long)renderer_present_count(),
+                    gx, gy, gz, (unsigned long long)st.program->stages[5].code_addr, i, (unsigned long long)st.sbuf[5][i].addr,
+                    (unsigned long long)st.sbuf[5][i].size);
+    }
     CsProg *cp = compute_program(st.program);
     if (!cp || atomic_load(&cp->p.state) != 1) { stat_skipped++; return; }
     {   // LARECOMP_SKIP_CS=<code address hex> (debug): skip that compute shader's dispatches, to see what it does
@@ -4179,6 +4194,12 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
         if (!t) { LOG("[draw]   tex%d: none\n", i); continue; }
         LOG("[draw]   tex%d: %p %ux%u f%#x lv %u -> %ux%u scale %.4f %.4f%s\n", i, (void *)t, t->width, t->height, t->format,
             b ? b->levels : 0, b ? b->width : 0, b ? b->height : 0, b ? b->sx : 0, b ? b->sy : 0, b && b->scalable ? " scalable" : "");
+        if (getenv("LARECOMP_DEBUG_TEXSTATE") && !b) {
+            uint64_t n = t->layout.fmt && t->addr ? tegra_total_size(&t->layout) : 0, nz = 0;
+            for (uint64_t k = 0; k < n; k += 64) nz += ((const uint8_t *)(uintptr_t)t->addr)[k] != 0;
+            LOG("[draw]     no image yet: flags %#x addr %llx levels %u layout bh %u, guest bytes nonzero %llu/%llu\n", t->flags,
+                (unsigned long long)t->addr, t->levels, t->layout.block_height_log2, (unsigned long long)nz, (unsigned long long)(n + 63) / 64);
+        }
         if (getenv("LARECOMP_DEBUG_TEXSTATE") && b && t->addr) {  // where its texels come from: the CPU's memory or GPU work
             uint64_t n = t->layout.fmt ? tegra_total_size(&t->layout) : 0, nz = 0;
             for (uint64_t k = 0; k < n; k += 64) nz += ((const uint8_t *)(uintptr_t)t->addr)[k] != 0;
@@ -4258,6 +4279,10 @@ static void copy_buffer_to_texture(uint64_t src, const TexRefRec *dst) {
 
 static void copy_texture_to_buffer(const TexRefRec *src, uint64_t dst) {
     NvnTexture *t = (NvnTexture *)(uintptr_t)src->tex;
+    {   static int nlog;  // LARECOMP_LOG_READBACK=1: the game's texture readbacks (the save thumbnail is one)
+        if (getenv("LARECOMP_LOG_READBACK") && nlog++ < 20) LOG("[vk] texture -> buffer %p %ux%u f%#x flags %#x -> %llx\n", (void *)t, t ? t->width : 0, t ? t->height : 0,
+                             t ? t->format : 0, t ? t->flags : 0, (unsigned long long)dst);
+    }
     if (!t || !dst || dst < HEAP_BASE) return;
     t = alias_read(t);
     vk_end_pass();
@@ -4301,10 +4326,29 @@ static void copy_texture_to_buffer(const TexRefRec *src, uint64_t dst) {
     wait_why = "texture -> buffer readback";
     renderer_flush();  // the CPU may read the result right after the fence
     memcpy((void *)(uintptr_t)dst, out.ptr, total);
+    {   static int nlog;
+        if (getenv("LARECOMP_LOG_READBACK") && nlog++ < 20) {
+            uint64_t nz = 0;
+            for (uint64_t k = 0; k < total; k += 4) nz += ((const uint32_t *)out.ptr)[k / 4] != 0;
+            LOG("[vk]   read back %llu bytes (%llu words nonzero), gpu_owned %d, aliased %d, level %d region %d %d %d %d %d %d\n",
+                (unsigned long long)total, (unsigned long long)nz, b->gpu_owned, t != (NvnTexture *)(uintptr_t)src->tex, level,
+                rg[0], rg[1], rg[2], rg[3], rg[4], rg[5]);
+        }
+    }
     if (small_mem) vmaDestroyImage(g_vk.vma, srcimg, small_mem);
 }
 
 static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t flags) {
+    {   extern uint64_t nvn_watch_texaddr(void);
+        NvnTexture *ws = (NvnTexture *)(uintptr_t)src->tex, *wd = (NvnTexture *)(uintptr_t)dst->tex;
+        uint64_t wa = nvn_watch_texaddr();
+        bool in_s = ws && ws->addr <= wa && wa < ws->addr + tegra_total_size(&ws->layout);
+        bool in_d = wd && wd->addr <= wa && wa < wd->addr + tegra_total_size(&wd->layout);
+        if (wa && (in_s || in_d))
+            LOG("[watch] frame %llu: copy %ux%u f%#x @%llx -> %ux%u f%#x @%llx\n", (unsigned long long)renderer_present_count(),
+                ws ? ws->width : 0, ws ? ws->height : 0, ws ? ws->format : 0, ws ? (unsigned long long)ws->addr : 0ull,
+                wd ? wd->width : 0, wd ? wd->height : 0, wd ? wd->format : 0, wd ? (unsigned long long)wd->addr : 0ull);
+    }
     snap_reason = "tex2tex"; snapshots_invalidate(NULL);
     NvnTexture *st_ = (NvnTexture *)(uintptr_t)src->tex, *dt = (NvnTexture *)(uintptr_t)dst->tex;
     if (!st_ || !dt) return;

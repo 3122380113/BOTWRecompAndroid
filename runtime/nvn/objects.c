@@ -581,11 +581,23 @@ RT_ON_RESET(textures_reset) {
     g_nretired = g_cap_retired = 0;
 }
 
+// LARECOMP_WATCH_TEXADDR=<hex>: every texture created over that storage address, and its use as a render target or
+// a copy's ends (vulkan/exec.c) - who writes memory that a texture object reads (aliasing between descriptions)
+uint64_t nvn_watch_texaddr(void) {
+    static uint64_t a = ~0ull;
+    if (a == ~0ull) a = getenv("LARECOMP_WATCH_TEXADDR") ? strtoull(getenv("LARECOMP_WATCH_TEXADDR"), NULL, 16) : 0;
+    return a;
+}
+
 NVN(nvnTextureInitialize) {
     // An object initialized again without nvnTextureFinalize (BOTW streams textures so): its previous texture goes,
     // as at a finalize - unless the description is the same.
     g_tex_stat_init++;
     NvnTexture *t = texture_from_builder(A(1));
+    if (nvn_watch_texaddr() && t->addr <= nvn_watch_texaddr() && nvn_watch_texaddr() < t->addr + tegra_total_size(&t->layout))
+        LOG("[watch] init %llx: %ux%ux%u fmt %#x flags %#x target %u levels %u at %llx (lr %llx)\n", (unsigned long long)A(0),
+            t->width, t->height, t->depth, t->format, t->flags, t->target, t->levels, (unsigned long long)t->addr,
+            (unsigned long long)c->x[30]);
     pthread_mutex_lock(&g_live_lock);
     NvnTexture *old = owner_take(A(0));
     NvnTexture *same = old && texture_same_desc(old, t) ? old : texture_find_same(t);
@@ -695,7 +707,7 @@ NVN(nvnTextureWriteTexels) {
 }
 NVN(nvnTextureWriteTexelsStrided) { LOG("[nvn] WriteTexelsStrided not implemented\n"); (void)c; }
 NVN(nvnTextureReadTexels) { LOG("[nvn] ReadTexels not implemented\n"); (void)c; }
-NVN(nvnTextureReadTexelsStrided) { (void)c; }
+NVN(nvnTextureReadTexelsStrided) { LOG("[nvn] ReadTexelsStrided not implemented\n"); (void)c; }
 
 // ================================================================== samplers
 // SamplerBuilder: device@0 then an NvnSamplerDesc at 8
