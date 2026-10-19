@@ -307,6 +307,21 @@ superior coincide com a verga da porta (geometria na frente da luz). Os feixes a
 (`f0x4b`, view com swizzle R R R G). As colunas podem ser o desenho do jogo ou essa textura mal decodificada; não
 confirmado.
 
+Rodada 3, com referências do Switch (vídeo, porta abrindo e terminal Sheikah):
+- TMML.B: o handle vem de `c[2][0x20 + 8*slot]`, a tabela de texturas ligadas do NVN (a mesma que um TEX com índice
+  lê). O runtime não guarda handles no banco 2: lia 0 / 1.0, textura nula, LOD 0. Agora um handle do banco 2 vira o
+  slot de textura normal. Os bancos de hardware `k` são `st.ubuf[stage][k-3]` (0 do driver, 1 constantes do shader,
+  2 tabela de texturas): o caminho bindless corrigido para isso. O sol voltou a ter forma de estrela.
+- Brilho Sheikah em blocos ("padrão de deformação"): o bloom renderiza nos níveis de mip 1-4 de uma textura 320x180 e
+  lê de volta com um sampler; no nosso, o sampler do slot estava com LOD 0..0 (só o nível 0), então os níveis
+  borrados nunca eram lidos. O jogo recicla slots do sampler pool sem esperar fence, e a thread de render (async.c)
+  ainda tinha draws na fila lendo o slot. Corrigido: `register_sampler` (objects.c) espera a fila (`vk_async_drain`)
+  quando o conteúdo do slot muda, como o `register_texture` já fazia. Brilho liso, igual à referência; ~29 fps,
+  sem perda. A névoa da luz da porta também diminuiu bastante e a escada aparece.
+- Diagnóstico novo: `LARECOMP_WATCH_TEXID=<hex>` / `LARECOMP_WATCH_SMPID=<dec>` registram os registros de um slot;
+  o log do debug frame mostra o sampler (LOD, filtros, handle) de cada textura e o banco/offset dos bindless.
+- Descartado: modo de profundidade 1 (`NEAR_IS_ZERO`) deixa a tela preta; o BOTW usa o padrão -1..1.
+
 Também anotado: o jogo fechou sozinho uma vez ao carregar um save (SIGSEGV no código do jogo, `f_1010c1a04+284`,
 leitura do endereço 0, x0 = 0; backtrace no logcat). Não reproduzido ainda.
 

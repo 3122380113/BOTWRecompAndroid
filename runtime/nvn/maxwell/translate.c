@@ -1012,7 +1012,9 @@ static int bindless_slot(Ctx *c, uint32_t bank, uint32_t off, int type, bool arr
 
 // TMML (Texture MipMap Level, 0xdf58; TMML.B 0xdf60, the handle in register b): .x the mip level accessed, .y the
 // computed LOD (textureQueryLod), as 24.8 fixed point (yuzu: texture_mipmap_level.cpp).
-// TMML.B (BOTW: light rays, terrain): the handle comes from a constant buffer (handle_cbuf); else the texture of the
+// TMML.B (BOTW: light rays, particles, terrain): the handle comes from a constant buffer (handle_cbuf) - from bank 2,
+// NVN's bound texture table, it is a bound texture like a TEX index's (read there, the runtime's bank 2 has no
+// handles: a null texture, LOD 0, the effects too sharp and too bright); else the texture of the
 // next TEX / TEXS sampling the same coordinate register, the LOD queried being the one that sample uses.
 static void emit_tmml(Ctx *c, uint64_t w, bool bindless, uint32_t pc) {
     int d = (int)bits(w, 0, 8), a = (int)bits(w, 8, 8), b = (int)bits(w, 20, 8);
@@ -1026,7 +1028,9 @@ static void emit_tmml(Ctx *c, uint64_t w, bool bindless, uint32_t pc) {
                            : (array ? TEXTYPE_CUBE_ARRAY : TEXTYPE_CUBE);
     int slot = -1;
     uint32_t hbank, hoff;
-    if (bindless && handle_cbuf(c, pc, b, &hbank, &hoff)) {
+    if (bindless && handle_cbuf(c, pc, b, &hbank, &hoff) && hbank == 2) {
+        index = hoff / 4;  // NVN's bound texture table (c[2][0x20 + 8 * slot]): the same handle a TEX index reads
+    } else if (bindless && handle_cbuf(c, pc, b, &hbank, &hoff)) {
         slot = bindless_slot(c, hbank, hoff, type, array);
         if (c->fail) return;
     } else if (bindless) {

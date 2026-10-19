@@ -848,6 +848,12 @@ static void register_texture(Cpu *c) {
     }
     e->has_view = A(3) != 0;
     if (e->has_view) memcpy(&e->view, AP(3), sizeof e->view);
+    static int watch_id = -2;  // LARECOMP_WATCH_TEXID=<hex id>: its registrations (texture, view)
+    if (watch_id == -2) watch_id = getenv("LARECOMP_WATCH_TEXID") ? (int)strtol(getenv("LARECOMP_WATCH_TEXID"), NULL, 16) : -1;
+    if (id == watch_id)
+        LOG("[watch] texture id %#x <- %p %ux%u levels %u view %d setmask %#x levels %u+%u (lr %llx)\n", id, (void *)t,
+            t ? t->width : 0, t ? t->height : 0, t ? t->levels : 0, e->has_view, e->has_view ? e->view.setmask : 0,
+            e->view.base_level, e->view.num_levels, (unsigned long long)c->x[30]);
 }
 NVN(nvnTexturePoolRegisterTexture) { register_texture(c); }
 NVN(nvnTexturePoolRegisterImage) { register_texture(c); }
@@ -861,15 +867,35 @@ NVN(nvnSamplerPoolSetDebugLabel) { (void)c; }
 NVN(nvnSamplerPoolGetMemoryPool) { RET(G(uint64_t, A(0), 8)); }
 NVN(nvnSamplerPoolGetMemoryOffset) { RET(G(uint64_t, A(0), 16)); }
 NVN(nvnSamplerPoolGetSize) { RET(G(uint32_t, A(0), 24)); }
+// A sampler slot rewritten: the render thread may still have draws queued that read the old one (vulkan/async.c) -
+// BOTW recycles slots without a fence wait between (its bloom's mip chain then read a recycled 0..0 LOD clamp: only
+// level 0, a blocky glow around the Sheikah lights). Like a texture slot replaced (register_texture): drain first.
+static void register_sampler(NvnSamplerDesc *e, const NvnSamplerDesc *n) {
+    NvnSamplerDesc v = *n;
+    v.backend = NULL;  // (the VkSampler is made per slot, from its fields)
+    NvnSamplerDesc o = *e;
+    o.backend = NULL;
+    if (!memcmp(&o, &v, sizeof v)) return;
+#ifdef __ANDROID__
+    vk_async_drain();
+#endif
+    *e = v;
+}
 NVN(nvnSamplerPoolRegisterSampler) {
     NvnDescPool *d = HOST(NvnDescPool, A(0));
     int id = (int)A(1);
-    if (id >= 0 && id < d->count) ((NvnSamplerDesc *)d->entries)[id] = *HOST(NvnSamplerDesc, A(2));
+    if (id >= 0 && id < d->count) register_sampler(&((NvnSamplerDesc *)d->entries)[id], HOST(NvnSamplerDesc, A(2)));
+    static int watch_id = -2;  // LARECOMP_WATCH_SMPID=<dec id>
+    if (watch_id == -2) watch_id = getenv("LARECOMP_WATCH_SMPID") ? atoi(getenv("LARECOMP_WATCH_SMPID")) : -1;
+    if (id == watch_id && id < d->count) {
+        const NvnSamplerDesc *sd = &((NvnSamplerDesc *)d->entries)[id];
+        LOG("[watch] sampler %d <- lod %.2f..%.2f min %u (lr %llx)\n", id, sd->lod_min, sd->lod_max, sd->min_filter, (unsigned long long)c->x[30]);
+    }
 }
 NVN(nvnSamplerPoolRegisterSamplerBuilder) {
     NvnDescPool *d = HOST(NvnDescPool, A(0));
     int id = (int)A(1);
-    if (id >= 0 && id < d->count) ((NvnSamplerDesc *)d->entries)[id] = *(NvnSamplerDesc *)(AP(2) + 8);
+    if (id >= 0 && id < d->count) register_sampler(&((NvnSamplerDesc *)d->entries)[id], (const NvnSamplerDesc *)(AP(2) + 8));
 }
 
 NvnDescPool *nvn_find_pool(NvnDescPool **reg, uint64_t guest_pool) {

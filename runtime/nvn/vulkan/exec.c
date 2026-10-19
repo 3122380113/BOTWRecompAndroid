@@ -2060,7 +2060,7 @@ static int nsnaps;
 // 32-bit handle the shader reads from a constant buffer (translate.c: the cbuf load that defines the handle register)
 static uint64_t shader_texture_handle(int stage, const ShaderTexture *st_) {
     if (st_->bindless) {
-        const Range *u = st_->bindless_cbuf < 18 ? &st.ubuf[stage][st_->bindless_cbuf] : NULL;
+        const Range *u = st_->bindless_cbuf >= 3 && st_->bindless_cbuf < 21 ? &st.ubuf[stage][st_->bindless_cbuf - 3] : NULL;  // (cbuf_base 3)
         if (!u || !u->addr || (uint64_t)st_->bindless_offset + 4 > u->size) return 0;
         return *(const uint32_t *)(uintptr_t)(u->addr + st_->bindless_offset);
     }
@@ -4212,6 +4212,19 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
         st.viewport[0][2], st.viewport[0][3], pr->vi->attr_mask, st.color_state[0], st.ds[0], st.ds[1], st.ds[2], st.poly[0], st.poly[1],
         st.channel_mask);
     if (getenv("LARECOMP_DEBUG_DATA")) {  // vertex streams 0-1 and fragment cbufs: the first floats
+        LOG("[draw]   depth range %.9g %.9g offset enables %#x factor %.9g units %.9g clamp %.9g\n",
+            st.depth_range[0][0], st.depth_range[0][1], st.poly[3], st.poly_offset[0], st.poly_offset[1], st.poly_offset[2]);
+        for (int c = 0; c < 18; c++) {
+            if (!((pr->vi->cbuf_mask >> c) & 1)) continue;
+            Range r = c >= 3 ? st.ubuf[0][c - 3] : (Range){0, 0};
+            if (c == 1) r = (Range){st.program->stages[0].code_addr + st.program->stages[0].const_offset,
+                                  st.program->stages[0].const_size};
+            if (!r.addr) continue;
+            const float *u = (const float *)(uintptr_t)r.addr;
+            LOG("[draw]   vcb%d %llx size %u:", c, (unsigned long long)r.addr, (unsigned)r.size);
+            for (int k = 0; k < 96 && k * 4 < (int)r.size; k++) LOG(" %.9g", u[k]);
+            LOG("\n");
+        }
         for (int s = 0; s < 2; s++) {
             if (!st.vbuf[s].addr) continue;
             const float *v = (const float *)(uintptr_t)st.vbuf[s].addr;
@@ -4250,9 +4263,12 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
         if (!t) {
             const ShaderTexture *stx = &pr->fi->tex[i];
             int slot = ((int)stx->handle_offset - 0x20) / 8;
-            uint64_t h = slot >= 0 && slot < 32 ? st.tex[1][slot] : 0;
-            LOG("[draw]   tex%d: none (handle offset %#x slot %d handle %llx, pool %d entries, type %d)\n", i, stx->handle_offset, slot,
-                (unsigned long long)h, st.tpool ? st.tpool->count : -1, stx->type);
+            uint64_t h = shader_texture_handle(1, stx);
+            LOG("[draw]   tex%d: none (handle offset %#x slot %d bindless %d c%u[%#x] (ubuf %llx size %llu) handle %llx, pool %d entries, type %d)\n",
+                i, stx->handle_offset, slot, stx->bindless, stx->bindless_cbuf, stx->bindless_offset,
+                stx->bindless_cbuf >= 3 && stx->bindless_cbuf < 21 ? (unsigned long long)st.ubuf[1][stx->bindless_cbuf - 3].addr : 0ull,
+                stx->bindless_cbuf >= 3 && stx->bindless_cbuf < 21 ? (unsigned long long)st.ubuf[1][stx->bindless_cbuf - 3].size : 0ull, (unsigned long long)h,
+                st.tpool ? st.tpool->count : -1, stx->type);
             continue;
         }
         LOG("[draw]   tex%d: %p %ux%u f%#x lv %u -> %ux%u scale %.4f %.4f%s\n", i, (void *)t, t->width, t->height, t->format,
@@ -4277,6 +4293,14 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
                 te ? te->view.swizzle[2] : 0, te ? te->view.swizzle[3] : 0, te ? te->view.base_level : 0, te ? te->view.num_levels : 0,
                 te ? te->view.min_layer : 0, te ? te->view.num_layers : 0, te ? te->view.format : 0, te ? te->view.target : 0,
                 te ? te->view.ds_mode : 0, pr->fi->tex[i].type);
+            uint64_t sh = shader_texture_handle(1, &pr->fi->tex[i]);
+            uint32_t tsc = (uint32_t)(sh >> 20) & 0xFFF;
+            if (st.spool && tsc < (uint32_t)st.spool->count) {
+                const NvnSamplerDesc *sd = &((const NvnSamplerDesc *)st.spool->entries)[tsc];
+                LOG("[draw]     sampler %u (handle %llx): min %u mag %u wrap %u %u lod %.3f..%.3f bias %.3f aniso %.1f\n", tsc,
+                    (unsigned long long)sh, sd->min_filter,
+                    sd->mag_filter, sd->wrap[0], sd->wrap[1], sd->lod_min, sd->lod_max, sd->lod_bias, sd->max_aniso);
+            }
         }
     }
 }
