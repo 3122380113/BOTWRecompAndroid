@@ -334,6 +334,13 @@ Rodada 3, com referências do Switch (vídeo, porta abrindo e terminal Sheikah):
   cb9[48].w`). Os streams desse draw têm 16 bytes (um vértice) para 4 vértices: agora a leitura além do tamanho dá
   zero, como no Switch (antes lia os buffers vizinhos); não resolveu a faixa.
 - Tela preta ao ativar (relato): não reproduzida em ~10 execuções roteirizadas.
+- Causa do traço e da névoa: o wrap 7 do NVN é *mirrored repeat* (e o 6, clamp to edge); o runtime tinha os dois
+  trocados. O traço usa uv 0..2 sobre um quadrante da imagem (centro em (1,1)): com clamp, de 1 a 2 repetia a linha
+  clara da borda (a faixa dura). Com o espelho, o traço da ativação, o sol e os feixes da porta e a névoa branca do
+  chão ficaram iguais ao vídeo do Switch (3:35 e 4:05). Corrigido em `vk_sampler` (textures.c) e no renderer.m.
+  O wrap 7 é o mais comum do quadro (pós-processo), onde espelho e clamp quase não diferem.
+- Ainda falta: a luz entrando por baixo da porta enquanto ela sobe (Switch 3:48, nosso ~3745-3765): no nosso a fresta
+  fica escura. Os debug frames com despejo de passes mudam o tempo do jogo e não pegaram esse momento.
 
 Também anotado: o jogo fechou sozinho uma vez ao carregar um save (SIGSEGV no código do jogo, `f_1010c1a04+284`,
 leitura do endereço 0, x0 = 0; backtrace no logcat). Não reproduzido ainda.
