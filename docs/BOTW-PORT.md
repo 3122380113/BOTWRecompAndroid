@@ -396,10 +396,22 @@ Rodada 3, com referências do Switch (vídeo, porta abrindo e terminal Sheikah):
   até 4 KiB) são copiados no fim do pass e escritos na memória do guest quando a GPU termina
   (`LARECOMP_NO_WRITEBACK=1` desliga, `LARECOMP_LOG_WRITEBACK=1` lista). `LARECOMP_WATCH_READ_ADDR=<hex>:<len>[+...]`
   vigia leituras da CPU em bytes do guest (armado depois de `LARECOMP_WATCH_READ_DELAY`).
-- Véu branco no planalto (aberto): comparado com o Switch (vídeo 4:41: céu azul, montanhas nítidas), a cena tem um
-  véu branco-esverdeado. Ele já está no HDR antes do tonemap (pass 129 do debug frame de frente para o sol); o bloom
-  (320x180) é fraco. A exposição não vem dessa redução (que é de profundidade). Suspeitos: neblina / perspectiva
-  aérea (outras LUTs 3D: 8x8x8 f0x3f, 7x1x8 f0x29), ou parâmetros de ambiente.
+- Véu branco no planalto (aberto, 2026-10-19). Comparado com o Switch (vídeo 4:41: céu azul, montanhas nítidas), a
+  cena tem um véu branco-esverdeado.
+  - Depois do tonemap (fs `43c3cb0e`: `1 - e^-x` de cena + bloom, sem exposição) não há color grading. A cor na tela
+    é só essa curva.
+  - O céu HDR sai ~10x claro demais e amarelo: topo (13.6, 14, 7.1). Para o azul-claro do Switch seria ~(0.9, 1.2, 1.9).
+    Ele chega amarelo na textura do céu 256x256 (`81f35db4`, Bruneton: LUT 3D 256x32x16 x fase x cor do sol).
+  - `android/out/veil/simsky.py` reimplementa esse shader com as constantes do log e a LUT como a subimos. Bate com
+    a GPU texel a texel na metade do céu: tradução e amostragem estão certas.
+  - A LUT (dados do `agl::pfx::Sky::setBasisTextureImage`, enviados uma vez na carga) tem R:G:B ~1:1.4:1.5 no zênite.
+    Rayleigh com os betas do próprio jogo (1:2.7:6.9) seria bem mais azul.
+  - Suspeitos: o conteúdo/formato da LUT ou a exposição (~8). A cor do sol chega física (18, 15.5, 12.2) por
+    `UpdateUniformBuffer` (`LARECOMP_LOG_UBO_UPDATE=<endereço>` mostra quem atualiza). A exposição automática vem do
+    quadro LDR anterior (800x450 -> 2x2) e do cubemap 64x64 (1x1), num parâmetro 12x1 RGBA16F.
+  - Ferramentas novas: `LARECOMP_DEBUG_RAW_PASSES=1` (debug frame: `<pass>.png.raw` com os texels em float, porque o
+    PNG corta HDR em 1), `LARECOMP_DEBUG_DATA` (agora com os bancos certos do fragment shader: banco k =
+    ubuf[k-3]) e `LARECOMP_WRITEBACK_MAX=<bytes>` (alvos maiores no write-back; 256 KiB não mudou nada).
 - Brilho Sheikah em blocos (ainda aberto): a textura do bloom (320x180, 5 níveis) é registrada uma vez, sem view
   (`LARECOMP_WATCH_TEXID=7fffffff` registra a do bloom); todas as passadas de redução / blur leem com um sampler de LOD
   0..0 (nível 0) e escrevem no nível k (view do render target); a composição final lê com LOD 1..1 (nível 1). O jogo

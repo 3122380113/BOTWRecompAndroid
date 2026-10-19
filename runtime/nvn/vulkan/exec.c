@@ -1165,7 +1165,12 @@ static inline bool ss_need(uint32_t bit, bool same) {
 // targets (one level, unscaled, up to WB_MAX bytes) are copied out at the end of their pass and swizzled into guest
 // memory once the GPU is done (cq_resolve_done / each present). LARECOMP_NO_WRITEBACK=1: off;
 // LARECOMP_LOG_WRITEBACK=1 (or =<width>): the targets.
-#define WB_MAX 4096
+static uint64_t wb_max(void) {  // (LARECOMP_WRITEBACK_MAX=<bytes>: a larger limit, for finding other read-backs)
+    static uint64_t m;
+    if (!m) { const char *e = getenv("LARECOMP_WRITEBACK_MAX"); m = e ? strtoull(e, NULL, 0) : 4096; }
+    return m;
+}
+#define WB_MAX wb_max()
 #define WB_SLOTS 32
 typedef struct { uint64_t seq, addr; uint32_t wb, hb, bpb, bh; bool busy; } WbEntry;
 static WbEntry wb_ent[WB_SLOTS];
@@ -1246,6 +1251,7 @@ static void wb_apply(uint64_t done) {
 }
 
 static void vk_end_pass_at(int line);
+static void save_texture_raw(TexBackend *b, const char *path);
 static TexBackend *pass_dump_b;  // (debug frame) the color target the open pass draws into
 static uint32_t pass_dump_layer = ~0u;  // (a depth-only pass: its depth target's layer, dumped as red)
 void vk_end_pass(void) { vk_end_pass_at(0); }
@@ -1274,6 +1280,9 @@ static void vk_end_pass_at(int line) {
         vk_dump_depth_layer = pass_dump_layer;
         renderer_save_texture_tex(b, path);
         vk_dump_depth_layer = ~0u;
+        static int raw = -1;
+        if (raw < 0) raw = getenv("LARECOMP_DEBUG_RAW_PASSES") != NULL;
+        if (raw && pass_dump_layer == ~0u) save_texture_raw(b, path);
     }
 }
 
@@ -4377,10 +4386,14 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
                 LOG("\n");
             }
         for (int c = 0; c < 18; c++) {
-            if (!((pr->fi->cbuf_mask >> c) & 1) || !st.ubuf[1][c].addr) continue;
-            const float *u = (const float *)(uintptr_t)st.ubuf[1][c].addr;
-            LOG("[draw]   fcb%d %llx size %u:", c, (unsigned long long)st.ubuf[1][c].addr, (unsigned)st.ubuf[1][c].size);
-            for (int k = 0; k < 96 && k * 4 < (int)st.ubuf[1][c].size; k++) LOG(" %.6g", u[k]);
+            if (!((pr->fi->cbuf_mask >> c) & 1)) continue;
+            Range r = c >= 3 ? st.ubuf[1][c - 3] : (Range){0, 0};  // (hardware bank c: ubuf[c - 3]; 1: the shader's own)
+            if (c == 1) r = (Range){st.program->stages[1].code_addr + st.program->stages[1].const_offset,
+                                  st.program->stages[1].const_size};
+            if (!r.addr) continue;
+            const float *u = (const float *)(uintptr_t)r.addr;
+            LOG("[draw]   fcb%d %llx size %u:", c, (unsigned long long)r.addr, (unsigned)r.size);
+            for (int k = 0; k < 96 && k * 4 < (int)r.size; k++) LOG(" %.6g", u[k]);
             LOG("\n");
         }
     }
@@ -4936,6 +4949,35 @@ void vk_present_draw(VkCommandBuffer cb, TexBackend *b, float vx, float vy, floa
 }
 
 // Screenshot of a game texture (presented crop applied to build/frame_* shots), via the present shader into RGBA8.
+// (debug frame, LARECOMP_DEBUG_RAW_PASSES=1) a color target's texels as they are, level 0 / layer 0: <path>.raw, its
+// Vulkan format and size in the log - the PNGs clip HDR values at 1
+static void save_texture_raw(TexBackend *b, const char *path) {
+    uint32_t bpp = 0;
+    switch (b->format) {
+    case VK_FORMAT_R16G16B16A16_SFLOAT: bpp = 8; break;
+    case VK_FORMAT_R32G32B32A32_SFLOAT: bpp = 16; break;
+    case VK_FORMAT_B10G11R11_UFLOAT_PACK32: case VK_FORMAT_R32_SFLOAT: case VK_FORMAT_R16G16_SFLOAT:
+    case VK_FORMAT_R8G8B8A8_UNORM: case VK_FORMAT_A2B10G10R10_UNORM_PACK32: bpp = 4; break;
+    case VK_FORMAT_R16_SFLOAT: bpp = 2; break;
+    default: return;
+    }
+    if (!(b->aspect & VK_IMAGE_ASPECT_COLOR_BIT) || b->samples > 1) return;
+    vk_end_pass();
+    VkCommandBuffer cb = vk_cmd();
+    vk_full_barrier(cb);
+    uint64_t size = (uint64_t)b->width * b->height * bpp;
+    VkSpan out = vk_readback(size);
+    VkBufferImageCopy c = {.bufferOffset = out.off, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                           .imageExtent = {b->width, b->height, 1}};
+    vkCmdCopyImageToBuffer(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &c);
+    renderer_flush();
+    char rp[300];
+    snprintf(rp, sizeof rp, "%s.raw", path);
+    FILE *f = fopen(rp, "wb");
+    if (f) { fwrite(out.ptr, 1, size, f); fclose(f); }
+    LOG("[vk] raw %s: %ux%u vkformat %d\n", rp, b->width, b->height, (int)b->format);
+}
+
 void renderer_save_texture_tex(TexBackend *b, const char *path) {
     extern uint32_t vk_dump_depth_layer;
     if (!b || !b->image || ((b->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT) && vk_dump_depth_layer == ~0u)) return;

@@ -580,7 +580,20 @@ NVN(nvnCommandBufferTiledDownsample) { (void)c; }
 NVN(nvnCommandBufferTiledDownsampleTextureView) { (void)c; }
 NVN(nvnCommandBufferResolveDepthBuffer) { (void)c; }
 // UpdateUniformBuffer(cmd, buffer, size, offset, dataSize, data)
-NVN(nvnCommandBufferUpdateUniformBuffer) { record_copy(c, CMD_UPDATE_UNIFORM_BUFFER, 5, (uint32_t)A(4)); }
+NVN(nvnCommandBufferUpdateUniformBuffer) {
+    static uint64_t watch = ~0ull;  // LARECOMP_LOG_UBO_UPDATE=<hex address>: the updates that write it (caller, source)
+    if (watch == ~0ull) watch = getenv("LARECOMP_LOG_UBO_UPDATE") ? strtoull(getenv("LARECOMP_LOG_UBO_UPDATE"), NULL, 16) : 0;
+    if (watch && A(1) + A(3) <= watch && watch < A(1) + A(3) + A(4)) {
+        static int n;
+        if (n++ % 30 == 0 && n < 600) {
+            const float *f = (const float *)(uintptr_t)(A(5) + (watch - A(1) - A(3)));
+            LOG("[nvn] ubo update %llx+%#llx size %#llx from %llx (lr %llx): %g %g %g %g\n", (unsigned long long)A(1),
+                (unsigned long long)A(3), (unsigned long long)A(4), (unsigned long long)A(5), (unsigned long long)c->x[30],
+                f[0], f[1], f[2], f[3]);
+        }
+    }
+    record_copy(c, CMD_UPDATE_UNIFORM_BUFFER, 5, (uint32_t)A(4));
+}
 
 // ---- synchronization and misc
 NVN(nvnCommandBufferFenceSync) {
