@@ -4249,7 +4249,7 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
             if (!r.addr) continue;
             const float *u = (const float *)(uintptr_t)r.addr;
             LOG("[draw]   vcb%d %llx size %u:", c, (unsigned long long)r.addr, (unsigned)r.size);
-            for (int k = 0; k < (getenv("LARECOMP_DEBUG_DATA_N") ? atoi(getenv("LARECOMP_DEBUG_DATA_N")) : 96) && k * 4 < (int)r.size; k++) LOG(" %.9g", u[k]);
+            for (int k = 0; k < 96 && k * 4 < (int)r.size; k++) LOG(" %.9g", u[k]);
             LOG("\n");
         }
         for (int s = 0; s < 2; s++) {

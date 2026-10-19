@@ -999,13 +999,11 @@ VkSampler vk_sampler(NvnSamplerDesc *d) {
     bool border = false;
     for (int i = 0; i < 3; i++) {
         switch (d->wrap[i]) {
-        // 7 is mirrored repeat and 6 clamp to edge: BOTW's lens streaks and light shafts (one quadrant of the image, uv 0..2)
-        // came out as hard-edged bands with 7 read as a clamp; checked against Switch footage of the shrine door.
-        case 0: case 6: modes[i] = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE; break;
+        case 0: case 7: modes[i] = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE; break;
         case 1: modes[i] = VK_SAMPLER_ADDRESS_MODE_REPEAT; break;
         case 2: case 3: modes[i] = VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE; break;
         case 4: case 5: modes[i] = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER; border = true; break;
-        case 7: modes[i] = VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT; break;
+        case 6: modes[i] = VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT; break;
         default: modes[i] = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         }
     }
