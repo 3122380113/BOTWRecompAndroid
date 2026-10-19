@@ -237,8 +237,10 @@ Desempenho medido no santuário (`LARECOMP_LOG_PACE=1`, `LARECOMP_GPUPROF_AT`): 
 a 30 fps no Switch), a thread de render ocupada ~14 ms, a GPU ~19 ms de trabalho + ~6 ms parada no início do quadro.
 Na GPU: 16 ms de passes (o G-buffer de 6 alvos 1600x900: 3,7 ms) e 2,4 ms em 15 cópias de "feedback" por quadro -
 o jogo liga a mesma textura em dois slots de alvo e lê alvos depois de texture barriers (passes de decal / luz), e o
-runtime tira um snapshot a cada vez, quebrando o render pass (num tiler: guarda e recarrega os alvos). Evitá-las pede
-`VK_EXT_attachment_feedback_loop_layout` (o Turnip tem). O `upload` de ~500 MB/s do log de fps são as cópias por
+runtime tira um snapshot a cada vez, quebrando o render pass. Medido sem elas (`LARECOMP_NO_FEEDBACK=1`, ler o
+alvo ligado): a GPU fica mais lenta (~22,5 ms de trabalho por quadro contra ~19 ms) - ler um alvo do pass aberto tira
+o Turnip da renderização em tiles (GMEM), como faria `VK_EXT_attachment_feedback_loop_layout`; as cópias ficam. E o
+jogo se prende ao próprio modo de 30 fps (intervalo de apresentação 2) nos dois casos. O `upload` de ~500 MB/s do log de fps são as cópias por
 submissão dos constant buffers (`guest_copy`), CPU, fora do caminho crítico da GPU.
 
 A miniatura na lista de saves sai preta também na build atual (save novo, 2026-10-18): o jogo desenha uma textura
