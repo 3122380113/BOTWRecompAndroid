@@ -964,6 +964,7 @@ static struct {
     float blend_color[4];
     uint32_t stencil_ref[2], stencil_mask[2], stencil_vmask[2];
     bool prim_restart;
+    bool depth_clamp;  // nvnCommandBufferSetDepthClamp: shadow casters in front of the near plane still cast (pancaking)
     uint32_t restart_index;
     uint64_t copy_row_stride, copy_image_stride;
 } st;
@@ -1153,6 +1154,7 @@ static inline bool ss_need(uint32_t bit, bool same) {
 
 static void vk_end_pass_at(int line);
 static TexBackend *pass_dump_b;  // (debug frame) the color target the open pass draws into
+static uint32_t pass_dump_layer = ~0u;  // (a depth-only pass: its depth target's layer, dumped as red)
 void vk_end_pass(void) { vk_end_pass_at(0); }
 #define vk_end_pass() vk_end_pass_at(__LINE__)
 static void vk_end_pass_at(int line) {
@@ -1173,7 +1175,10 @@ static void vk_end_pass_at(int line) {
         else snprintf(path, sizeof path, "build/pass_%03d.png", debug_pass_no++);
         TexBackend *b = pass_dump_b;
         pass_dump_b = NULL;
+        extern uint32_t vk_dump_depth_layer;
+        vk_dump_depth_layer = pass_dump_layer;
         renderer_save_texture_tex(b, path);
+        vk_dump_depth_layer = ~0u;
     }
 }
 
@@ -1273,6 +1278,11 @@ static void begin_pass(void) {
                           .pDepthAttachment = has_d ? &da : NULL, .pStencilAttachment = has_s ? &sa : NULL};
     vkCmdBeginRendering(cb, &ri);
     if (g_debug_frame) pass_dump_b = st.rt.ncolor && st.rt.color[0] ? st.rt.color[0]->backend : NULL;
+    pass_dump_layer = ~0u;
+    if (g_debug_frame && !pass_dump_b && st.rt.depth && st.rt.depth->backend) {  // depth only (shadow maps)
+        pass_dump_b = st.rt.depth->backend;
+        pass_dump_layer = st.rt.has_dview && (st.rt.dview.setmask & 2) ? st.rt.dview.min_layer : 0;
+    }
     {   extern uint64_t nvn_watch_texaddr(void);
         uint64_t wa = nvn_watch_texaddr();
         for (int i = 0; wa && i < st.rt.ncolor; i++)
@@ -1901,7 +1911,7 @@ typedef struct {
     uint32_t attr_mask;
     uint32_t stride[17], divisor[17], used_streams;
     uint8_t blend[8][8];
-    uint8_t blend_on, a2c, topo_class, poly_fill;
+    uint8_t blend_on, a2c, topo_class, poly_fill, depth_clamp;
     uint32_t write_mask[8];
 } PipeKey;
 
@@ -1955,7 +1965,8 @@ static void build_pipeline(void *arg) {
                                                  .topology = topo_class_base(k->topo_class)};
     VkPipelineViewportStateCreateInfo vs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1};
     VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-                                                 .polygonMode = k->poly_fill ? VK_POLYGON_MODE_FILL : VK_POLYGON_MODE_LINE, .lineWidth = 1};
+                                                 .polygonMode = k->poly_fill ? VK_POLYGON_MODE_FILL : VK_POLYGON_MODE_LINE, .lineWidth = 1,
+                                                 .depthClampEnable = k->depth_clamp};
     VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
                                                .rasterizationSamples = (VkSampleCountFlagBits)k->samples, .alphaToCoverageEnable = k->a2c};
     VkPipelineDepthStencilStateCreateInfo ds = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
@@ -3894,6 +3905,7 @@ static void draw_(CmdRec *r, bool indexed) {
     k.a2c = st.ms[0xC] != 0;
     k.topo_class = cls;
     k.poly_fill = st.poly[2] != 1;
+    k.depth_clamp = st.depth_clamp;
 #ifdef __ANDROID__
     // (consecutive draws mostly share their pipeline: a compare instead of the serial hash of the ~700-byte key)
     static PipeKey last_k;
@@ -4324,9 +4336,10 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
             uint32_t tsc = (uint32_t)(sh >> 20) & 0xFFF;
             if (st.spool && tsc < (uint32_t)st.spool->count) {
                 const NvnSamplerDesc *sd = &((const NvnSamplerDesc *)st.spool->entries)[tsc];
-                LOG("[draw]     sampler %u (handle %llx): min %u mag %u wrap %u %u lod %.3f..%.3f bias %.3f aniso %.1f\n", tsc,
+                LOG("[draw]     sampler %u (handle %llx): min %u mag %u wrap %u %u lod %.3f..%.3f bias %.3f aniso %.1f compare %u/%u border %g %g %g %g\n", tsc,
                     (unsigned long long)sh, sd->min_filter,
-                    sd->mag_filter, sd->wrap[0], sd->wrap[1], sd->lod_min, sd->lod_max, sd->lod_bias, sd->max_aniso);
+                    sd->mag_filter, sd->wrap[0], sd->wrap[1], sd->lod_min, sd->lod_max, sd->lod_bias, sd->max_aniso, sd->compare_mode, sd->compare_func,
+                    sd->border[0], sd->border[1], sd->border[2], sd->border[3]);
             }
         }
     }
@@ -4601,7 +4614,12 @@ static VkPipeline present_pipeline_a(VkFormat fmt, bool alpha) {  // alpha: the 
 static VkPipeline present_pipeline(VkFormat fmt) { return present_pipeline_a(fmt, false); }
 
 // Scanout shows the bytes the game wrote: sRGB images are read through a UNORM view (no decode), like metal.m.
+uint32_t vk_dump_depth_layer = ~0u;
 static VkImageView raw_view(TexBackend *b) {
+    if (vk_dump_depth_layer != ~0u && (b->aspect & VK_IMAGE_ASPECT_DEPTH_BIT)) {
+        static const VkComponentMapping id0 = {0};
+        return vk_image_view(b, VK_IMAGE_VIEW_TYPE_2D, b->format, 0, 1, vk_dump_depth_layer, 1, id0, VK_IMAGE_ASPECT_DEPTH_BIT);
+    }
     VkFormat f = b->format == VK_FORMAT_R8G8B8A8_SRGB ? VK_FORMAT_R8G8B8A8_UNORM
                : b->format == VK_FORMAT_B8G8R8A8_SRGB ? VK_FORMAT_B8G8R8A8_UNORM : b->format;
     static const VkComponentMapping id = {0};
@@ -4821,7 +4839,8 @@ void vk_present_draw(VkCommandBuffer cb, TexBackend *b, float vx, float vy, floa
 
 // Screenshot of a game texture (presented crop applied to build/frame_* shots), via the present shader into RGBA8.
 void renderer_save_texture_tex(TexBackend *b, const char *path) {
-    if (!b || !b->image || (b->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT)) return;
+    extern uint32_t vk_dump_depth_layer;
+    if (!b || !b->image || ((b->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT) && vk_dump_depth_layer == ~0u)) return;
     extern const float *vk_shot_crop(void);
     float crop[4] = {0, 0, 1, 1};
     if (strstr(path, "frame_")) memcpy(crop, vk_shot_crop(), sizeof crop);
@@ -4968,6 +4987,7 @@ static void exec_list(uint64_t handle, int depth) {
         }
         case CMD_SET_POLYGON_OFFSET: memcpy(st.poly_offset, r->f, sizeof st.poly_offset); break;
         case CMD_SET_PRIMITIVE_RESTART: st.prim_restart = r->x[0] != 0; st.restart_index = (uint32_t)r->x[1]; break;
+        case CMD_SET_DEPTH_CLAMP: st.depth_clamp = r->x[0] != 0; break;
         case CMD_SET_COPY_STRIDES: st.copy_row_stride = r->x[0]; st.copy_image_stride = r->x[1]; break;
         case CMD_CLEAR_COLOR: {
             snap_reason = "clear-color"; snapshots_invalidate(NULL);
