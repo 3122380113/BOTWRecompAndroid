@@ -371,6 +371,16 @@ Rodada 3, com referências do Switch (vídeo, porta abrindo e terminal Sheikah):
   falha. Por isso arma depois de `LARECOMP_WATCH_READ_DELAY` s (padrão 60). Armado em jogo no planalto por ~60 s
   (~49 fps): 0 acessos. Na carga, f_104327900 mexe nessa memória pela CPU. Os counters do jogo são só timestamps
   (tipos 0 e 16); não há occlusion query. O pé deve vir da física / raycast (CPU), não da GPU.
+  Rodada 2: o watch aceita formato e vários intervalos (`LARECOMP_WATCH_READ_TEX=0x0x8:25`, 0 = qualquer
+  dimensão, só texturas >= 64 KiB). Nenhum dos arrays do terreno (alturas f0x6; 512x512x8 e 64x64x8 f0x25;
+  256x256x8 f0x2a) é lido pela CPU em jogo. Intervalos com páginas de 16 KiB invadem objetos vizinhos e já
+  derrubaram o jogo (nvnBufferGetAddress nulo); vigie poucos intervalos e grandes. Vista lateral no planalto
+  (RSTICK_LEFT): o Link está de pé, pernas retas, afundado por igual até a canela. Não é pose de IK; o modelo
+  inteiro está baixo, como na neve ou areia funda. Travar em 30 fps (`LARECOMP_PRESENT_WAIT=1`: o present espera
+  o intervalo do jogo em vsyncs; sem isso o BOTW apresenta ~45-49 vezes por segundo com intervalo 2) não muda
+  nada. Pista do Cemu: o afundamento no Wii U vinha do jogo usar a GPU para trabalho fora do gráfico (corrigido no
+  Cemu 1.7.4). `LARECOMP_LOG_READBACK=1` não registrou nenhuma cópia textura→buffer no planalto. Pausado
+  (2026-10-19): o usuário vai migrar para o update (v1.6.0) e espera que isso resolva.
 - Brilho Sheikah em blocos (ainda aberto): a textura do bloom (320x180, 5 níveis) é registrada uma vez, sem view
   (`LARECOMP_WATCH_TEXID=7fffffff` registra a do bloom); todas as passadas de redução / blur leem com um sampler de LOD
   0..0 (nível 0) e escrevem no nível k (view do render target); a composição final lê com LOD 1..1 (nível 1). O jogo

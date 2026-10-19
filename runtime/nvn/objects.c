@@ -622,15 +622,17 @@ NVN(nvnTextureInitialize) {
             t->width, t->height, t->depth, t->format, t->flags, t->target, t->levels, (unsigned long long)t->addr,
             (unsigned long long)c->x[30]);
     {  // LARECOMP_WATCH_READ_TEX=<w>x<h>x<d>: who reads the storage of the first texture of that shape (dispatch.c)
-        static int ww = -1, wh, wd;
+        static int ww = -1, wh, wd, wf = -1;
         if (ww < 0) {
             ww = 0;
             const char *e = getenv("LARECOMP_WATCH_READ_TEX");
-            if (e) sscanf(e, "%dx%dx%d", &ww, &wh, &wd);
+            if (e) sscanf(e, "%dx%dx%d:%x", &ww, &wh, &wd, &wf);  // (each texture of that shape [and format], up to 16: dispatch.c)
         }
-        if (ww && (int)t->width == ww && (int)t->height == wh && (int)t->depth == wd) {
+        if (ww >= 0 && (ww || wh || wd) && (!ww || (int)t->width == ww) && (!wh || (int)t->height == wh) &&
+            (!wd || (int)t->depth == wd) && (wf < 0 || (int)t->format == wf) && tegra_total_size(&t->layout) >= 0x10000) {  // (0: any; not the small ones: pages shared with the heap)
             extern void rt_range_watch(uint64_t lo, uint64_t hi);
-            LOG("[rwatch] texture %llx fmt %#x at %llx size %#llx\n", (unsigned long long)A(0), t->format,
+            LOG("[rwatch] texture %llx %ux%ux%u fmt %#x at %llx size %#llx\n", (unsigned long long)A(0), t->width,
+                t->height, t->depth, t->format,
                 (unsigned long long)t->addr, (unsigned long long)tegra_total_size(&t->layout));
             rt_range_watch(t->addr, t->addr + tegra_total_size(&t->layout));
         }
@@ -1080,6 +1082,18 @@ NVN(nvnQueueAcquireTexture) {
 NVN(nvnQueuePresentTexture) {
     NvnWindow *w = HOST(NvnWindow, A(1));
     int i = (int)A(2);
+    {   // LARECOMP_PRESENT_WAIT=1: a present waits for its window's interval in vsyncs since the previous one, as NVN
+        // does on the Switch (BOTW asks for 2: its world steps 1/30 s per frame)
+        static int on = -1;
+        static uint64_t last_vs;
+        if (on < 0) on = getenv("LARECOMP_PRESENT_WAIT") && atoi(getenv("LARECOMP_PRESENT_WAIT"));
+        extern volatile uint64_t g_vsync_count;
+        if (on && w->interval > 0) {
+            uint64_t want = last_vs + (uint64_t)w->interval;
+            while (__atomic_load_n(&g_vsync_count, __ATOMIC_RELAXED) < want) usleep(500);
+            last_vs = __atomic_load_n(&g_vsync_count, __ATOMIC_RELAXED);
+        }
+    }
     if (i >= 0 && i < w->num) backend_present(HOST(NvnTexture, w->textures[i]));
 }
 
