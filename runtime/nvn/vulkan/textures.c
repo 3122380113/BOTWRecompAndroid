@@ -890,6 +890,16 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
         return vk_image_view(b, type, fmt, lv0, 1, ly0, 1, IDENTITY, b->aspect);
     }
     VkImageAspectFlags aspect = b->aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : b->aspect;
+    {   // sampled formats the GPU can't filter (Maxwell filters them all): a linear sampler on them is undefined in Vulkan
+        static uint8_t told[256];
+        VkFormatProperties fp;
+        if (fmt < 256 && !told[fmt]) {
+            vkGetPhysicalDeviceFormatProperties(g_vk.phys, fmt, &fp);
+            told[fmt] = 1;
+            if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT))
+                LOG("[vk] sampled format %d (nvn %#x, %ux%u) has no linear filtering here\n", fmt, t->format, t->width, t->height);
+        }
+    }
     VkComponentMapping sw = IDENTITY;
     if (!(b->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) && b->samples == 1) {
         const uint8_t *s = v && (v->setmask & 8) ? v->swizzle : t->swizzle;

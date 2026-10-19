@@ -256,6 +256,14 @@ stride, 4096, não cabe no espaço delas); o runtime os lia como block-linear e 
 Achado por bisseção dos shaders do quadro (`LARECOMP_SKIP_FSHASH`, agora até 128) e `LARECOMP_WATCH_TEXADDR`.
 Corrigido: flag `0x40` lida como linear, linhas na largura.
 
+Luz da porta do santuário (cutscene "You are the light"): os feixes saem com uma borda horizontal dura e colunas
+verticais. Reproduzir: o save com o Link no terminal da porta, A a cada ~90 quadros a partir do 2950; a luz aparece
+por volta do quadro 4300 (debug frame lá). O buffer de luz já sai errado: pass 800x450 RGBA16F (partículas e malhas
+dos feixes, fs `8d989710b28bd28a` e outros), que leem uma profundidade linear R16F 1600x900 (feita pelo fs
+`71ac217f9871658e` a partir do depth, com snapshot de feedback) para o fade contra a geometria. A suspeita é essa
+profundidade (ou a comparação dela); não confirmada. Nenhum formato sem filtro linear é amostrado (o runtime avisa
+uma vez por formato se houver).
+
 Ainda a ver:
 o controle físico com o BOTW; a miniatura do save na lista não aparece; upload de ~500 MB/s
 (`upload` no log de fps).
