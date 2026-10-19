@@ -411,6 +411,16 @@ static void builder_layout(uint64_t b, TexLayout *t) {
     if (!t->layers) t->layers = 1;
     t->levels = G(uint32_t, b, 0x1C) ? G(uint32_t, b, 0x1C) : 1;
     tegra_layout_init(t);
+    if (getenv("LARECOMP_LOG_BHDIFF") && t->depth <= 1) {  // (diagnosis) where the old block height rule differed
+        uint32_t hb = (t->height + t->fmt->bh - 1) / t->fmt->bh, gobs = (hb + 7) / 8, o = 0;
+        while ((1u << o) < gobs && o < 4) o++;
+        if (o != t->block_height_log2) {
+            static int n;
+            if (n++ < 300) LOG("[nvn] bh differs: %ux%u layers %u fmt %#x levels %u: %u (old %u) packaged %llx\n", t->width,
+                               t->height, t->layers, G(uint32_t, b, 0x20), t->levels, t->block_height_log2, o,
+                               (unsigned long long)G(uint64_t, b, 0x50));
+        }
+    }
     // Packaged textures (BNTX) were swizzled offline with their own block height, which can differ
     // from the driver default: NVNpackagedTextureLayout's low word is log2(GOBs per block).
     uint64_t pl = G(uint64_t, b, 0x50);

@@ -742,6 +742,29 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
             } else {
                 tegra_deswizzle(src, lin, l.wb, l.hb, l.d, fi->bpb, l.block_height_log2, l.block_depth_log2);
             }
+            {   // LARECOMP_DUMP_TEX=<w>x<h>x<d>,<path prefix>: level 0 of each upload of that shape, guest bytes (.raw)
+                // and deswizzled (.lin), the first 8 (diagnosis)
+                static int dw = -1, dh, dd, ndump;
+                static char dpre[256];
+                if (dw < 0) {
+                    dw = 0;
+                    const char *e = getenv("LARECOMP_DUMP_TEX");
+                    if (e && sscanf(e, "%dx%dx%d,%255s", &dw, &dh, &dd, dpre) != 4) dw = 0;
+                }
+                if (dw && lv == 0 && layer == 0 && (int)t->width == dw && (int)t->height == dh && (int)t->depth == dd &&
+                    ndump < 8) {
+                    char p[300];
+                    snprintf(p, sizeof p, "%s%d.lin", dpre, ndump);
+                    FILE *f = fopen(p, "wb");
+                    if (f) { fwrite(lin, 1, sz, f); fclose(f); }
+                    snprintf(p, sizeof p, "%s%d.raw", dpre, ndump);
+                    f = fopen(p, "wb");
+                    if (f) { fwrite(src, 1, tegra_level(&t->layout, 0).offset + tegra_layer_size(&t->layout), f); fclose(f); }
+                    LOG("[tex] dump %d: %ux%ux%u fmt %#x bh %u bd %u linear %d at %llx -> %s\n", ndump, t->width, t->height,
+                        t->depth, t->format, l.block_height_log2, l.block_depth_log2, linear, (unsigned long long)t->addr, p);
+                    ndump++;
+                }
+            }
             if (b->tp > 0 && layer == 0) texpatch_apply(b->tp - 1, lv, lin, l.w, l.h, row);
             if (expand) {  // RGB8 -> RGBA8
                 uint8_t *o = s.ptr;

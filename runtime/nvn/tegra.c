@@ -2,28 +2,41 @@
 // (block height) and in depth (block depth). Levels shrink their block height as they shrink.
 #include "tegra.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 static uint32_t div_up(uint32_t a, uint32_t b) { return (a + b - 1) / b; }
 static uint64_t align_up(uint64_t a, uint64_t b) { return (a + b - 1) / b * b; }
 
+// The driver's tile size (deko3d's pickTileSize, which follows NVN): the largest power of two of GOBs, up to 16,
+// that 1.5x the extent still fills.
+static uint32_t pick_tile_log2(uint32_t units) {
+    return units >= 16 ? 4 : units >= 8 ? 3 : units >= 4 ? 2 : units >= 2 ? 1 : 0;
+}
+
 uint32_t tegra_default_block_height_log2(uint32_t height_in_blocks) {
-    uint32_t gobs = div_up(height_in_blocks, 8);
-    uint32_t log2 = 0;
-    while ((1u << log2) < gobs && log2 < 4) log2++;
-    return log2;
+    static int old = -1;  // LARECOMP_TEGRA_OLD_BH=1: the previous rule (GOB count rounded up to a power of two)
+    if (old < 0) old = getenv("LARECOMP_TEGRA_OLD_BH") != NULL;
+    if (old) {
+        uint32_t gobs = div_up(height_in_blocks, 8);
+        uint32_t log2 = 0;
+        while ((1u << log2) < gobs && log2 < 4) log2++;
+        return log2;
+    }
+    return pick_tile_log2(div_up(height_in_blocks + height_in_blocks / 2, 8));
 }
 
-static uint32_t block_depth_for(uint32_t depth) {
-    uint32_t log2 = 0;
-    while ((1u << log2) < depth && log2 < 5) log2++;
-    return log2;
-}
-
+// 3D textures tile in depth only: one GOB high blocks (deko3d sets just the tile depth for them). With the 2D rule
+// (4 GOBs high) BOTW's sky scattering LUT (256x32x16 RGBA16F) read scrambled and the sky came out brown.
 void tegra_layout_init(TexLayout *t) {
     uint32_t hb = div_up(t->height, t->fmt->bh);
-    t->block_height_log2 = tegra_default_block_height_log2(hb);
-    t->block_depth_log2 = t->depth > 1 ? block_depth_for(t->depth) : 0;
+    if (t->depth > 1) {
+        t->block_height_log2 = 0;
+        t->block_depth_log2 = pick_tile_log2(t->depth + t->depth / 2);
+    } else {
+        t->block_height_log2 = tegra_default_block_height_log2(hb);
+        t->block_depth_log2 = 0;
+    }
 }
 
 // Block height shrinks with the level so a block never exceeds the level height.

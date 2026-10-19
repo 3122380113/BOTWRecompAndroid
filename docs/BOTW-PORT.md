@@ -381,6 +381,15 @@ Rodada 3, com referências do Switch (vídeo, porta abrindo e terminal Sheikah):
   nada. Pista do Cemu: o afundamento no Wii U vinha do jogo usar a GPU para trabalho fora do gráfico (corrigido no
   Cemu 1.7.4). `LARECOMP_LOG_READBACK=1` não registrou nenhuma cópia textura→buffer no planalto. Pausado
   (2026-10-19): o usuário vai migrar para o update (v1.6.0) e espera que isso resolva.
+- Céu marrom no planalto (2026-10-19): corrigido. O céu é desenhado a partir de uma LUT de dispersão atmosférica 3D
+  (256x32x16 RGBA16F, escrita pela CPU na carga; fs `81f35db4` gera o céu 256x256, e o triângulo `38905430` o
+  desenha). Lida com blocos de 4 GOBs de altura, a LUT saía embaralhada: média R:G:B 16:9:2 no lugar de azul.
+  `LARECOMP_DUMP_TEX=<w>x<h>x<d>,<prefixo>` salva os bytes do guest e a versão desembaralhada de um upload. Medindo
+  a suavidade dos dados em cada combinação, venceu altura 1 GOB com profundidade 16. É a regra do deko3d (que
+  segue o NVN): texturas 3D só têm tile em profundidade (`pick(1.5 x depth)`). As 2D usam
+  `pick(1.5 x altura em GOBs)`, arredondando para baixo até 16, enquanto o nosso arredondava a contagem para cima.
+  Isso muda poucas texturas não empacotadas (`LARECOMP_LOG_BHDIFF=1` lista; `LARECOMP_TEGRA_OLD_BH=1` volta a regra
+  antiga). O céu agora fica azul-claro com névoa branca, e a cena perdeu o tom sépia.
 - Brilho Sheikah em blocos (ainda aberto): a textura do bloom (320x180, 5 níveis) é registrada uma vez, sem view
   (`LARECOMP_WATCH_TEXID=7fffffff` registra a do bloom); todas as passadas de redução / blur leem com um sampler de LOD
   0..0 (nível 0) e escrevem no nível k (view do render target); a composição final lê com LOD 1..1 (nível 1). O jogo
