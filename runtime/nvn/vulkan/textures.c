@@ -999,10 +999,15 @@ VkSampler vk_sampler(NvnSamplerDesc *d) {
     bool border = false;
     for (int i = 0; i < 3; i++) {
         switch (d->wrap[i]) {
-        case 0: case 7: modes[i] = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE; break;
+        // NVN wrap modes, from BOTW's own GX2 -> NVN table (main + 0x1c21ccc: WRAP 1, MIRROR 6, CLAMP 7, MIRROR_ONCE 5,
+        // CLAMP_HALF_BORDER 3, MIRROR_ONCE_HALF_BORDER 0, CLAMP_BORDER 3, MIRROR_ONCE_BORDER 4): 0 mirror clamp,
+        // 1 repeat, 2 clamp, 3 clamp to border, 4 mirror clamp to border, 5 mirror clamp to edge, 6 mirrored repeat,
+        // 7 clamp to edge. (3 and 5 were swapped here: mirror-once samplers clamped to the border colour.)
+        case 2: case 7: modes[i] = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE; break;
         case 1: modes[i] = VK_SAMPLER_ADDRESS_MODE_REPEAT; break;
-        case 2: case 3: modes[i] = VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE; break;
-        case 4: case 5: modes[i] = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER; border = true; break;
+        case 0: case 5: modes[i] = VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE; break;
+        case 4: modes[i] = VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE; break;  // (no mirror-to-border in Vulkan)
+        case 3: modes[i] = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER; border = true; break;
         case 6: modes[i] = VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT; break;
         default: modes[i] = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         }

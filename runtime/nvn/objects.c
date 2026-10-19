@@ -722,7 +722,16 @@ NVN(nvnSamplerBuilderSetDefaults) {
     d->compare_func = 4;
 }
 NVN(nvnSamplerBuilderSetMinMagFilter) { SD->min_filter = (uint32_t)A(1); SD->mag_filter = (uint32_t)A(2); }
-NVN(nvnSamplerBuilderSetWrapMode) { SD->wrap[0] = (uint32_t)A(1); SD->wrap[1] = (uint32_t)A(2); SD->wrap[2] = (uint32_t)A(3); }
+NVN(nvnSamplerBuilderSetWrapMode) {
+    SD->wrap[0] = (uint32_t)A(1); SD->wrap[1] = (uint32_t)A(2); SD->wrap[2] = (uint32_t)A(3);
+    if (getenv("LARECOMP_LOG_WRAP")) {  // each distinct (modes, caller) once (diagnosis)
+        static uint64_t seen[256]; static int ns;
+        uint64_t k = (A(1) & 0xF) | (A(2) & 0xF) << 4 | (A(3) & 0xF) << 8 | (uint64_t)c->x[30] << 12;
+        int i = 0;
+        while (i < ns && seen[i] != k) i++;
+        if (i == ns && ns < 256) { seen[ns++] = k; LOG("[nvn] SetWrapMode %llu %llu %llu (lr %llx)\n", (unsigned long long)A(1), (unsigned long long)A(2), (unsigned long long)A(3), (unsigned long long)c->x[30]); }
+    }
+}
 NVN(nvnSamplerBuilderSetLodClamp) { SD->lod_min = AF(0); SD->lod_max = AF(1); }
 NVN(nvnSamplerBuilderSetLodBias) { SD->lod_bias = AF(0); }
 NVN(nvnSamplerBuilderSetCompare) { SD->compare_mode = (uint32_t)A(1); SD->compare_func = (uint32_t)A(2); }
