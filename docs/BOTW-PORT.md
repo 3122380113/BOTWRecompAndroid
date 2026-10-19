@@ -250,7 +250,13 @@ nenhum render target, cópia ou dispatch a cobre, e ela está zerada (`LARECOMP_
 alvos, cópias e dispatches sobre um endereço; `LARECOMP_LOG_READBACK=1` as leituras de volta). Falta achar quem a
 preenche no Switch (a função do jogo que cria o objeto: `main+0xa3e5bc`).
 
-Ainda a ver: o usuário viu vértices "estourando" às vezes no santuário (não reproduzido nas capturas);
+Paredes do santuário esticadas em "cortinas" verticais e picos (os "vértices estourando"): as alturas do terreno vêm
+de tiles 256x256 R16 com a flag `0x40`, preenchidos pela CPU em linhas lineares do tamanho da largura (o campo de
+stride, 4096, não cabe no espaço delas); o runtime os lia como block-linear e o mapa de alturas saía em listras.
+Achado por bisseção dos shaders do quadro (`LARECOMP_SKIP_FSHASH`, agora até 128) e `LARECOMP_WATCH_TEXADDR`.
+Corrigido: flag `0x40` lida como linear, linhas na largura.
+
+Ainda a ver:
 o controle físico com o BOTW; a miniatura do save na lista não aparece; upload de ~500 MB/s
 (`upload` no log de fps).
 

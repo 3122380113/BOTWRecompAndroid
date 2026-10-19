@@ -1751,8 +1751,37 @@ static VkFormat vertex_format(uint32_t f) {
     case 0x69: return VK_FORMAT_A2B10G10R10_SNORM_PACK32;
     case 0x3F: return VK_FORMAT_B10G11R11_UFLOAT_PACK32;
     case 0x40: return VK_FORMAT_E5B9G9R9_UFLOAT_PACK32;
-    case 0x51: return VK_FORMAT_R8_UINT;
-    default: return VK_FORMAT_R32G32B32A32_SFLOAT;
+    // integer-to-float (NVN *_UI2F / *_I2F: the integer's value as a float, the shader reads floats) - Vulkan's
+    // USCALED / SSCALED; none at 32 bits there: those are read as the integer's bits (none seen in BOTW)
+    case 0x51: return VK_FORMAT_R8_USCALED;
+    case 0x52: return VK_FORMAT_R8_SSCALED;
+    case 0x53: return VK_FORMAT_R16_USCALED;
+    case 0x54: return VK_FORMAT_R16_SSCALED;
+    case 0x55: return VK_FORMAT_R32_UINT;
+    case 0x56: return VK_FORMAT_R32_SINT;
+    case 0x57: return VK_FORMAT_R8G8_USCALED;
+    case 0x58: return VK_FORMAT_R8G8_SSCALED;
+    case 0x59: return VK_FORMAT_R16G16_USCALED;
+    case 0x5A: return VK_FORMAT_R16G16_SSCALED;
+    case 0x5B: return VK_FORMAT_R32G32_UINT;
+    case 0x5C: return VK_FORMAT_R32G32_SINT;
+    case 0x5D: return VK_FORMAT_R8G8B8_USCALED;
+    case 0x5E: return VK_FORMAT_R8G8B8_SSCALED;
+    case 0x5F: return VK_FORMAT_R16G16B16_USCALED;
+    case 0x60: return VK_FORMAT_R16G16B16_SSCALED;
+    case 0x61: return VK_FORMAT_R32G32B32_UINT;
+    case 0x62: return VK_FORMAT_R32G32B32_SINT;
+    case 0x63: return VK_FORMAT_R8G8B8A8_USCALED;
+    case 0x64: return VK_FORMAT_R8G8B8A8_SSCALED;
+    case 0x65: return VK_FORMAT_R16G16B16A16_USCALED;
+    case 0x66: return VK_FORMAT_R16G16B16A16_SSCALED;
+    case 0x67: return VK_FORMAT_R32G32B32A32_UINT;
+    case 0x68: return VK_FORMAT_R32G32B32A32_SINT;
+    default: {
+        static uint8_t told[256];
+        if (!told[f & 255]++) LOG("[vk] vertex format nvn %#x not mapped: read as RGBA32F\n", f);
+        return VK_FORMAT_R32G32B32A32_SFLOAT;
+    }
     }
 }
 
@@ -1777,6 +1806,10 @@ static VkFormat vertex_format_supported(VkFormat f) {
     case VK_FORMAT_R16G16B16_SNORM: return VK_FORMAT_R16G16B16A16_SNORM;
     case VK_FORMAT_R16G16B16_UINT: return VK_FORMAT_R16G16B16A16_UINT;
     case VK_FORMAT_R16G16B16_SINT: return VK_FORMAT_R16G16B16A16_SINT;
+    case VK_FORMAT_R8G8B8_USCALED: return VK_FORMAT_R8G8B8A8_USCALED;
+    case VK_FORMAT_R8G8B8_SSCALED: return VK_FORMAT_R8G8B8A8_SSCALED;
+    case VK_FORMAT_R16G16B16_USCALED: return VK_FORMAT_R16G16B16A16_USCALED;
+    case VK_FORMAT_R16G16B16_SSCALED: return VK_FORMAT_R16G16B16A16_SSCALED;
     default: return VK_FORMAT_R32G32B32A32_SFLOAT;
     }
 }
@@ -3756,11 +3789,11 @@ static void draw_(CmdRec *r, bool indexed) {
             last_hash = fs ? hmix(1469598103934665603ull, (const void *)(uintptr_t)(fs + 0x30), 0x200) : 0;
 #endif
         }
-        static uint64_t skip[16];
+        static uint64_t skip[128];  // (bisecting a frame's shaders: many at once)
         static int nskip = -1;
         if (nskip < 0) {
             nskip = 0;
-            for (const char *p = getenv("LARECOMP_SKIP_FSHASH"); p && *p && nskip < 16;) {
+            for (const char *p = getenv("LARECOMP_SKIP_FSHASH"); p && *p && nskip < 128;) {
                 skip[nskip++] = strtoull(p, (char **)&p, 16);
                 while (*p == ',') p++;
             }
@@ -4188,6 +4221,16 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
             LOG("\n");
         }
     }
+    for (int i = 0; i < pr->vi->ntex && i < 64 && getenv("LARECOMP_DEBUG_TEXSTATE"); i++) {  // vertex textures
+        NvnTexture *t = shader_texture_object(0, &pr->vi->tex[i]);
+        const TexBackend *b = t ? (const TexBackend *)t->backend : NULL;
+        if (!t) { LOG("[draw]   vtex%d: none\n", i); continue; }
+        uint64_t n = t->layout.fmt && t->addr ? tegra_total_size(&t->layout) : 0, nz = 0;
+        for (uint64_t k = 0; k < n; k += 64) nz += ((const uint8_t *)(uintptr_t)t->addr)[k] != 0;
+        LOG("[draw]   vtex%d: %p %ux%ux%u f%#x target %u flags %#x addr %llx: image %d gpu_owned %d uploaded %d dynamic %d, guest nonzero %llu/%llu\n",
+            i, (void *)t, t->width, t->height, t->depth, t->format, t->target, t->flags, (unsigned long long)t->addr, b != NULL,
+            b ? b->gpu_owned : 0, b ? b->uploaded : 0, b ? b->dynamic : 0, (unsigned long long)nz, (unsigned long long)(n + 63) / 64);
+    }
     for (int i = 0; i < pr->fi->ntex && i < 64; i++) {  // fragment textures: guest size / format, allocation, scale
         NvnTexture *t = shader_texture_object(1, &pr->fi->tex[i]);
         const TexBackend *b = t ? (const TexBackend *)t->backend : NULL;
@@ -4197,8 +4240,8 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
         if (getenv("LARECOMP_DEBUG_TEXSTATE") && !b) {
             uint64_t n = t->layout.fmt && t->addr ? tegra_total_size(&t->layout) : 0, nz = 0;
             for (uint64_t k = 0; k < n; k += 64) nz += ((const uint8_t *)(uintptr_t)t->addr)[k] != 0;
-            LOG("[draw]     no image yet: flags %#x addr %llx levels %u layout bh %u, guest bytes nonzero %llu/%llu\n", t->flags,
-                (unsigned long long)t->addr, t->levels, t->layout.block_height_log2, (unsigned long long)nz, (unsigned long long)(n + 63) / 64);
+            LOG("[draw]     no image yet: stride %llu flags %#x addr %llx levels %u layout bh %u, guest bytes nonzero %llu/%llu\n",
+                (unsigned long long)t->stride, t->flags, (unsigned long long)t->addr, t->levels, t->layout.block_height_log2, (unsigned long long)nz, (unsigned long long)(n + 63) / 64);
         }
         if (getenv("LARECOMP_DEBUG_TEXSTATE") && b && t->addr) {  // where its texels come from: the CPU's memory or GPU work
             uint64_t n = t->layout.fmt ? tegra_total_size(&t->layout) : 0, nz = 0;
@@ -4237,6 +4280,13 @@ static void copy_region_dims(NvnTexture *t, const TexRefRec *ref, const FormatIn
 static void copy_buffer_to_texture(uint64_t src, const TexRefRec *dst) {
     snap_reason = "buf2tex"; snapshots_invalidate(NULL);
     NvnTexture *t = (NvnTexture *)(uintptr_t)dst->tex;
+    {   extern uint64_t nvn_watch_texaddr(void);
+        uint64_t wa = nvn_watch_texaddr();
+        if (wa && t && t->addr <= wa && wa < t->addr + tegra_total_size(&t->layout))
+            LOG("[watch] frame %llu: buffer %llx -> texture %ux%ux%u f%#x region %d %d %d %d %d %d\n", (unsigned long long)renderer_present_count(),
+                (unsigned long long)src, t->width, t->height, t->depth, t->format, dst->region[0], dst->region[1], dst->region[2],
+                dst->region[3], dst->region[4], dst->region[5]);
+    }
     if (!t || !src) return;
     alias_before_write(t, 0, "upload");
     vk_end_pass();
