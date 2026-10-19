@@ -900,7 +900,7 @@ static void register_texture(Cpu *c) {
     if (e->has_view) memcpy(&e->view, AP(3), sizeof e->view);
     static int watch_id = -2;  // LARECOMP_WATCH_TEXID=<hex id>: its registrations (texture, view)
     if (watch_id == -2) watch_id = getenv("LARECOMP_WATCH_TEXID") ? (int)strtol(getenv("LARECOMP_WATCH_TEXID"), NULL, 16) : -1;
-    if (id == watch_id)
+    if (id == watch_id || (watch_id == 0x7fffffff && t && t->width == 320 && t->height == 180 && t->levels == 5))  // (7fffffff: the bloom chain)
         LOG("[watch] texture id %#x <- %p %ux%u levels %u view %d setmask %#x levels %u+%u (lr %llx)\n", id, (void *)t,
             t ? t->width : 0, t ? t->height : 0, t ? t->levels : 0, e->has_view, e->has_view ? e->view.setmask : 0,
             e->view.base_level, e->view.num_levels, (unsigned long long)c->x[30]);

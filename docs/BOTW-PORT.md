@@ -340,9 +340,10 @@ Rodada 3, com referências do Switch (vídeo, porta abrindo e terminal Sheikah):
   coisas: um dos dois lados está errado no nosso (o uv do traço, 0..2 por `cb9[48] = (2, 2, 1, 1)` sobre um
   quadrante da imagem, ou o sampler que o traço realmente usa no Switch). `BindSeparateSampler(s)` nunca é chamado
   (log em cmdbuf.c), então não é um sampler separado sobrescrevendo o slot.
-- Tabela de wrap do NVN tirada do próprio jogo (main + 0x1c21ccc, GX2 -> NVN: [1, 6, 7, 5, 3, 0, 3, 4]): 1 repeat,
-  6 mirrored repeat, 7 clamp to edge, 5 mirror clamp to edge, 3 clamp to border, 0 mirror clamp, 4 mirror clamp to
-  border. O runtime tinha 3 e 5 trocados (corrigido, bd75f20; a barra da tela de carregamento confirma).
+- Tabela de wrap do NVN: a tabela do agl (main + 0x1c21ccc, [1, 6, 7, 5, 3, 0, 3, 4]) está na ordem do próprio agl,
+  não na do GX2. Lida como GX2, trocava 3 e 5 (bd75f20) e o shadow map do sol (wrap 5, clamp to border) virava
+  mirror-once: sol iluminando as paredes de dentro do santuário depois da porta aberta. Voltou à tabela original
+  (fa7085a): 0 / 7 clamp to edge, 1 repeat, 2 / 3 mirror clamp to edge, 4 / 5 clamp to border, 6 mirrored repeat.
 - Traço / névoa / luz da porta, RESOLVIDO: o eft cria uma tabela de 16 samplers (4x4 wraps) e registra cada um pelo
   gerenciador de pool do agl, que reaproveita o slot de um sampler igual já registrado, comparando os objetos
   NVNsampler do guest. No nosso HLE o objeto só tinha o ponteiro do host e bytes velhos: o sampler mirror/mirror do
@@ -350,6 +351,10 @@ Rodada 3, com referências do Switch (vídeo, porta abrindo e terminal Sheikah):
   grava o descritor no objeto do guest (+8). Traço da ativação, sol e feixes da porta, névoa e a luz entrando pela
   fresta da porta ficaram como no Switch. Diagnóstico: `LARECOMP_LOG_SMPREG=1` (registros), `LARECOMP_LOG_WRAP=1`,
   `LARECOMP_WATCH_HANDLE_TEX=<id>`.
+- Brilho Sheikah em blocos (ainda aberto): a textura do bloom (320x180, 5 níveis) é registrada uma vez, sem view
+  (`LARECOMP_WATCH_TEXID=7fffffff` registra a do bloom); todas as passadas de redução / blur leem com um sampler de LOD
+  0..0 (nível 0) e escrevem no nível k (view do render target); a composição final lê com LOD 1..1 (nível 1). O jogo
+  só tem samplers 0..0 e 1..1 para isso. Fazemos o que o jogo pede; a diferença está em algum detalhe de amostragem.
 - O lifter contra o Unicorn com as instruções do próprio BOTW, no celular (`tools/test_lift_android.py`): 20000
   codificações, 59952 casos, 0 falhas.
 - Ainda falta: a luz entrando por baixo da porta enquanto ela sobe (Switch 3:48, nosso ~3745-3765): no nosso a fresta
