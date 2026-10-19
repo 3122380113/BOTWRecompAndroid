@@ -356,6 +356,13 @@ Rodada 3, com referências do Switch (vídeo, porta abrindo e terminal Sheikah):
   near plane): visto do sol, o chão do corredor aparecia sem nada em cima. Com o depth clamp (66d40a9) a sala fica
   escura e com névoa, como no Switch em 3:56. Ainda aparece clara em algumas execuções (1 de 3): resta algo dependente
   de tempo. O debug frame agora salva passes só de profundidade (as cascatas, em vermelho).
+- Fechamento ao recarregar (morrer, ou carregar um save já em jogo): SIGSEGV em f_1010c1a04 (main + 0x10c1a04), lendo
+  o vtable de um objeto nulo em `this + 0xc60` (o caminho com o bit 0 do segundo argumento). Reproduzido duas vezes
+  (2026-10-18 e 2026-10-19). Lógica do jogo num estado que no Switch não acontece (objeto ainda não criado:
+  suspeita de ordem entre threads).
+- Planalto (save 3, 2026-10-19 17:11): o Link aparece com as pernas cortadas no joelho na grama (o "afundando"),
+  céu marrom e dessaturado; num quadro mais tarde (~2600) a cena ficou toda preta com o HUD intacto (suspeita de
+  NaN na exposição automática), sem erro no log.
 - Brilho Sheikah em blocos (ainda aberto): a textura do bloom (320x180, 5 níveis) é registrada uma vez, sem view
   (`LARECOMP_WATCH_TEXID=7fffffff` registra a do bloom); todas as passadas de redução / blur leem com um sampler de LOD
   0..0 (nível 0) e escrevem no nível k (view do render target); a composição final lê com LOD 1..1 (nível 1). O jogo
