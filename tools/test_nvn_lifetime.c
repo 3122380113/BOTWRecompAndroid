@@ -10,6 +10,7 @@ void vk_async_drain(void) { drains++; }
 void rt_fatal_trace(void) { abort(); }
 const FormatInfo *nvn_format_info(uint32_t f) { (void)f; static const FormatInfo fi = {0}; return &fi; }
 void tegra_layout_init(TexLayout *t) { (void)t; }
+uint64_t tegra_total_size(const TexLayout *t) { (void)t; return 0; }
 
 // A guest texture object (its first word holds the host pointer) initialized from a builder over pool `ph`.
 static uint8_t builder[256];
