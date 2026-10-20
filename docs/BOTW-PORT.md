@@ -420,8 +420,12 @@ Rodada 3, com referências do Switch (vídeo, porta abrindo e terminal Sheikah):
     estado) e `LARECOMP_SHOT_AT=a+b+c` (`+` como separador no Android).
   - Em aberto: no Switch a troca de LOD não mostra buracos. Pode ser streaming mais lento aqui (E/S de arquivos) ou
     o modelo de baixo detalhe sumindo antes da hora.
-- Cena preta com o HUD intacto (aberto): na mesma execução, os quadros 3000 e 4200 saíram pretos e os 5400 e 6600
-  normais. `LARECOMP_SCREENSHOT_EVERY` pegou preto de 2400 a 6000 em outra execução. Intermitente e se recupera.
+- Cena preta com o HUD intacto (aberto, não reproduz). Apareceu em duas capturas no planalto: quadros 3000/4200 e
+  2400-6000 com `LARECOMP_SCREENSHOT_EVERY`. Depois disso, 4 execuções seguidas não mostraram preto, nem nas
+  capturas nem na tela real (`adb exec-out screencap` no mesmo momento). `LARECOMP_LOG_WB_NAN=1` vigia a exposição
+  automática pelos alvos devolvidos à memória: avisa inf/NaN no 12x1 / 1x1 (R11G11B10F) e registra um quadro
+  escuro (luminância 2x2 do quadro anterior < 0.02) com os 12 parâmetros. Nas 4 execuções não houve nenhum
+  aviso. Pode ter sido um artefato de captura ou algo raro.
 - Brilho Sheikah em blocos (ainda aberto): a textura do bloom (320x180, 5 níveis) é registrada uma vez, sem view
   (`LARECOMP_WATCH_TEXID=7fffffff` registra a do bloom); todas as passadas de redução / blur leem com um sampler de LOD
   0..0 (nível 0) e escrevem no nível k (view do render target); a composição final lê com LOD 1..1 (nível 1). O jogo

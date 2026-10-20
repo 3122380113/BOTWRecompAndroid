@@ -1172,7 +1172,7 @@ static uint64_t wb_max(void) {  // (LARECOMP_WRITEBACK_MAX=<bytes>: a larger lim
 }
 #define WB_MAX wb_max()
 #define WB_SLOTS 32
-typedef struct { uint64_t seq, addr; uint32_t wb, hb, bpb, bh; bool busy; } WbEntry;
+typedef struct { uint64_t seq, addr; uint32_t wb, hb, bpb, bh, fmt; bool busy; } WbEntry;
 static WbEntry wb_ent[WB_SLOTS];
 static int wb_next;
 static VkBuffer wb_buf;
@@ -1216,7 +1216,7 @@ static void wb_queue(NvnTexture *t) {
     const FormatInfo *fi = t->layout.fmt;
     LevelLayout l = tegra_level(&t->layout, 0);
     *e = (WbEntry){.seq = submit_seq + 1, .addr = t->addr, .wb = l.wb, .hb = l.hb, .bpb = fi->bpb,
-                   .bh = l.block_height_log2, .busy = true};
+                   .bh = l.block_height_log2, .fmt = t->format, .busy = true};
     pthread_mutex_unlock(&wb_lock);
     VkCommandBuffer cb = vk_cmd();
     vk_full_barrier(cb);
@@ -1245,6 +1245,44 @@ static void wb_apply(uint64_t done) {
         if (!e->busy || e->seq > done) continue;
         vmaInvalidateAllocation(g_vk.vma, wb_mem, (VkDeviceSize)i * WB_MAX, WB_MAX);
         tegra_swizzle(wb_ptr + (size_t)i * WB_MAX, (uint8_t *)(uintptr_t)e->addr, e->wb, e->hb, 1, e->bpb, e->bh, 0);
+        {   // LARECOMP_LOG_WB_NAN=1: the auto exposure's small targets - inf / NaN in them, and a black frame (the
+            // 2x2 luminance of the previous image near 0) with the 12x1 parameters and the 1x1 average at that point
+            static int on = -1;
+            if (on < 0) on = getenv("LARECOMP_LOG_WB_NAN") != NULL;
+            static float p12[12][3], p1[3];
+            const uint8_t *px = wb_ptr + (size_t)i * WB_MAX;
+            if (on && e->fmt == 0x3f && e->hb == 1 && (e->wb == 12 || e->wb == 1)) {  // R11G11B10F
+                for (uint32_t k = 0; k < e->wb; k++) {
+                    uint32_t v = ((const uint32_t *)px)[k];
+                    uint32_t m[3] = {v & 63, (v >> 11) & 63, (v >> 22) & 31}, x[3] = {(v >> 6) & 31, (v >> 17) & 31, (v >> 27) & 31};
+                    for (int ch = 0; ch < 3; ch++) {
+                        float mb = ch == 2 ? 32.0f : 64.0f;
+                        float f = x[ch] == 31 ? (m[ch] ? NAN : INFINITY) : x[ch] == 0 ? m[ch] / mb * 6.1035156e-05f
+                                                                                   : ldexpf(1.0f + m[ch] / mb, (int)x[ch] - 15);
+                        if (e->wb == 12) p12[k][ch] = f; else p1[ch] = f;
+                        if (!isfinite(f)) {
+                            static uint64_t last;
+                            if (renderer_present_count() != last) {
+                                last = renderer_present_count();
+                                LOG("[wb] %ux1 texel %u ch %d not finite, frame %llu\n", e->wb, k, ch, (unsigned long long)last);
+                            }
+                        }
+                    }
+                }
+            }
+            if (on && e->fmt == 0x5 && e->wb == 2 && e->hb == 2) {  // R16F: the previous image's luminance
+                const _Float16 *h = (const _Float16 *)px;
+                float avg = ((float)h[0] + (float)h[1] + (float)h[2] + (float)h[3]) / 4;
+                static uint64_t last;
+                uint64_t fr = renderer_present_count();
+                if (fr > 1500 && (avg < 0.02f || !isfinite(avg)) && fr - last > 30) {
+                    last = fr;
+                    LOG("[wb] dark frame %llu: lum2x2 %g %g %g %g | 1x1 %g %g %g\n", (unsigned long long)fr, (double)h[0], (double)h[1],
+                        (double)h[2], (double)h[3], p1[0], p1[1], p1[2]);
+                    for (int k = 0; k < 12; k++) LOG("[wb]   p12[%d] %g %g %g\n", k, p12[k][0], p12[k][1], p12[k][2]);
+                }
+            }
+        }
         e->busy = false;
     }
     pthread_mutex_unlock(&wb_lock);
