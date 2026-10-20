@@ -446,38 +446,21 @@ Rodada 3, com referências do Switch (vídeo, porta abrindo e terminal Sheikah):
   automática pelos alvos devolvidos à memória: avisa inf/NaN no 12x1 / 1x1 (R11G11B10F) e registra um quadro
   escuro (luminância 2x2 do quadro anterior < 0.02) com os 12 parâmetros. Nas 4 execuções não houve nenhum
   aviso. Pode ter sido um artefato de captura ou algo raro.
-- Chão sumido abaixo do planalto / Link afundando (aberto, 2026-10-20). Achado: as alturas do terreno (array
-  1024x1024x8 R16, 4 níveis, em 362ab4000) estão incompletas.
-  - Estado no fim: no nível 0, as camadas 0-2 têm dados e as 3-6 estão ~98% zeradas (uma faixa só); a 7 está vazia.
-    No nível 1, as camadas 0-1 estão vazias.
-  - Efeito: o terreno dessas regiões é desenhado plano e baixo. As árvores flutuam sobre névoa, e o Link (na altura
-    real) parece afundado onde o tile cai numa camada ruim. O usuário notou que num ponto de camada boa os pés não
-    afundam.
-  - Como as camadas são feitas: as 0-2 vêm de tiles 256x256 R16 (fs `bdf3958d`). As 3-7 vêm de `91fe757c` /
-    `1cebab02`, que amostram o próprio array (camada e LOD em v0.z / v0.w, + offset em cb3[2]). Os mips vêm de
-    `35da1c5a`, que amostra o nível 0 da mesma camada. Ou seja, textura amostrada enquanto é render target: passa
-    pelo snapshot de feedback, que copia só camada 0 / nível 0 numa view 2D.
-  - Testes: snapshot completo (todas as camadas e níveis, view do tipo certo) ficou pior (camadas 4-7 vazias,
-    revertido). `LARECOMP_NO_FEEDBACK=1` (amostrar ao vivo) melhorou os mips (camada 2 nível 1 completa), mas
-    não resolveu. Os resultados variam entre execuções: suspeita de ordem / corrida.
-  - Rodada 2: a camada N é feita da N-1 (fs `91fe757c`, camada em cb3[4].x, LOD cb3[4].y, wrap 1 = repeat, UV
-    além de 1). Nas camadas 3+ os quads são faixas finas (~18 px): o jogo atualiza essas camadas por faixas, como
-    um clipmap, e o resto da camada tem que persistir. Mesmo assim a camada 3 termina 100% zerada, até a faixa
-    recém-desenhada: a saída desses draws se perde.
-  - Corrigido no caminho (sem resolver o chão): amostrar como 2D array uma textura que também é render target
-    ligava uma textura dummy (vazia). O snapshot de feedback agora copia todas as camadas e níveis e é ligado com
-    a view certa: 2D ou 2D array, com os níveis/camadas da view do jogo. Pode afetar o bloom (320x180 com 5
-    níveis lidos enquanto renderiza). `LARECOMP_FEEDBACK_ANY_LAYER=1` (teste: snapshot também sem sobreposição)
-    não mudou nada.
-  - Ainda descartado: a limpeza respeita o scissor; os "fresh clears" só valem para alvos escaláveis (desligados).
-  - Rodada 3: os draws `91fe757c` têm o mesmo estado dos que funcionam (sem depth, sem blend, máscara cheia). Não
-    há ClearColor no array (`LARECOMP_LOG_CLEARS`), nem outra textura sobre a memória da camada 3
-    (`LARECOMP_WATCH_TEXADDR=3632ac000`). A view de render target respeita camada e nível, e o cache de views tem a
-    camada na chave.
-  - Próximo (parado em 2026-10-20): `LARECOMP_DUMP_AFTER_LAYER=3` (com `LARECOMP_WATCH_TEXADDR=362ab4000`) despeja
-    o array logo após o primeiro pass na camada 3, para separar "a escrita falha" de "algo apaga depois". Na
-    primeira tentativa não disparou: o pass da camada 3 pode começar com a camada no `cview` sem o bit 2 do setmask,
-    ou o primeiro pass ser de mip (nível > 0). Conferir `g_pass_layer` em begin_pass.
+- Chão sumido abaixo do planalto (resolvido, 2026-10-20). As alturas do terreno (array 1024x1024x8 R16, 4 níveis, em
+  362ab4000) ficavam incompletas: camadas 3-7 vazias no nível 0, nível 1 das camadas 0-1 vazio.
+  - Como as camadas são feitas: as 0-2 vêm de tiles 256x256 R16 (fs `bdf3958d`). Cada camada 3-7 é desenhada uma
+    vez a partir da anterior (fs `91fe757c`, camada em cb3[4].x, LOD em cb3[4].y); depois só faixas finas (~18 px)
+    são atualizadas, como um clipmap. Os mips vêm de `35da1c5a`.
+  - Causa: o primeiro draw com um shader / pipeline novo é pulado enquanto ele compila em segundo plano. O draw da
+    camada 3 era o primeiro de `91fe757c`, então ela nunca era desenhada (o log `[watch] render target` mostrava as
+    camadas 4-7 no nível 0, nunca a 3), e as seguintes copiavam o vazio. Com `LARECOMP_SYNC_SHADERS=1` tudo aparecia.
+  - Correção: draws em alvos feitos uma vez e mantidos (arrays, cubemaps, 3D, alvos com mips) esperam o shader e o
+    pipeline (`wait_built` / `rt_is_persistent` em exec.c; `LARECOMP_WAIT_PERSISTENT=0` desliga). Custo: ~210 ms
+    na carga, aparece como "compile N (waited X ms)" na linha de estatísticas.
+  - Corrigido no caminho: amostrar como 2D array uma textura que também é render target ligava uma textura dummy. O
+    snapshot de feedback agora copia todas as camadas e níveis e é ligado com a view certa (2D ou 2D array).
+- Link afundando (aberto, adiado para o update): com o chão certo, o velho e a fogueira ficam sobre o terreno, mas o
+  Link fica enterrado até a canela. É a posição dele na física (CPU), não o terreno desenhado.
   - Ferramentas: F9 pelo adb (`adb shell input keyevent 139`) tira um debug frame do jogo em andamento;
     `LARECOMP_DUMP_SAMPLED=<w>x<h>:<fmt>` (+ `_LEVEL`) salva todas as camadas de uma textura amostrada no debug
     frame; `LARECOMP_WATCH_DRAWS=1` (+ `_ALL`) com `LARECOMP_WATCH_TEXADDR` registra cada draw nessa memória

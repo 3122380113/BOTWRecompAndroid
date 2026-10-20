@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include "../../kernel.h"
 #include "shaders.h"
@@ -936,6 +937,23 @@ static void run_job(void (*fn)(void *), void *arg) {
     pthread_mutex_unlock(&jobs_lock);
 }
 
+// A skipped draw is lost for good when its target is built once and kept: BOTW's terrain height array (1024x1024x8,
+// each layer drawn once from the one before - the first draw of that shader skipped left layer 3 and all after it
+// empty: no ground on the plateau). Draws into arrays, cubemaps, 3D textures and mipmapped targets wait for their
+// shader and pipeline instead (LARECOMP_WAIT_PERSISTENT=0: skip them like the rest).
+static uint64_t stat_build_wait_ns;
+static void wait_built(_Atomic int *state) {
+    if (atomic_load(state)) return;
+    uint64_t t0 = plat_now_ns();
+    while (!atomic_load(state)) usleep(200);
+    stat_build_wait_ns += plat_now_ns() - t0;
+}
+static bool rt_is_persistent(NvnTexture *t) {
+    static int on = -1;
+    if (on < 0) on = !getenv("LARECOMP_WAIT_PERSISTENT") || atoi(getenv("LARECOMP_WAIT_PERSISTENT"));
+    return on && t && (t->levels > 1 || (t->target != 1 && t->target != 5 && t->target != 7));  // (not 2D / 2D MS / rect)
+}
+
 // ================================================================== state
 typedef struct {
     NvnTexture *color[8];
@@ -1003,11 +1021,11 @@ const char *renderer_stats(void) {
         LOG("\n");
     }
     snprintf(stats_text, sizeof stats_text,
-             "%llu draws, %llu skipped, %llu passes, %llu dispatches, %llu flushes, wait %.0fms, compile %d, fbcopy %llu, upload %.1fMB",
+             "%llu draws, %llu skipped, %llu passes, %llu dispatches, %llu flushes, wait %.0fms, compile %d (waited %.0fms), fbcopy %llu, upload %.1fMB",
              (unsigned long long)stat_draws, (unsigned long long)stat_skipped, (unsigned long long)stat_passes,
              (unsigned long long)stat_dispatches, (unsigned long long)stat_flushes, (double)stat_wait_ns / 1e6,
-             atomic_exchange(&stat_compiles, 0), (unsigned long long)stat_feedback_copies, (double)stat_upload_bytes / 1048576.0);
-    stat_feedback_copies = stat_upload_bytes = 0;
+             atomic_exchange(&stat_compiles, 0), (double)stat_build_wait_ns / 1e6, (unsigned long long)stat_feedback_copies, (double)stat_upload_bytes / 1048576.0);
+    stat_feedback_copies = stat_upload_bytes = stat_build_wait_ns = 0;
     {   // (GPU memory in use, every heap, and the game's textures with an image)
         VmaBudget bud[VK_MAX_MEMORY_HEAPS];
         vmaGetHeapBudgets(g_vk.vma, bud);
@@ -4018,6 +4036,9 @@ static void draw_(CmdRec *r, bool indexed) {
         fkey.no_ds_write = !st.rt.depth || !((st.ds[0] && st.ds[1]) || (st.ds[3] && ((st.stencil_mask[0] | st.stencil_mask[1]) & 0xFF)));
 #endif
     Prog *pr = get_program(st.program, &vkey, &fkey);
+    bool keep = false;  // (a target built once and kept: wait for the shader and pipeline - wait_built)
+    for (int i = 0; i < st.rt.ncolor && !keep; i++) keep = rt_is_persistent(st.rt.color[i]);
+    if (pr && keep) wait_built(&pr->state);
     if (!pr || atomic_load(&pr->state) != 1) { stat_skipped++; return; }
     {   // fragment-shader hash: interior backdrop detection (widescreen), skip lists, item twinkle (renderer.m)
         static uint64_t last_fs, last_hash;
@@ -4215,6 +4236,7 @@ static void draw_(CmdRec *r, bool indexed) {
         pipe_tab[pslot].pipe = pp;
         run_job(build_pipeline, pp);
     }
+    if (keep) wait_built(&pp->state);
     if (atomic_load(&pp->state) != 1) { stat_skipped++; return; }
     ss_enabled();
     if (ss_need(SS_PIPE, ss.pipe == pp->pipe)) { ss.pipe = pp->pipe; vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pp->pipe); }
