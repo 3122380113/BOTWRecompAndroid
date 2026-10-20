@@ -4,6 +4,7 @@
 #include <unistd.h>
 
 #include "../kernel.h"
+#include "../settings.h"
 #include "nvn.h"
 
 void renderer_sync(void);
@@ -1092,15 +1093,21 @@ NVN(nvnQueueAcquireTexture) {
 NVN(nvnQueuePresentTexture) {
     NvnWindow *w = HOST(NvnWindow, A(1));
     int i = (int)A(2);
-    {   // LARECOMP_PRESENT_WAIT=1: a present waits for its window's interval in vsyncs since the previous one, as NVN
-        // does on the Switch (BOTW asks for 2: its world steps 1/30 s per frame)
+    {   // Frame limiter: a present waits until N vsyncs have gone by since the previous one, as NVN does on the Switch -
+        // N is the larger of the window's interval (BOTW asks for 2: its world steps 1/30 s a frame) and the Video
+        // tab's cap (Frame rate 30: 2, 60: 1; Auto: 2 for now). Without it the menus ran at ~200 fps and the world
+        // ran fast whenever a frame came in under 33 ms. LARECOMP_PRESENT_WAIT=0: off.
         static int on = -1;
         static uint64_t last_vs;
-        if (on < 0) on = getenv("LARECOMP_PRESENT_WAIT") && atoi(getenv("LARECOMP_PRESENT_WAIT"));
+        if (on < 0) on = !getenv("LARECOMP_PRESENT_WAIT") || atoi(getenv("LARECOMP_PRESENT_WAIT"));
         extern volatile uint64_t g_vsync_count;
-        if (on && w->interval > 0) {
-            uint64_t want = last_vs + (uint64_t)w->interval;
+        extern __thread uint64_t g_blocked_ns;  // (kernel.c: the pacer counts this as idle, not frame work)
+        int cap = g_settings.fps_mode == 2 ? 1 : 2;
+        int n = w->interval > cap ? w->interval : cap;
+        if (on) {
+            uint64_t want = last_vs + (uint64_t)n, t0 = plat_now_ns();
             while (__atomic_load_n(&g_vsync_count, __ATOMIC_RELAXED) < want) usleep(500);
+            g_blocked_ns += plat_now_ns() - t0;
             last_vs = __atomic_load_n(&g_vsync_count, __ATOMIC_RELAXED);
         }
     }

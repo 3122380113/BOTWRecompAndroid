@@ -1,5 +1,6 @@
 // Guest address -> recompiled function lookup, and host (HLE) function registry.
 #include <pthread.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
@@ -294,6 +295,18 @@ void rt_fatal_trace(void) {
         for (int i = 0; i < 31; i += 4)
             fprintf(stderr, "  x%-2d %016llx  x%-2d %016llx  x%-2d %016llx  x%-2d %016llx\n", i, c->x[i], i + 1,
                     c->x[i + 1], i + 2, c->x[i + 2], i + 3, c->x[i + 3]);
+        // LARECOMP_CRASH_MEM=<reg>:<hex offset>:<hex length>[:<hex deref offset>]: guest memory at x<reg> + offset at
+        // the crash (with a 4th field: first follow the pointer at x<reg> + that offset), 8 bytes a line
+        const char *e = getenv("LARECOMP_CRASH_MEM");
+        unsigned reg = 0;
+        unsigned long long off = 0, len = 0, deref = ~0ull;
+        if (e && sscanf(e, "%u:%llx:%llx:%llx", &reg, &off, &len, &deref) >= 3 && reg < 31) {
+            uint64_t base = c->x[reg];
+            if (deref != ~0ull && base >= GUEST_LO && base + deref < GUEST_HI) base = *(const uint64_t *)(uintptr_t)(base + deref);
+            fprintf(stderr, "guest memory at %llx + %#llx:\n", (unsigned long long)base, off);
+            for (unsigned long long k = 0; k < len && base + off + k + 8 <= GUEST_HI && base + off >= GUEST_LO; k += 8)
+                fprintf(stderr, "  +%#06llx %016llx\n", off + k, (unsigned long long)*(const uint64_t *)(uintptr_t)(base + off + k));
+        }
     }
     plat_fatal_notice();
     // our crash handler also catches SIGABRT: without this abort() re-entered it forever (a 5 GB log)
@@ -377,9 +390,11 @@ static void *range_watch_thread(void *a) {
     sleep(d ? atoi(d) : 60);
     LOG("[rwatch] armed (%d ranges)\n", rw_n);
     rw_armed = 1;
+    const char *pe = getenv("LARECOMP_WATCH_READ_PERIOD_US");  // (a busy page reopens at once: re-close it more often)
+    long period = pe ? atol(pe) : 50000;
     for (;;) {
         for (int i = 0; i < rw_n; i++) plat_protect(rw_lo[i], rw_hi[i] - rw_lo[i], PLAT_PROT_NONE);
-        usleep(50000);
+        if (period > 0) usleep((useconds_t)period); else sched_yield();
     }
     return NULL;
 }
@@ -425,6 +440,13 @@ static bool range_watch_fault(uint64_t fa, uint64_t pc) {
 #endif
         LOG("[rwatch] range %d +%#llx %s by %s (host pc %llx, library +%llx) thread t%llu hit %d\n", r, (unsigned long long)(fa - rw_exact_lo[r]),
             g_fault_wnr == 1 ? "write" : g_fault_wnr == 0 ? "read" : "access", nm, (unsigned long long)pc, (unsigned long long)lib, (unsigned long long)(kt ? kt->id : 0), nhits);
+        if (getenv("LARECOMP_WATCH_REGS")) {  // (the guest registers at that access: x0-x30)
+            Cpu *gc = kernel_current_cpu();
+            for (int i = 0; gc && i < 31; i += 4)
+                LOG("[rwatch]   x%-2d %016llx x%-2d %016llx x%-2d %016llx x%-2d %016llx\n", i, (unsigned long long)gc->x[i], i + 1,
+                    (unsigned long long)gc->x[i + 1], i + 2, (unsigned long long)gc->x[i + 2], i + 3,
+                    (unsigned long long)(i + 3 < 31 ? gc->x[i + 3] : 0));
+        }
     }
     plat_protect(fa & ~(uint64_t)(PLAT_PAGE - 1), PLAT_PAGE, PLAT_PROT_RW);
     return true;

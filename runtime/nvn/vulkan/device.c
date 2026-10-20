@@ -735,6 +735,21 @@ void backend_present(NvnTexture *t) {
         }
     }
     if (g_debug_frame) LOG("===== debug frame %llu =====\n", (unsigned long long)total_frames);
+    {   // LARECOMP_PEEK=<hex address>:<hex length>, LARECOMP_PEEK_EVERY=<frames>: guest memory in the log (diagnosis)
+        static uint64_t pa = ~0ull, pl;
+        static long pe;
+        if (pa == ~0ull) {
+            pa = 0;
+            const char *e = getenv("LARECOMP_PEEK");
+            if (e && sscanf(e, "%llx:%llx", (unsigned long long *)&pa, (unsigned long long *)&pl) != 2) pa = 0;
+            pe = getenv("LARECOMP_PEEK_EVERY") ? atol(getenv("LARECOMP_PEEK_EVERY")) : 300;
+            if (pe <= 0) pe = 300;
+        }
+        if (pa && total_frames % (unsigned long long)pe == 0 && pa >= GUEST_LO && pa + pl <= GUEST_HI)
+            for (uint64_t k = 0; k < pl; k += 8)
+                LOG("[peek] frame %llu %llx: %016llx\n", (unsigned long long)total_frames, (unsigned long long)(pa + k),
+                    (unsigned long long)*(const uint64_t *)(uintptr_t)(pa + k));
+    }
     {   // LARECOMP_SHOT_AT=<frame>,<frame>,... (or +; ascending): the game image at those frames -> build/frames/frame_N.png
         static const char *next;
         static int init;
