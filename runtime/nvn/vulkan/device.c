@@ -750,6 +750,45 @@ void backend_present(NvnTexture *t) {
                 LOG("[peek] frame %llu %llx: %016llx\n", (unsigned long long)total_frames, (unsigned long long)(pa + k),
                     (unsigned long long)*(const uint64_t *)(uintptr_t)(pa + k));
     }
+    {   // LARECOMP_HEAPTREE=<hex sead::Heap address>[:<frame>]: that heap and its children (name, size), recursively
+        // (BOTW's layout: name +0x28, size +0x40, children list head +0x50 (count +0x60), a child's node at +0x68)
+        static uint64_t root = ~0ull;
+        static long at;
+        if (root == ~0ull) {
+            root = 0;
+            const char *e = getenv("LARECOMP_HEAPTREE");
+            if (e) { root = strtoull(e, (char **)&e, 16); at = *e == ':' ? atol(e + 1) : 1500; }
+        }
+        if (root && (long)total_frames == at) {
+            for (int up = 0; up < 16; up++) {  // (from the topmost parent: +0x48)
+                uint64_t p = *(const uint64_t *)(uintptr_t)(root + 0x48);
+                if (p < GUEST_LO || p + 0x80 > GUEST_HI) break;
+                root = p;
+            }
+            struct { uint64_t h; int d; } stack[256];
+            int sp = 0;
+            stack[sp++].h = root, stack[0].d = 0;
+            #define GOK(a) ((a) >= GUEST_LO && (a) + 0x80 <= GUEST_HI)
+            while (sp > 0) {
+                uint64_t h = stack[--sp].h;
+                int d = stack[sp].d;
+                if (!GOK(h)) continue;
+                uint64_t name = *(const uint64_t *)(uintptr_t)(h + 0x28), size = *(const uint64_t *)(uintptr_t)(h + 0x40);
+                uint32_t nch = *(const uint32_t *)(uintptr_t)(h + 0x60);
+                char nm[64] = "?";
+                if (GOK(name) || (name >= 0x100000000ull && name < 0x110000000ull)) snprintf(nm, sizeof nm, "%s", (const char *)(uintptr_t)name);
+                if (size < 0x100000 && d > 2) continue;  // (small ones below the top levels: not listed, nor their children)
+                LOG("[heap] %*s%s @%llx size %#llx (%.1f MB) children %u\n", d * 2, "", nm, (unsigned long long)h,
+                    (unsigned long long)size, size / 1048576.0, nch);
+                uint64_t head = h + 0x50, node = *(const uint64_t *)(uintptr_t)(head + 8);
+                for (uint32_t k = 0; k < nch && k < 64 && node != head && GOK(node) && sp < 255 && d < 6; k++) {
+                    stack[sp].h = node - 0x68, stack[sp].d = d + 1, sp++;
+                    node = *(const uint64_t *)(uintptr_t)(node + 8);
+                }
+            }
+            #undef GOK
+        }
+    }
     {   // LARECOMP_SHOT_AT=<frame>,<frame>,... (or +; ascending): the game image at those frames -> build/frames/frame_N.png
         static const char *next;
         static int init;

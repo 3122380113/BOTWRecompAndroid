@@ -30,6 +30,27 @@ static uint32_t device_integer(uint32_t which) {
         [50] = 256, [51] = 1, [52] = 0, [53] = 0, [54] = 0, [55] = 256, [56] = 1, [57] = 0x1000,
         [58] = 1, [59] = 1, [60] = 1, [61] = 1, [62] = 1, [63] = 1, [64] = 1,
     };
+    {   // LARECOMP_DEVINFO=<index>=<value>[+<index>=<value>...]: override (test what the game sizes from them)
+        static int n = -1;
+        static uint32_t idx[16], val[16];
+        if (n < 0) {
+            n = 0;
+            for (const char *e = getenv("LARECOMP_DEVINFO"); e && *e && n < 16;) {
+                char *q;
+                idx[n] = (uint32_t)strtoul(e, &q, 0);
+                if (*q != '=') break;
+                val[n++] = (uint32_t)strtoul(q + 1, &q, 0);
+                e = *q == '+' ? q + 1 : q;
+                if (!*q || *q != '+') break;
+            }
+        }
+        for (int i = 0; i < n; i++) if (idx[i] == which) return val[i];
+    }
+    static uint32_t asked[4];  // (log each index the game asks for, once)
+    if (which < 128 && !(asked[which / 32] & (1u << (which % 32)))) {
+        asked[which / 32] |= 1u << (which % 32);
+        LOG("[nvn] device info %u -> %u\n", which, which < sizeof v / sizeof *v ? v[which] : 0);
+    }
     return which < sizeof v / sizeof *v ? v[which] : 0;
 }
 

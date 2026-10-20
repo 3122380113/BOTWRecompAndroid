@@ -1058,14 +1058,34 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         uint64_t v = 0;
         uint32_t r = R_OK;
         switch (id0) {
-        case 0: v = 0xF; break;
+        case 0: {  // core mask (the NPDM says cores 0-2, 0x7; 0x7 changed none of BOTW's heap budgets).
+                   // LARECOMP_CORE_MASK=<hex> (test)
+            static uint64_t m;
+            if (!m) m = getenv("LARECOMP_CORE_MASK") ? strtoull(getenv("LARECOMP_CORE_MASK"), NULL, 16) : 0xF;
+            v = m;
+            break;
+        }
         case 1: v = 0xFFFFFFFFFFFFFFFFull; break;
         case 2: v = ALIAS_BASE; break;
         case 3: v = ALIAS_SIZE; break;
         case 4: v = HEAP_BASE; break;
         case 5: v = HEAP_MAX; break;
-        case 6: case 21: v = 0xCD500000ull; break;  // application memory (3.2 GB, as on hardware)
-        case 7: case 22: v = heap_size + 0x4000000; break;
+        case 6: case 21: {  // application memory (3.2 GB, as on hardware); LARECOMP_TOTAL_MEM=<hex bytes> (test)
+            static uint64_t tot = 0;
+            if (!tot) tot = getenv("LARECOMP_TOTAL_MEM") ? strtoull(getenv("LARECOMP_TOTAL_MEM"), NULL, 16) : 0xCD500000ull;
+            v = tot;
+            static int nlog;
+            if (nlog++ < 8) LOG("[kernel] GetInfo total memory -> %#llx\n", (unsigned long long)v);
+            break;
+        }
+        case 7: case 22: {  // used: the heap + the rest (code, data, stacks); LARECOMP_USED_EXTRA=<hex bytes> (test)
+            static uint64_t extra = ~0ull;
+            if (extra == ~0ull) extra = getenv("LARECOMP_USED_EXTRA") ? strtoull(getenv("LARECOMP_USED_EXTRA"), NULL, 16) : 0x4000000;
+            v = heap_size + extra;
+            static int nlog;
+            if (nlog++ < 8) LOG("[kernel] GetInfo used memory -> %#llx (heap %#llx)\n", (unsigned long long)v, (unsigned long long)heap_size);
+            break;
+        }
         case 8: v = 0; break;
         case 9: v = 0; break;
         case 11: v = ((uint64_t)arc4random() << 32) | arc4random(); break;

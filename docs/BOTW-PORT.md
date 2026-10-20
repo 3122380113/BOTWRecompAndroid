@@ -356,10 +356,26 @@ Rodada 3, com referências do Switch (vídeo, porta abrindo e terminal Sheikah):
   near plane): visto do sol, o chão do corredor aparecia sem nada em cima. Com o depth clamp (66d40a9) a sala fica
   escura e com névoa, como no Switch em 3:56. Ainda aparece clara em algumas execuções (1 de 3): resta algo dependente
   de tempo. O debug frame agora salva passes só de profundidade (as cascatas, em vermelho).
-- Fechamento ao recarregar (morrer, ou carregar um save já em jogo): SIGSEGV em f_1010c1a04 (main + 0x10c1a04), lendo
-  o vtable de um objeto nulo em `this + 0xc60` (o caminho com o bit 0 do segundo argumento). Reproduzido duas vezes
-  (2026-10-18 e 2026-10-19). Lógica do jogo num estado que no Switch não acontece (objeto ainda não criado:
-  suspeita de ordem entre threads).
+- Fechamento ao recarregar (morrer -> Continuar, ou Sistema -> Carregar): causa achada (2026-10-19), sem correção ainda.
+  - O que falha: `act::ClusteredRenderer` (f_1010c084c, chamado de f_1010679e4) cria, da heap **OpenWorldStage**,
+    a heap "clustered" (10 MiB, limitada ao maior bloco livre: recebe 9,6) e depois "act::ClusteredRenderer - DL
+    Heap" (7 MiB). Essa segunda falha (sead::ExpHeap::create devolve nulo), mas o flag 0x40000 em +0xd0c é ligado
+    assim mesmo.
+  - Onde fecha: a sessão roda sem a heap, e a desmontagem (f_1010c1a04) chama o vtable de `this+0xc60` nulo.
+    Reproduzível: `scratchpad/reload.sh` (planalto, menu, Carregar).
+  - Memória: "MassRenderer - Work" pega até 20 MiB do que houver (recebe 12,6). No Switch, OpenWorldStage deve ter
+    >= ~13 MiB a mais livres nesse ponto. A árvore (`LARECOMP_HEAPTREE=342000000:1500`) é RootHeap 3078 MiB (fixo) ->
+    TaskMgr (resto depois de GraphicsSystem 36,3 MiB) -> RootTask -> uking::frm::System 440,4 (resto depois de
+    KingSystem 2598,6, com ~30 filhas de tamanho calculado) -> GameScene -> OpenWorldStage 367,9 (resto).
+  - Descartado: valores de nvnDeviceGetInteger (`LARECOMP_DEVINFO=i=v+...`: <= 0,5 MiB), máscara de núcleos (o NPDM
+    diz 0-2; `LARECOMP_CORE_MASK`, sem efeito), memória total/usada (o jogo não pergunta), taxa de quadros.
+  - Opções: um patch no código do jogo (null-check na desmontagem, `tools/patches.py` e rebuild de ~2 h) ou achar
+    qual heap do KingSystem/GraphicsSystem está maior que no Switch.
+  - Ferramentas: `LARECOMP_PEEK=<end>:<len>` (+ `LARECOMP_PEEK_EVERY`), `LARECOMP_CRASH_MEM=<reg>:<off>:<len>[:<deref>]`,
+    `LARECOMP_WATCH_REGS`, `LARECOMP_WATCH_READ_PERIOD_US`.
+- Limitador de quadros (2026-10-19): ligado por padrão. O present espera max(intervalo do jogo, teto do menu Vídeo)
+  vsyncs: 30 -> 2, 60 -> 1, Auto -> 2 por enquanto. Antes os menus iam a ~200 fps e o mundo acelerava acima de 30.
+  `LARECOMP_PRESENT_WAIT=0` desliga.
 - Planalto (save 3, 2026-10-19 17:11): o Link aparece com as pernas cortadas no joelho na grama (o "afundando"),
   céu marrom e dessaturado; num quadro mais tarde (~2600) a cena ficou toda preta com o HUD intacto (suspeita de
   NaN na exposição automática), sem erro no log.
