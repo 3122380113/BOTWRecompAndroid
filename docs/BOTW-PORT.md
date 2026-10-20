@@ -459,8 +459,14 @@ Rodada 3, com referências do Switch (vídeo, porta abrindo e terminal Sheikah):
     na carga, aparece como "compile N (waited X ms)" na linha de estatísticas.
   - Corrigido no caminho: amostrar como 2D array uma textura que também é render target ligava uma textura dummy. O
     snapshot de feedback agora copia todas as camadas e níveis e é ligado com a view certa (2D ou 2D array).
-- Link afundando (aberto, adiado para o update): com o chão certo, o velho e a fogueira ficam sobre o terreno, mas o
-  Link fica enterrado até a canela. É a posição dele na física (CPU), não o terreno desenhado.
+- Link e NPCs afundando no chão (2026-10-20): em cima de um tronco os pés ficavam certos; o ancião, ao se levantar na
+  cutscene, afundava igual. Era o chão de colisão do terreno. O BOTW desenha os tiles de altura (256x256 R16, flag
+  NVN 0x40 = render target linear, linhas compactas na largura; 8 tiles seguidos em 365419000) na GPU e a CPU lê
+  esses tiles para a colisão. Nada voltava à memória (a devolução só pegava alvos <= 4 KiB): a CPU lia o conteúdo
+  antigo. Com `LARECOMP_WRITEBACK_MAX=1048576` eles voltavam, mas em blocos (block-linear), e a altura ficava
+  embaralhada por lugar (afunda num ponto, flutua ao lado). Correção: render targets lineares (flags 0x40 / 0x10)
+  voltam à memória até 512 KiB, linha a linha (`WbEntry.pitch` em exec.c). Diagnóstico novo:
+  `LARECOMP_WRITEBACK_FMT=<hex>` (só esse formato, acima de 4 KiB) e o log de devolução registra cada alvo uma vez.
   - Ferramentas: F9 pelo adb (`adb shell input keyevent 139`) tira um debug frame do jogo em andamento;
     `LARECOMP_DUMP_SAMPLED=<w>x<h>:<fmt>` (+ `_LEVEL`) salva todas as camadas de uma textura amostrada no debug
     frame; `LARECOMP_WATCH_DRAWS=1` (+ `_ALL`) com `LARECOMP_WATCH_TEXADDR` registra cada draw nessa memória

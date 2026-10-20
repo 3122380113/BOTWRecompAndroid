@@ -1189,8 +1189,14 @@ static uint64_t wb_max(void) {  // (LARECOMP_WRITEBACK_MAX=<bytes>: a larger lim
     return m;
 }
 #define WB_MAX wb_max()
+// Linear render targets (NVN flag 0x40, or 0x10) are written back whatever their size up to a slot: BOTW renders its
+// terrain height tiles (256x256 R16, rows packed at their width) and reads them on the CPU for the ground's
+// collision. Written back as block-linear (or not at all) the ground was too low or too high by place: Link and
+// the NPCs sank into it or floated over it.
+#define WB_LINEAR_MAX (512u * 1024)
+#define WB_SLOT (WB_MAX > WB_LINEAR_MAX ? WB_MAX : WB_LINEAR_MAX)
 #define WB_SLOTS 32
-typedef struct { uint64_t seq, addr; uint32_t wb, hb, bpb, bh, fmt; bool busy; } WbEntry;
+typedef struct { uint64_t seq, addr, pitch; uint32_t wb, hb, bpb, bh, fmt; bool busy; } WbEntry;  // (pitch: linear rows, 0: block-linear)
 static WbEntry wb_ent[WB_SLOTS];
 static int wb_next;
 static VkBuffer wb_buf;
@@ -1212,14 +1218,17 @@ static bool wb_eligible(NvnTexture *t, TexBackend *b, uint32_t lv) {
     if (!(b->aspect & VK_IMAGE_ASPECT_COLOR_BIT) || b->width != t->width || b->height != t->height) return false;
     const FormatInfo *fi = t->layout.fmt;
     if (!fi || !fi->bpb || fi->bw != 1 || fi->bh != 1 || fi->bpb == 3) return false;
-    return t->addr >= HEAP_BASE && tegra_total_size(&t->layout) <= WB_MAX;
+    static int only = -2;  // LARECOMP_WRITEBACK_FMT=<hex>: only targets of that format (bisecting)
+    if (only == -2) only = getenv("LARECOMP_WRITEBACK_FMT") ? (int)strtol(getenv("LARECOMP_WRITEBACK_FMT"), NULL, 16) : -1;
+    if (only >= 0 && t->format != (uint32_t)only && tegra_total_size(&t->layout) > 4096) return false;
+    return t->addr >= HEAP_BASE && tegra_total_size(&t->layout) <= ((t->flags & 0x50) ? WB_SLOT : WB_MAX);
 }
 
 static void wb_queue(NvnTexture *t) {
     TexBackend *b = t->backend;
     pthread_mutex_lock(&wb_lock);
     if (!wb_buf) {
-        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = WB_MAX * WB_SLOTS,
+        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = (VkDeviceSize)WB_SLOT * WB_SLOTS,
                                  .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
         VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
                                       .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT};
@@ -1234,11 +1243,12 @@ static void wb_queue(NvnTexture *t) {
     const FormatInfo *fi = t->layout.fmt;
     LevelLayout l = tegra_level(&t->layout, 0);
     *e = (WbEntry){.seq = submit_seq + 1, .addr = t->addr, .wb = l.wb, .hb = l.hb, .bpb = fi->bpb,
+                   .pitch = (t->flags & 0x10) ? t->stride : (t->flags & 0x40) ? (uint64_t)l.wb * fi->bpb : 0,
                    .bh = l.block_height_log2, .fmt = t->format, .busy = true};
     pthread_mutex_unlock(&wb_lock);
     VkCommandBuffer cb = vk_cmd();
     vk_full_barrier(cb);
-    VkBufferImageCopy c = {.bufferOffset = (VkDeviceSize)slot * WB_MAX, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+    VkBufferImageCopy c = {.bufferOffset = (VkDeviceSize)slot * WB_SLOT, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                            .imageExtent = {t->width, t->height, 1}};
     vkCmdCopyImageToBuffer(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, wb_buf, 1, &c);
     VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
@@ -1250,7 +1260,11 @@ static void wb_queue(NvnTexture *t) {
     static int nlog;  // LARECOMP_LOG_WRITEBACK=1: the targets written back
     static int lw = -2;  // (=<w> > 1: only targets that wide)
     if (lw == -2) lw = getenv("LARECOMP_LOG_WRITEBACK") ? atoi(getenv("LARECOMP_LOG_WRITEBACK")) : -1;
-    if (lw >= 0 && (lw <= 1 || (int)t->width == lw) && nlog++ < 40)
+    static uint64_t seen[256];  // (each target once: address and size)
+    uint64_t key = t->addr ^ ((uint64_t)t->width << 48) ^ ((uint64_t)t->height << 36) ^ ((uint64_t)t->format << 58);
+    bool fresh = true;
+    for (int i = 0; i < nlog && i < 256; i++) if (seen[i] == key) { fresh = false; break; }
+    if (lw >= 0 && fresh && (lw <= 1 || (int)t->width == lw) && nlog < 256 && (seen[nlog++] = key, 1))
         LOG("[vk] write-back %ux%u f%#x at %llx (submission %llu)\n", t->width, t->height, t->format,
             (unsigned long long)t->addr, (unsigned long long)e->seq);
 }
@@ -1261,14 +1275,17 @@ static void wb_apply(uint64_t done) {
     for (int i = 0; i < WB_SLOTS; i++) {
         WbEntry *e = &wb_ent[i];
         if (!e->busy || e->seq > done) continue;
-        vmaInvalidateAllocation(g_vk.vma, wb_mem, (VkDeviceSize)i * WB_MAX, WB_MAX);
-        tegra_swizzle(wb_ptr + (size_t)i * WB_MAX, (uint8_t *)(uintptr_t)e->addr, e->wb, e->hb, 1, e->bpb, e->bh, 0);
+        vmaInvalidateAllocation(g_vk.vma, wb_mem, (VkDeviceSize)i * WB_SLOT, WB_SLOT);
+        if (e->pitch)
+            for (uint32_t y = 0; y < e->hb; y++)
+                memcpy((uint8_t *)(uintptr_t)(e->addr + y * e->pitch), wb_ptr + (size_t)i * WB_SLOT + (size_t)y * e->wb * e->bpb, (size_t)e->wb * e->bpb);
+        else tegra_swizzle(wb_ptr + (size_t)i * WB_SLOT, (uint8_t *)(uintptr_t)e->addr, e->wb, e->hb, 1, e->bpb, e->bh, 0);
         {   // LARECOMP_LOG_WB_NAN=1: the auto exposure's small targets - inf / NaN in them, and a black frame (the
             // 2x2 luminance of the previous image near 0) with the 12x1 parameters and the 1x1 average at that point
             static int on = -1;
             if (on < 0) on = getenv("LARECOMP_LOG_WB_NAN") != NULL;
             static float p12[12][3], p1[3];
-            const uint8_t *px = wb_ptr + (size_t)i * WB_MAX;
+            const uint8_t *px = wb_ptr + (size_t)i * WB_SLOT;
             if (on && e->fmt == 0x3f && e->hb == 1 && (e->wb == 12 || e->wb == 1)) {  // R11G11B10F
                 for (uint32_t k = 0; k < e->wb; k++) {
                     uint32_t v = ((const uint32_t *)px)[k];
