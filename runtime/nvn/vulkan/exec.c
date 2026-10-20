@@ -1189,9 +1189,10 @@ static uint64_t wb_max(void) {  // (LARECOMP_WRITEBACK_MAX=<bytes>: a larger lim
     return m;
 }
 #define WB_MAX wb_max()
-// LARECOMP_WB_LINEAR=1: linear render targets (NVN flag 0x40, or 0x10; rows packed at their width) are written back
-// whatever their size up to a slot. A test for BOTW's terrain height tiles (256x256 R16): the CPU never reads them
-// (read watch), and Link sank the same with or without.
+// Linear render targets (NVN flag 0x40, rows nvn_linear_rt_pitch apart; or 0x10, at the texture's stride) are
+// written back whatever their size up to a slot: BOTW's terrain height tiles (8 levels of 256x256 R16) are drawn on
+// the GPU and read by the CPU's height queries (f_100f841cc) - the feet's placement on the terrain (f_100d1a080) put
+// Link and the NPCs into the ground without them. LARECOMP_WB_LINEAR=0: off.
 #define WB_LINEAR_MAX (512u * 1024)
 #define WB_SLOT (WB_MAX > WB_LINEAR_MAX ? WB_MAX : WB_LINEAR_MAX)
 #define WB_SLOTS 32
@@ -1220,8 +1221,8 @@ static bool wb_eligible(NvnTexture *t, TexBackend *b, uint32_t lv) {
     static int only = -2;  // LARECOMP_WRITEBACK_FMT=<hex>: only targets of that format (bisecting)
     if (only == -2) only = getenv("LARECOMP_WRITEBACK_FMT") ? (int)strtol(getenv("LARECOMP_WRITEBACK_FMT"), NULL, 16) : -1;
     if (only >= 0 && t->format != (uint32_t)only && tegra_total_size(&t->layout) > 4096) return false;
-    static int lin = -1;  // (LARECOMP_WB_LINEAR=1: linear targets too, up to a slot - off: nothing read them)
-    if (lin < 0) lin = getenv("LARECOMP_WB_LINEAR") && atoi(getenv("LARECOMP_WB_LINEAR"));
+    static int lin = -1;  // (linear targets too, up to a slot; LARECOMP_WB_LINEAR=0: not)
+    if (lin < 0) lin = !getenv("LARECOMP_WB_LINEAR") || atoi(getenv("LARECOMP_WB_LINEAR"));
     return t->addr >= HEAP_BASE && tegra_total_size(&t->layout) <= ((lin && (t->flags & 0x50)) ? WB_SLOT : WB_MAX);
 }
 
@@ -1243,8 +1244,9 @@ static void wb_queue(NvnTexture *t) {
     wb_next = (wb_next + 1) % WB_SLOTS;
     const FormatInfo *fi = t->layout.fmt;
     LevelLayout l = tegra_level(&t->layout, 0);
+    extern uint64_t nvn_linear_rt_pitch(uint64_t row_bytes);
     *e = (WbEntry){.seq = submit_seq + 1, .addr = t->addr, .wb = l.wb, .hb = l.hb, .bpb = fi->bpb,
-                   .pitch = (t->flags & 0x10) ? t->stride : (t->flags & 0x40) ? (uint64_t)l.wb * fi->bpb : 0,
+                   .pitch = (t->flags & 0x10) ? t->stride : (t->flags & 0x40) ? nvn_linear_rt_pitch((uint64_t)l.wb * fi->bpb) : 0,
                    .bh = l.block_height_log2, .fmt = t->format, .busy = true};
     pthread_mutex_unlock(&wb_lock);
     VkCommandBuffer cb = vk_cmd();
@@ -3953,10 +3955,20 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     }
     CsProg *cp = compute_program(st.program);
     if (!cp || atomic_load(&cp->p.state) != 1) { stat_skipped++; return; }
-    {   // LARECOMP_SKIP_CS=<code address hex> (debug): skip that compute shader's dispatches, to see what it does
-        static uint64_t skip = ~0ull;
-        if (skip == ~0ull) { const char *e = getenv("LARECOMP_SKIP_CS"); skip = e ? strtoull(e, NULL, 16) : 0; }
-        if (skip && st.program->stages[5].code_addr == skip) { stat_skipped++; return; }
+    {   // LARECOMP_SKIP_CS=<code address hex>[,...] (debug): skip those compute shaders' dispatches, to see what they do;
+        // "store": every one that stores to global memory
+        static uint64_t skip[16];
+        static int nskip = -1, skip_store;
+        if (nskip < 0) {
+            nskip = 0;
+            const char *e = getenv("LARECOMP_SKIP_CS");
+            if (e && !strcmp(e, "store")) skip_store = 1;
+            else
+                for (; e && *e && nskip < 16; e += *e == ',') skip[nskip++] = strtoull(e, (char **)&e, 16);
+        }
+        if (skip_store && cp->si->uses_gmem_store) { stat_skipped++; return; }
+        for (int i = 0; i < nskip; i++)
+            if (st.program->stages[5].code_addr == skip[i]) { stat_skipped++; return; }
     }
     if (cp->si->uses_gmem && getenv("LARECOMP_LOG_CS_SBUF")) {  // (debug) the storage buffers bound to gmem dispatches
         static uint64_t seen_cs[16];

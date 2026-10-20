@@ -459,14 +459,34 @@ Rodada 3, com referências do Switch (vídeo, porta abrindo e terminal Sheikah):
     na carga, aparece como "compile N (waited X ms)" na linha de estatísticas.
   - Corrigido no caminho: amostrar como 2D array uma textura que também é render target ligava uma textura dummy. O
     snapshot de feedback agora copia todas as camadas e níveis e é ligado com a view certa (2D ou 2D array).
-- Link e NPCs afundando no chão (aberto, 2026-10-20). Em cima de um tronco os pés ficam certos; o ancião, ao se
+- Link e NPCs afundando no chão (resolvido, 2026-10-20). Em cima de um tronco os pés ficam certos; o ancião, ao se
   levantar na cutscene, afunda igual; um Bokoblin afunda até a cintura. Varia por lugar: até a coxa na praça de pedra
   (save do usuário, reproduz sozinho no quadro 1500), até a canela na fogueira, flutuando no pé do paredão.
+  - CAUSA: o ajuste dos pés (f_100d2a328 / f_100d19d40) lança 4 raios por pé (`hkpWorld::castRay`, filtro
+    a1001505), que acertam o terreno na altura certa. Quando o acerto é terreno (bit 31 em +0x80 do raio), f_100d1a080
+    troca a altura pela média de 3 consultas à grade de alturas da CPU (f_100f8488c -> f_100f841cc: u16 x 800/65535,
+    bilinear), arredonda ao centímetro e limita a ±0.77 m da altura do raio. A grade são os 8 tiles 256x256 R16
+    (render targets lineares, flag 0x40, em 365419000, 128 KiB cada; os níveis do clipmap, 7 o mais fino) que a GPU
+    desenha. Eles ficavam zerados, ou eram lidos fora do lugar: o jogo endereça a linha y em y x pitch, com
+    pitch = align(256 x 2, device info 57), e nós respondíamos 4096 (herdado do LAS). Com 0 de altura, o pé ia para
+    o limite de baixo e a raiz do modelo descia ~0.55 m. No tronco e na árvore o acerto não é terreno: sem ajuste.
+  - Correção: device info 57 (alinhamento das linhas de um render target linear) = 128, e o write-back de render
+    targets lineares fica ligado por padrão, com o mesmo pitch (`nvn_linear_rt_pitch`; `LARECOMP_WB_LINEAR=0`
+    desliga). As consultas dão 204.01 sob o Link (chão 204.01), e ele fica de pé sobre a grama. A grama ficou bem
+    mais densa: também usa essas alturas.
+  - Por que o teste antigo de `LARECOMP_WB_LINEAR=1` "não mudava nada": com pitch 4096 o jogo lia lixo (34..67 m)
+    no lugar de zeros, e o limite de -0.77 m dava o mesmo afundamento. A vigilância de leitura antiga olhava outros
+    endereços (os arrays do terreno), não estes tiles.
+  - Ferramentas desta rodada (device.c): `LARECOMP_FIND_MTX=x,y,z,tol[,quadro]` (matrizes 3x4 com translação
+    perto do ponto), `LARECOMP_FIND_VEC=x,y,z,tol[,quadro]` (+ `_QS`, `_Y`, `_WATCH`), `LARECOMP_FIND_BACK`,
+    `LARECOMP_FIND_FROM`, `LARECOMP_DUMP=<endereço>:<bytes>[:quadro]` (> 4 KiB vai para `build/dump.bin`);
+    exec.c: `LARECOMP_SKIP_CS=<lista>` ou `=store`. Os ganchos de diagnóstico em código gerado (raios, sphere-casts,
+    IK) foram removidos; o raciocínio está acima.
   - A colisão do terreno vem de `Physics/TeraMeshRigidBody/MainField/<x>-<z>.shktmrb` (Yaz0; Havok hk_2014.2.0-r1,
     `hkpRigidBody` + `hkpBvCompressedMeshShape`; grade única de 1280 blocos, sem LOD). Os objetos (tronco) vêm de
     `Physics/StaticCompound/*.shksc`.
-  - Descartado: os tiles de altura 256x256 R16 (flag NVN 0x40 = render target linear, 8 seguidos em 365419000)
-    vivem só na GPU; a CPU só os zera na carga (f_104327900 é um memset). Devolver à memória render targets lineares
+  - (Errado, ver CAUSA acima) Descartado: os tiles de altura 256x256 R16 (flag NVN 0x40 = render target linear, 8
+    seguidos em 365419000) vivem só na GPU; a CPU só os zera na carga (f_104327900 é um memset). Devolver à memória render targets lineares
     (`LARECOMP_WB_LINEAR=1`, linha a linha), todos os alvos até 1 MiB (`LARECOMP_WRITEBACK_MAX=1048576`) ou só os
     R16 (`LARECOMP_WRITEBACK_FMT=6`) não muda a altura do Link na praça (A/B no mesmo save). O render thread
     assíncrono também não (`LARECOMP_VK_ASYNC=0`).

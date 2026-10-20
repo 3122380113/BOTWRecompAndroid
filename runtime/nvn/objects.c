@@ -27,7 +27,11 @@ static uint32_t device_integer(uint32_t which) {
         [40] = 1, [41] = 1, [42] = 1,  // min/max filtering, stencil8, ASTC
         [43] = 0x40000, [44] = 15, [45] = 2048,
         [46] = 1, [47] = 5, [48] = 1, [49] = 15,
-        [50] = 256, [51] = 1, [52] = 0, [53] = 0, [54] = 0, [55] = 256, [56] = 1, [57] = 0x1000,
+        // [57]: a linear render target's row alignment (NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET: rows of
+        // align(width x bytes per texel, this)). BOTW addresses its terrain height tiles (256x256 R16, 128 KB apart)
+        // on the CPU with it: 4096 put rows 4 KB apart, reading past each tile - the foot placement got heights of 0
+        // (or garbage) and sank Link and the NPCs into the ground (nvn_linear_rt_pitch)
+        [50] = 256, [51] = 1, [52] = 0, [53] = 0, [54] = 0, [55] = 256, [56] = 1, [57] = 128,
         [58] = 1, [59] = 1, [60] = 1, [61] = 1, [62] = 1, [63] = 1, [64] = 1,
     };
     {   // LARECOMP_DEVINFO=<index>=<value>[+<index>=<value>...]: override (test what the game sizes from them)
@@ -111,6 +115,10 @@ NVN(nvnDeviceGenerateDebugDomainId) { RET(1); }
 static uint32_t window_origin, depth_mode;
 RT_ON_RESET(nvn_device_reset) { window_origin = depth_mode = 0; }  // (the next boot sets its own)
 NVN(nvnDeviceSetWindowOriginMode) { window_origin = (uint32_t)A(1); LOG("[nvn] window origin mode %u\n", window_origin); }
+uint64_t nvn_linear_rt_pitch(uint64_t row_bytes) {  // (a linear render target's rows in memory, as the game sees them)
+    uint64_t a = device_integer(57);
+    return a ? (row_bytes + a - 1) / a * a : row_bytes;
+}
 uint32_t nvn_window_origin(void) { return window_origin; }
 uint32_t nvn_depth_mode(void) { return depth_mode; }
 NVN(nvnDeviceGetWindowOriginMode) { RET(window_origin); }

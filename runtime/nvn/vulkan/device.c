@@ -761,23 +761,124 @@ void backend_present(NvnTexture *t) {
             at = e && *e == ':' ? atol(e + 1) : 1500;
         }
         if (plen && (long)total_frames == at) {
-            // LARECOMP_FIND_WATCH=<back>[:<below hex>]: also a read / write watch (rt_range_watch, 4 bytes) on each hit
+            // LARECOMP_FIND_WATCH=<back>[:<below hex>]: also a read / write watch (rt_range_watch, +-16 bytes) on each hit
             // that is 4-aligned once <back> bytes are taken off, below that address (the GPU's copies are higher up)
             extern void rt_range_watch(uint64_t lo, uint64_t hi);
             const char *fw = getenv("LARECOMP_FIND_WATCH");
-            long back = fw ? atol(fw) : -1;
+            long back = fw ? atol(fw) : getenv("LARECOMP_FIND_BACK") ? atol(getenv("LARECOMP_FIND_BACK")) : -1;
             uint64_t below = fw && strchr(fw, ':') ? strtoull(strchr(fw, ':') + 1, NULL, 16) : ~0ull;
             int n = 0;
-            for (const uint8_t *p = (const uint8_t *)(uintptr_t)HEAP_BASE, *end = p + HEAP_MAX - plen; p < end && n < 64;) {
+            const char *ff = getenv("LARECOMP_FIND_FROM");  // (=<hex address>: where to start, past earlier hits)
+            const uint8_t *from = ff ? (const uint8_t *)(uintptr_t)strtoull(ff, NULL, 16) : (const uint8_t *)(uintptr_t)HEAP_BASE;
+            for (const uint8_t *p = from, *end = (const uint8_t *)(uintptr_t)HEAP_BASE + HEAP_MAX - plen; p < end && n < 64;) {
                 const uint8_t *q = memmem(p, (size_t)(end - p), pat, (size_t)plen);
                 if (!q) break;
-                LOG("[find] frame %llu: %llx\n", (unsigned long long)total_frames, (unsigned long long)(uintptr_t)q);
                 uint64_t a = (uint64_t)(uintptr_t)q - (uint64_t)(back > 0 ? back : 0);
-                if (back >= 0 && !(a & 3) && a < below) rt_range_watch(a, a + 4);
+                if (getenv("LARECOMP_FIND_PEEK")) {  // =<hex back>: 8 qwords from the hit minus that (an object's header)
+                    const uint64_t *w = (const uint64_t *)(uintptr_t)((uint64_t)(uintptr_t)q - strtoull(getenv("LARECOMP_FIND_PEEK"), NULL, 16));
+                    LOG("[find] frame %llu: %llx  %llx %llx %llx %llx %llx %llx %llx %llx\n", (unsigned long long)total_frames,
+                        (unsigned long long)(uintptr_t)q, (unsigned long long)w[0], (unsigned long long)w[1], (unsigned long long)w[2],
+                        (unsigned long long)w[3], (unsigned long long)w[4], (unsigned long long)w[5], (unsigned long long)w[6],
+                        (unsigned long long)w[7]);
+                } else if (!(a & 3)) {  // (and the floats around it: a vector's other components)
+                    const float *f = (const float *)(uintptr_t)a;
+                    LOG("[find] frame %llu: %llx  %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f\n",
+                        (unsigned long long)total_frames, (unsigned long long)(uintptr_t)q, f[-8], f[-7], f[-6], f[-5], f[-4], f[-3],
+                        f[-2], f[-1], f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8]);
+                } else
+                    LOG("[find] frame %llu: %llx\n", (unsigned long long)total_frames, (unsigned long long)(uintptr_t)q);
+                // (16 bytes either side: vectors and matrix rows are loaded 16 bytes at a time, and a fault reports
+                // where the access starts)
+                if (fw && back >= 0 && !(a & 3) && a < below) rt_range_watch(a - 16, a + 16);
                 n++;
                 p = q + 1;
             }
             LOG("[find] %d hits\n", n);
+        }
+    }
+    {   // LARECOMP_FIND_MTX=<x>,<y>,<z>,<tolerance>[,<frame>]: the row-major 3x4 matrices in the guest heap whose
+        // translation (floats 3, 7, 11) is within that of the point, with a rotation part of unit-ish rows
+        static int on = -1;
+        static float mx, my, mz, tol;
+        static long at;
+        if (on < 0) {
+            const char *e = getenv("LARECOMP_FIND_MTX");
+            at = 1500;
+            on = e && sscanf(e, "%f,%f,%f,%f,%ld", &mx, &my, &mz, &tol, &at) >= 4;
+        }
+        if (on && (long)total_frames == at) {
+            int n = 0;
+            const float *f = (const float *)(uintptr_t)HEAP_BASE, *end = f + HEAP_MAX / 4 - 12;
+            for (; f < end && n < 200; f++) {
+                if (!(fabsf(f[3] - mx) < tol) || !(fabsf(f[11] - mz) < tol) || !(fabsf(f[7] - my) < tol)) continue;
+                float r0 = f[0] * f[0] + f[1] * f[1] + f[2] * f[2], r1 = f[4] * f[4] + f[5] * f[5] + f[6] * f[6];
+                if (!(r0 > 0.25f && r0 < 4.0f && r1 > 0.25f && r1 < 4.0f)) continue;
+                n++;
+                LOG("[findmtx] %llx  %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f\n", (unsigned long long)(uintptr_t)f,
+                    f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9], f[10], f[11]);
+            }
+            LOG("[findmtx] %d hits\n", n);
+        }
+    }
+    {   // LARECOMP_DUMP=<hex address>:<bytes>[:<frame>]: those guest bytes as floats and words, 16 bytes a line
+        static uint64_t da = ~0ull, dn;
+        static long at;
+        if (da == ~0ull) {
+            da = 0;
+            const char *e = getenv("LARECOMP_DUMP");
+            if (e) {
+                char *q;
+                da = strtoull(e, &q, 16);
+                dn = *q == ':' ? strtoull(q + 1, &q, 0) : 256;
+                at = *q == ':' ? atol(q + 1) : 1500;
+            }
+        }
+        if (da && (long)total_frames == at && dn > 4096) {  // (large: raw, into build/dump.bin)
+            FILE *df = fopen("build/dump.bin", "wb");
+            if (df) { fwrite((const void *)(uintptr_t)da, 1, dn, df); fclose(df); }
+            LOG("[dump] %llu bytes at %llx -> build/dump.bin (%s)\n", (unsigned long long)dn, (unsigned long long)da, df ? "ok" : "failed");
+        } else if (da && (long)total_frames == at)
+            for (uint64_t o = 0; o < dn; o += 16) {
+                const float *f = (const float *)(uintptr_t)(da + o);
+                const uint32_t *w = (const uint32_t *)f;
+                LOG("[dump] %llx  %08x %08x %08x %08x  %.4f %.4f %.4f %.4f\n", (unsigned long long)(da + o), w[0], w[1], w[2], w[3],
+                    f[0], f[1], f[2], f[3]);
+            }
+    }
+    {   // LARECOMP_FIND_VEC=<x>,<y>,<z>,<tolerance>[,<frame>]: 3 consecutive floats in the guest heap near that vector
+        // (the floats around each, up to 200)
+        static int on = -1;
+        static float vx, vy, vz, tol;
+        static long at;
+        if (on < 0) {
+            const char *e = getenv("LARECOMP_FIND_VEC");
+            at = 1500;
+            on = e && sscanf(e, "%f,%f,%f,%f,%ld", &vx, &vy, &vz, &tol, &at) >= 4;
+        }
+        if (on && (long)total_frames == at) {
+            int n = 0;
+            const float *f = (const float *)(uintptr_t)HEAP_BASE + 8, *end = f + HEAP_MAX / 4 - 24;
+            if (getenv("LARECOMP_FIND_FROM")) f = (const float *)(uintptr_t)(strtoull(getenv("LARECOMP_FIND_FROM"), NULL, 16) & ~3ull);
+            for (; f < end && n < 200; f++) {
+                if (!(fabsf(f[1] - vy) < tol) || !(fabsf(f[0] - vx) < tol) || !(fabsf(f[2] - vz) < tol)) continue;
+                if (f[0] == 0 && f[2] == 0 && vx == 0 && vz == 0 && f[1] == 0) continue;
+                if (getenv("LARECOMP_FIND_VEC_QS")) {  // (=1: only a pose transform: then a unit quaternion and scale 1)
+                    if ((uintptr_t)f & 15) continue;
+                    float q = f[4] * f[4] + f[5] * f[5] + f[6] * f[6] + f[7] * f[7];
+                    if (!(fabsf(q - 1) < 0.01f && fabsf(f[8] - 1) < 0.01f && fabsf(f[9] - 1) < 0.01f && fabsf(f[10] - 1) < 0.01f)) continue;
+                }
+                // (=1: exactly (0, y, 0, 0), a vertical offset alone)
+                if (getenv("LARECOMP_FIND_VEC_Y") && !(f[0] == 0 && f[2] == 0 && f[3] == 0 && f[-1] == 0)) continue;
+                if (n < 8 && getenv("LARECOMP_FIND_VEC_WATCH")) {  // (=1: and a read / write watch on the first 8)
+                    extern void rt_range_watch(uint64_t lo, uint64_t hi);
+                    rt_range_watch((uint64_t)(uintptr_t)f, (uint64_t)(uintptr_t)f + 12);
+                }
+                n++;
+                LOG("[findvec] %llx  %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f | %.4f %.4f %.4f | %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f\n",
+                    (unsigned long long)(uintptr_t)f, f[-8], f[-7], f[-6], f[-5], f[-4], f[-3], f[-2], f[-1], f[0], f[1], f[2], f[3], f[4],
+                    f[5], f[6], f[7], f[8], f[9], f[10], f[11]);
+            }
+            LOG("[findvec] %d hits\n", n);
         }
     }
     {   // LARECOMP_HEAPTREE=<hex sead::Heap address>[:<frame>]: that heap and its children (name, size), recursively
