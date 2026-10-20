@@ -460,6 +460,18 @@ Rodada 3, com referências do Switch (vídeo, porta abrindo e terminal Sheikah):
   - Testes: snapshot completo (todas as camadas e níveis, view do tipo certo) ficou pior (camadas 4-7 vazias,
     revertido). `LARECOMP_NO_FEEDBACK=1` (amostrar ao vivo) melhorou os mips (camada 2 nível 1 completa), mas
     não resolveu. Os resultados variam entre execuções: suspeita de ordem / corrida.
+  - Rodada 2: a camada N é feita da N-1 (fs `91fe757c`, camada em cb3[4].x, LOD cb3[4].y, wrap 1 = repeat, UV
+    além de 1). Nas camadas 3+ os quads são faixas finas (~18 px): o jogo atualiza essas camadas por faixas, como
+    um clipmap, e o resto da camada tem que persistir. Mesmo assim a camada 3 termina 100% zerada, até a faixa
+    recém-desenhada: a saída desses draws se perde.
+  - Corrigido no caminho (sem resolver o chão): amostrar como 2D array uma textura que também é render target
+    ligava uma textura dummy (vazia). O snapshot de feedback agora copia todas as camadas e níveis e é ligado com
+    a view certa: 2D ou 2D array, com os níveis/camadas da view do jogo. Pode afetar o bloom (320x180 com 5
+    níveis lidos enquanto renderiza). `LARECOMP_FEEDBACK_ANY_LAYER=1` (teste: snapshot também sem sobreposição)
+    não mudou nada.
+  - Ainda descartado: a limpeza respeita o scissor; os "fresh clears" só valem para alvos escaláveis (desligados).
+  - Próximo: o estado dos draws `91fe757c` (depth test, blend, máscara de canais, alvo de profundidade), já no
+    log `[wdraw]` (`LARECOMP_WATCH_DRAWS=1`).
   - Ferramentas: F9 pelo adb (`adb shell input keyevent 139`) tira um debug frame do jogo em andamento;
     `LARECOMP_DUMP_SAMPLED=<w>x<h>:<fmt>` (+ `_LEVEL`) salva todas as camadas de uma textura amostrada no debug
     frame; `LARECOMP_WATCH_DRAWS=1` (+ `_ALL`) com `LARECOMP_WATCH_TEXADDR` registra cada draw nessa memória
