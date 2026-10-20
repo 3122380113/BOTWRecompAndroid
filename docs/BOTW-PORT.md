@@ -480,9 +480,23 @@ Rodada 3, com referências do Switch (vídeo, porta abrindo e terminal Sheikah):
     (erro médio 4.7 cm num trecho de 16 m, viés 0; o Link no texel x 721, y 821: 214.359). Cada camada N-1 contém a
     N reduzida pela metade, sem viés (clipmap). Ferramentas em scratchpad: `yaz0.py`, `hght.py`, `match2.py`,
     `chain.py`.
-  - Próximo: o vertex shader do terreno (lê o array com textureLod; camada em cb6[7].x, LOD cb6[7].y, morph com
-    cb7). Suspeita: camada / morph / coordenada errados perto da câmera, o que daria terreno alto num lugar e baixo
-    noutro conforme o relevo. Pegar o GLSL (`LARECOMP_SAVE_MSL=1`, build/glsl no celular).
+  - (Correção: a camada 7 tem 0.122 m por texel, 125 m; casa com erro 3 mm. Os mips também estão certos.)
+  - A malha de colisão decodificada offline (scratchpad `tm.py` / `query.py`: seções de 0x60 bytes a partir de
+    0x2250, 723; primitivas em 0x8fb80; índices compartilhados, vértices de 32 bits (11/11/10, codec da seção) e de
+    64 bits (21/21/22, domínio global); os 53792 vértices caem dentro das caixas) dá 214.352 sob o Link: igual ao
+    `.hght`. A física está certa.
+  - O terreno perto da câmera é o fs `31fe3974e3e8bc78` (vs `3dabb8a00`): pular os 7 shaders do terreno, ou só
+    esse, mostra o Link inteiro. A altura dele é amostra x 800 (cb5[0].y), sem desvio, e a coordenada bate com o
+    texel certo; o `cb3[11..13].w` é a câmera (o terreno baixa sob ela). O vs `3dabe0800` (mais longe) usa x 800 - 1.
+    `LARECOMP_NO_DEPTH_BIAS=1` e `LARECOMP_NO_WRITEBACK=1` não mudam nada.
+  - ACHADO: no debug frame, o osso raiz das matrizes de skinning do Link está em y 213.798, 0.554 m ABAIXO do ator
+    (214.352). É a CPU (o jogo) que baixa o modelo. Hipótese: ajuste dos pés ao chão (`FootIkController`; há
+    consultas de raio em lote do Havok, `TtRayCastQuery::processLeaf`) sem acertar o terreno, esticando até o limite
+    (o Bokoblin, maior, afunda mais; no tronco, que é `StaticCompound`, fica certo).
+  - Descartado como fonte: as cópias do `.hght` na memória (nenhuma leitura em jogo) e os alvos R16 96x96 / 192x192
+    (só o runtime lê). Vigiar os buffers de constantes da GPU (3e8...) trava o jogo.
+  - Ferramentas novas: `LARECOMP_FIND=<hex>[:quadro]` procura bytes na heap; `LARECOMP_FIND_WATCH=<recuo>[:<abaixo
+    de>]` arma a vigilância nos acertos alinhados na mesma execução.
 - Brilho Sheikah em blocos (ainda aberto): a textura do bloom (320x180, 5 níveis) é registrada uma vez, sem view
   (`LARECOMP_WATCH_TEXID=7fffffff` registra a do bloom); todas as passadas de redução / blur leem com um sampler de LOD
   0..0 (nível 0) e escrevem no nível k (view do render target); a composição final lê com LOD 1..1 (nível 1). O jogo

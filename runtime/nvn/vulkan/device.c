@@ -750,6 +750,36 @@ void backend_present(NvnTexture *t) {
                 LOG("[peek] frame %llu %llx: %016llx\n", (unsigned long long)total_frames, (unsigned long long)(pa + k),
                     (unsigned long long)*(const uint64_t *)(uintptr_t)(pa + k));
     }
+    {   // LARECOMP_FIND=<hex bytes>[:<frame>]: every address in the guest heap holding those bytes (once, default frame 1500)
+        static uint8_t pat[64];
+        static int plen = -1;
+        static long at;
+        if (plen < 0) {
+            plen = 0;
+            const char *e = getenv("LARECOMP_FIND");
+            for (; e && e[0] && e[1] && e[0] != ':' && plen < 64; e += 2) { unsigned v; sscanf(e, "%2x", &v); pat[plen++] = (uint8_t)v; }
+            at = e && *e == ':' ? atol(e + 1) : 1500;
+        }
+        if (plen && (long)total_frames == at) {
+            // LARECOMP_FIND_WATCH=<back>[:<below hex>]: also a read / write watch (rt_range_watch, 4 bytes) on each hit
+            // that is 4-aligned once <back> bytes are taken off, below that address (the GPU's copies are higher up)
+            extern void rt_range_watch(uint64_t lo, uint64_t hi);
+            const char *fw = getenv("LARECOMP_FIND_WATCH");
+            long back = fw ? atol(fw) : -1;
+            uint64_t below = fw && strchr(fw, ':') ? strtoull(strchr(fw, ':') + 1, NULL, 16) : ~0ull;
+            int n = 0;
+            for (const uint8_t *p = (const uint8_t *)(uintptr_t)HEAP_BASE, *end = p + HEAP_MAX - plen; p < end && n < 64;) {
+                const uint8_t *q = memmem(p, (size_t)(end - p), pat, (size_t)plen);
+                if (!q) break;
+                LOG("[find] frame %llu: %llx\n", (unsigned long long)total_frames, (unsigned long long)(uintptr_t)q);
+                uint64_t a = (uint64_t)(uintptr_t)q - (uint64_t)(back > 0 ? back : 0);
+                if (back >= 0 && !(a & 3) && a < below) rt_range_watch(a, a + 4);
+                n++;
+                p = q + 1;
+            }
+            LOG("[find] %d hits\n", n);
+        }
+    }
     {   // LARECOMP_HEAPTREE=<hex sead::Heap address>[:<frame>]: that heap and its children (name, size), recursively
         // (BOTW's layout: name +0x28, size +0x40, children list head +0x50 (count +0x60), a child's node at +0x68)
         static uint64_t root = ~0ull;
