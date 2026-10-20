@@ -459,18 +459,19 @@ Rodada 3, com referências do Switch (vídeo, porta abrindo e terminal Sheikah):
     na carga, aparece como "compile N (waited X ms)" na linha de estatísticas.
   - Corrigido no caminho: amostrar como 2D array uma textura que também é render target ligava uma textura dummy. O
     snapshot de feedback agora copia todas as camadas e níveis e é ligado com a view certa (2D ou 2D array).
-- Link e NPCs afundando no chão (2026-10-20): em cima de um tronco os pés ficavam certos; o ancião, ao se levantar na
-  cutscene, afundava igual. Era o chão de colisão do terreno. O BOTW desenha os tiles de altura (256x256 R16, flag
-  NVN 0x40 = render target linear, linhas compactas na largura; 8 tiles seguidos em 365419000) na GPU e a CPU lê
-  esses tiles para a colisão. Nada voltava à memória (a devolução só pegava alvos <= 4 KiB): a CPU lia o conteúdo
-  antigo. Com `LARECOMP_WRITEBACK_MAX=1048576` eles voltavam, mas em blocos (block-linear), e a altura ficava
-  embaralhada por lugar (afunda num ponto, flutua ao lado). Correção: render targets lineares (flags 0x40 / 0x10)
-  voltam à memória até 512 KiB, linha a linha (`WbEntry.pitch` em exec.c). Diagnóstico novo:
-  `LARECOMP_WRITEBACK_FMT=<hex>` (só esse formato, acima de 4 KiB) e o log de devolução registra cada alvo uma vez.
-  - Ferramentas: F9 pelo adb (`adb shell input keyevent 139`) tira um debug frame do jogo em andamento;
-    `LARECOMP_DUMP_SAMPLED=<w>x<h>:<fmt>` (+ `_LEVEL`) salva todas as camadas de uma textura amostrada no debug
-    frame; `LARECOMP_WATCH_DRAWS=1` (+ `_ALL`) com `LARECOMP_WATCH_TEXADDR` registra cada draw nessa memória
-    (constantes do VS, vértices, texturas).
+- Link e NPCs afundando no chão (aberto, 2026-10-20). Em cima de um tronco os pés ficam certos; o ancião, ao se
+  levantar na cutscene, afunda igual; um Bokoblin afunda até a cintura. Varia por lugar: até a coxa na praça de pedra
+  (save do usuário, reproduz sozinho no quadro 1500), até a canela na fogueira, flutuando no pé do paredão.
+  - A colisão do terreno vem de `Physics/TeraMeshRigidBody/MainField/<x>-<z>.shktmrb` (Yaz0; Havok hk_2014.2.0-r1,
+    `hkpRigidBody` + `hkpBvCompressedMeshShape`; grade única de 1280 blocos, sem LOD). Os objetos (tronco) vêm de
+    `Physics/StaticCompound/*.shksc`.
+  - Descartado: os tiles de altura 256x256 R16 (flag NVN 0x40 = render target linear, 8 seguidos em 365419000)
+    vivem só na GPU; a CPU só os zera na carga (f_104327900 é um memset). Devolver à memória render targets lineares
+    (`LARECOMP_WB_LINEAR=1`, linha a linha), todos os alvos até 1 MiB (`LARECOMP_WRITEBACK_MAX=1048576`) ou só os
+    R16 (`LARECOMP_WRITEBACK_FMT=6`) não muda a altura do Link na praça (A/B no mesmo save). O render thread
+    assíncrono também não (`LARECOMP_VK_ASYNC=0`).
+  - Próximo: o código que consulta essa malha (Havok, na CPU). Suspeita: instrução traduzida errada. O teste do
+    lifter tinha coberto só 20000 codificações sorteadas.
 - Brilho Sheikah em blocos (ainda aberto): a textura do bloom (320x180, 5 níveis) é registrada uma vez, sem view
   (`LARECOMP_WATCH_TEXID=7fffffff` registra a do bloom); todas as passadas de redução / blur leem com um sampler de LOD
   0..0 (nível 0) e escrevem no nível k (view do render target); a composição final lê com LOD 1..1 (nível 1). O jogo

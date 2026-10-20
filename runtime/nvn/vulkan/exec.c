@@ -1189,10 +1189,9 @@ static uint64_t wb_max(void) {  // (LARECOMP_WRITEBACK_MAX=<bytes>: a larger lim
     return m;
 }
 #define WB_MAX wb_max()
-// Linear render targets (NVN flag 0x40, or 0x10) are written back whatever their size up to a slot: BOTW renders its
-// terrain height tiles (256x256 R16, rows packed at their width) and reads them on the CPU for the ground's
-// collision. Written back as block-linear (or not at all) the ground was too low or too high by place: Link and
-// the NPCs sank into it or floated over it.
+// LARECOMP_WB_LINEAR=1: linear render targets (NVN flag 0x40, or 0x10; rows packed at their width) are written back
+// whatever their size up to a slot. A test for BOTW's terrain height tiles (256x256 R16): the CPU never reads them
+// (read watch), and Link sank the same with or without.
 #define WB_LINEAR_MAX (512u * 1024)
 #define WB_SLOT (WB_MAX > WB_LINEAR_MAX ? WB_MAX : WB_LINEAR_MAX)
 #define WB_SLOTS 32
@@ -1221,7 +1220,9 @@ static bool wb_eligible(NvnTexture *t, TexBackend *b, uint32_t lv) {
     static int only = -2;  // LARECOMP_WRITEBACK_FMT=<hex>: only targets of that format (bisecting)
     if (only == -2) only = getenv("LARECOMP_WRITEBACK_FMT") ? (int)strtol(getenv("LARECOMP_WRITEBACK_FMT"), NULL, 16) : -1;
     if (only >= 0 && t->format != (uint32_t)only && tegra_total_size(&t->layout) > 4096) return false;
-    return t->addr >= HEAP_BASE && tegra_total_size(&t->layout) <= ((t->flags & 0x50) ? WB_SLOT : WB_MAX);
+    static int lin = -1;  // (LARECOMP_WB_LINEAR=1: linear targets too, up to a slot - off: nothing read them)
+    if (lin < 0) lin = getenv("LARECOMP_WB_LINEAR") && atoi(getenv("LARECOMP_WB_LINEAR"));
+    return t->addr >= HEAP_BASE && tegra_total_size(&t->layout) <= ((lin && (t->flags & 0x50)) ? WB_SLOT : WB_MAX);
 }
 
 static void wb_queue(NvnTexture *t) {
