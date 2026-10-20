@@ -1289,6 +1289,8 @@ static void wb_apply(uint64_t done) {
 }
 
 TexBackend *g_dump_sampled;  // (LARECOMP_DUMP_SAMPLED: the texture to dump after the pass)
+NvnTexture *g_pass_t0;  // (the open pass's first color target and its layer: LARECOMP_DUMP_AFTER_LAYER)
+int g_pass_layer;
 static void dump_layers_raw(TexBackend *b) {  // every layer, level 0, as stored (R8 / R16 / RGBA8 / RGBA16F...)
     uint32_t bpp = b->format == VK_FORMAT_R16_UNORM || b->format == VK_FORMAT_R16_SFLOAT ? 2 : b->format == VK_FORMAT_R8_UNORM ? 1
                  : b->format == VK_FORMAT_R16G16B16A16_SFLOAT ? 8 : 4;
@@ -1327,6 +1329,18 @@ static void vk_end_pass_at(int line) {
     in_pass = false;
     {   extern TexBackend *g_dump_sampled;
         if (g_dump_sampled) { TexBackend *db = g_dump_sampled; g_dump_sampled = NULL; dump_layers_raw(db); }
+    }
+    {   // LARECOMP_DUMP_AFTER_LAYER=<n>: the watched texture's layers (level 0) right after the first pass into layer n
+        extern NvnTexture *g_pass_t0; extern int g_pass_layer;
+        extern uint64_t nvn_watch_texaddr(void);
+        static int want = -2;
+        if (want == -2) want = getenv("LARECOMP_DUMP_AFTER_LAYER") ? atoi(getenv("LARECOMP_DUMP_AFTER_LAYER")) : -1;
+        uint64_t wa = want >= 0 ? nvn_watch_texaddr() : 0;
+        if (wa && g_pass_t0 && g_pass_t0->addr == wa && g_pass_layer == want && g_pass_t0->backend) {
+            LOG("[vk] after the first pass into layer %d (frame %llu):\n", want, (unsigned long long)renderer_present_count());
+            want = -1;
+            dump_layers_raw((TexBackend *)g_pass_t0->backend);
+        }
     }
     for (int i = 0; i < wb_npass; i++) wb_queue(wb_pass[i]);
     wb_npass = 0;
@@ -1395,6 +1409,11 @@ static void begin_pass(void) {
     uint32_t w = 0, minw = UINT32_MAX, minh = UINT32_MAX;  // w: first attachment seen
     pass_ncolor = (uint32_t)st.rt.ncolor;
     pass_samples = 1;
+    {   extern NvnTexture *g_pass_t0; extern int g_pass_layer;
+        g_pass_t0 = st.rt.ncolor ? st.rt.color[0] : NULL;
+        g_pass_layer = st.rt.ncolor && st.rt.has_cview[0] && (st.rt.cview[0].setmask & 2) ? st.rt.cview[0].min_layer : 0;
+        if (st.rt.ncolor && st.rt.has_cview[0] && (st.rt.cview[0].setmask & 1) && st.rt.cview[0].base_level) g_pass_layer = -1;  // (mips: not these)
+    }
     wb_npass = 0;
     for (int i = 0; i < st.rt.ncolor; i++) {
         NvnTexture *t = st.rt.color[i];

@@ -470,8 +470,14 @@ Rodada 3, com referências do Switch (vídeo, porta abrindo e terminal Sheikah):
     níveis lidos enquanto renderiza). `LARECOMP_FEEDBACK_ANY_LAYER=1` (teste: snapshot também sem sobreposição)
     não mudou nada.
   - Ainda descartado: a limpeza respeita o scissor; os "fresh clears" só valem para alvos escaláveis (desligados).
-  - Próximo: o estado dos draws `91fe757c` (depth test, blend, máscara de canais, alvo de profundidade), já no
-    log `[wdraw]` (`LARECOMP_WATCH_DRAWS=1`).
+  - Rodada 3: os draws `91fe757c` têm o mesmo estado dos que funcionam (sem depth, sem blend, máscara cheia). Não
+    há ClearColor no array (`LARECOMP_LOG_CLEARS`), nem outra textura sobre a memória da camada 3
+    (`LARECOMP_WATCH_TEXADDR=3632ac000`). A view de render target respeita camada e nível, e o cache de views tem a
+    camada na chave.
+  - Próximo (parado em 2026-10-20): `LARECOMP_DUMP_AFTER_LAYER=3` (com `LARECOMP_WATCH_TEXADDR=362ab4000`) despeja
+    o array logo após o primeiro pass na camada 3, para separar "a escrita falha" de "algo apaga depois". Na
+    primeira tentativa não disparou: o pass da camada 3 pode começar com a camada no `cview` sem o bit 2 do setmask,
+    ou o primeiro pass ser de mip (nível > 0). Conferir `g_pass_layer` em begin_pass.
   - Ferramentas: F9 pelo adb (`adb shell input keyevent 139`) tira um debug frame do jogo em andamento;
     `LARECOMP_DUMP_SAMPLED=<w>x<h>:<fmt>` (+ `_LEVEL`) salva todas as camadas de uma textura amostrada no debug
     frame; `LARECOMP_WATCH_DRAWS=1` (+ `_ALL`) com `LARECOMP_WATCH_TEXADDR` registra cada draw nessa memória
