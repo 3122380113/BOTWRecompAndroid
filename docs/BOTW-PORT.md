@@ -470,8 +470,19 @@ Rodada 3, com referências do Switch (vídeo, porta abrindo e terminal Sheikah):
     (`LARECOMP_WB_LINEAR=1`, linha a linha), todos os alvos até 1 MiB (`LARECOMP_WRITEBACK_MAX=1048576`) ou só os
     R16 (`LARECOMP_WRITEBACK_FMT=6`) não muda a altura do Link na praça (A/B no mesmo save). O render thread
     assíncrono também não (`LARECOMP_VK_ASYNC=0`).
-  - Próximo: o código que consulta essa malha (Havok, na CPU). Suspeita: instrução traduzida errada. O teste do
-    lifter tinha coberto só 20000 codificações sorteadas.
+  - O lifter contra o Unicorn com 150000 codificações (semente 7): 449901 casos, 0 falhas.
+  - A FÍSICA ESTÁ CERTA; o terreno DESENHADO é que está fora. Save do usuário (slot 1): `PlayerSavePos` = (-909.127,
+    214.358, 1848.894). Altura verdadeira nesse ponto pelos `.hght` (TSCB: área 58000097A3, aresta 0.125 x 500 m,
+    256x256 u16 x 800/65535; o arquivo fica em `58000097A0.hght.sstera`, SARC dentro de Yaz0): 214.351 (LOD 58) /
+    214.359 (LOD 57). A praça é plana (214.32..214.36 em 1 m), e o Link aparece enterrado ~0.6 m nela.
+  - O array de alturas da GPU também está certo: despejo no quadro 1500 (`LARECOMP_DEBUG_FRAME=1500`,
+    `LARECOMP_DUMP_SAMPLED=1024x1024:6`). A camada 7 é a mais fina (0.244 m por texel, 250 m) e casa com o `.hght`
+    (erro médio 4.7 cm num trecho de 16 m, viés 0; o Link no texel x 721, y 821: 214.359). Cada camada N-1 contém a
+    N reduzida pela metade, sem viés (clipmap). Ferramentas em scratchpad: `yaz0.py`, `hght.py`, `match2.py`,
+    `chain.py`.
+  - Próximo: o vertex shader do terreno (lê o array com textureLod; camada em cb6[7].x, LOD cb6[7].y, morph com
+    cb7). Suspeita: camada / morph / coordenada errados perto da câmera, o que daria terreno alto num lugar e baixo
+    noutro conforme o relevo. Pegar o GLSL (`LARECOMP_SAVE_MSL=1`, build/glsl no celular).
 - Brilho Sheikah em blocos (ainda aberto): a textura do bloom (320x180, 5 níveis) é registrada uma vez, sem view
   (`LARECOMP_WATCH_TEXID=7fffffff` registra a do bloom); todas as passadas de redução / blur leem com um sampler de LOD
   0..0 (nível 0) e escrevem no nível k (view do render target); a composição final lê com LOD 1..1 (nível 1). O jogo
