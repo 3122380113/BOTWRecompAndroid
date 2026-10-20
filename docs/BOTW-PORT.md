@@ -410,14 +410,18 @@ Rodada 3, com referências do Switch (vídeo, porta abrindo e terminal Sheikah):
   - Outras ferramentas: `LARECOMP_DEBUG_RAW_PASSES=1` (texels float dos passes), `LARECOMP_DEBUG_DATA` (bancos
     certos do fragment shader), `LARECOMP_LOG_UBO_UPDATE=<endereço>`, `LARECOMP_WRITEBACK_MAX=<bytes>`.
   - Ainda visível: buracos brancos nas serras distantes (o terreno distante com falhas já anotado).
-- Buracos nas serras distantes (aberto, 2026-10-19). Não são do terreno: sem os 7 shaders do terreno, as
-  silhuetas e os buracos ficam iguais. Com `LARECOMP_VK_NO_CULL=1` (sem culling) a serra fica contínua, como no
-  Switch. Então algum draw chega com a orientação errada ou deveria ser dupla face. Na G-buffer todos usam
-  triângulos em lista, CCW, cull back. `LARECOMP_VK_NO_CULL=<fs hash>+<fs hash>` desliga o culling só nesses.
-  Bissecção em `scratchpad/bis_cull.sh`: as duas metades da lista de shaders da G-buffer e os 7 do terreno
-  sozinhos não fecham os buracos, então o draw culpado está em outro pass ou fora dessa lista. Próximo passo:
-  listar os draws de todos os passes do debug frame com culling ligado e bissectar por eles.
-  `LARECOMP_SKIP_FSHASH` aceita `+` como separador.
+- Buracos nas serras distantes (2026-10-19): são transitórios. No quadro 3000 após carregar o save do planalto, a
+  serra da Montanha da Morte aparece em recortes com falhas. Nos quadros 5400 e 6600 da mesma execução está completa,
+  como no Switch: o LOD de paisagem distante ainda está chegando (streaming).
+  - `LARECOMP_VK_NO_CULL=1` "corrigia" só porque mostrava as faces de trás. Os testes por shader se contradiziam,
+    porque mudar os primeiros quadros muda o tempo do streaming.
+  - Ferramentas: `LARECOMP_VK_NO_CULL=<lista>` ou `=-<lista>` (todos exceto a lista; até 256 hashes),
+    `LARECOMP_LOG_FSHASH_FROM=<quadro>` (cada fragment shader desenhado a partir dali, uma vez, com alvo e
+    estado) e `LARECOMP_SHOT_AT=a+b+c` (`+` como separador no Android).
+  - Em aberto: no Switch a troca de LOD não mostra buracos. Pode ser streaming mais lento aqui (E/S de arquivos) ou
+    o modelo de baixo detalhe sumindo antes da hora.
+- Cena preta com o HUD intacto (aberto): na mesma execução, os quadros 3000 e 4200 saíram pretos e os 5400 e 6600
+  normais. `LARECOMP_SCREENSHOT_EVERY` pegou preto de 2400 a 6000 em outra execução. Intermitente e se recupera.
 - Brilho Sheikah em blocos (ainda aberto): a textura do bloom (320x180, 5 níveis) é registrada uma vez, sem view
   (`LARECOMP_WATCH_TEXID=7fffffff` registra a do bloom); todas as passadas de redução / blur leem com um sampler de LOD
   0..0 (nível 0) e escrevem no nível k (view do render target); a composição final lê com LOD 1..1 (nível 1). O jogo

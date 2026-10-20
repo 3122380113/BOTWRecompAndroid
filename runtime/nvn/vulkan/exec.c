@@ -3932,6 +3932,24 @@ static void draw_(CmdRec *r, bool indexed) {
         for (int i = 0; i < nskip; i++) if (last_hash == skip[i]) { stat_skipped++; return; }
         if (g_debug_frame && getenv("LARECOMP_LOG_FSHASH")) LOG("[fshash] fs=%llx hash %016llx\n", (unsigned long long)fs, (unsigned long long)last_hash);
         g_cur_fs_hash = last_hash;
+        {   // LARECOMP_LOG_FSHASH_FROM=<frame>: each fragment shader drawn from that frame on, once (with its target)
+            static long from = -2;
+            if (from == -2) from = getenv("LARECOMP_LOG_FSHASH_FROM") ? atol(getenv("LARECOMP_LOG_FSHASH_FROM")) : -1;
+            if (from >= 0 && (long)renderer_present_count() >= from) {
+                static uint64_t seen[512];
+                static int nseen;
+                bool f = false;
+                for (int i = 0; i < nseen; i++) f |= seen[i] == last_hash;
+                if (!f && nseen < 512) {
+                    seen[nseen++] = last_hash;
+                    NvnTexture *t0 = st.rt.ncolor ? st.rt.color[0] : NULL;
+                    LOG("[fsnew] frame %llu fs %016llx code %llx vs %llx rt %d %ux%u depth %d poly %02x%02x\n",
+                        (unsigned long long)renderer_present_count(), (unsigned long long)last_hash, (unsigned long long)fs,
+                        (unsigned long long)st.program->stages[0].code_addr, st.rt.ncolor, t0 ? t0->width : 0, t0 ? t0->height : 0,
+                        st.rt.depth != NULL, st.poly[0], st.poly[1]);
+                }
+            }
+        }
         extern void widescreen_backdrop_seen(uint64_t hash);
         if (last_hash) widescreen_backdrop_seen(last_hash);
         extern void widescreen_scene_ubo(const float *u, uint64_t size);  // (the camera's view-projection)
@@ -4086,19 +4104,24 @@ static void draw_(CmdRec *r, bool indexed) {
     uint8_t cull = st.poly[0];
     if (vkey.flip_x) cull = 0;  // (mirror mode's composite: one full-screen quad, either winding)
     {   // LARECOMP_VK_NO_CULL=1: no face culling at all; =<fs hash>+<fs hash>...: not for those (diagnosis: missing faces)
-        static int nn = -1;
-        static uint64_t hs[64];
+        static int nn = -1, except;  // (=-<list>: every draw except those)
+        static uint64_t hs[256];
         if (nn < 0) {
             nn = 0;
             const char *e = getenv("LARECOMP_VK_NO_CULL");
+            if (e && *e == '-') except = 1, e++;
             if (e && !strcmp(e, "1")) nn = 1000;
-            else for (const char *p = e; p && *p && nn < 64;) {
+            else for (const char *p = e; p && *p && nn < 256;) {
                 hs[nn++] = strtoull(p, (char **)&p, 16);
                 while (*p == '+') p++;
             }
         }
         if (nn == 1000) cull = 0;
-        else for (int i = 0; i < nn; i++) if (g_cur_fs_hash == hs[i]) cull = 0;
+        else if (nn) {
+            bool in = false;
+            for (int i = 0; i < nn; i++) in |= g_cur_fs_hash == hs[i];
+            if (in != (except != 0)) cull = 0;
+        }
     }
     VkCullModeFlags cm = cull == 1 ? VK_CULL_MODE_FRONT_BIT : cull == 2 ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
     if (ss_need(SS_CULL, ss.cull == cm)) { ss.cull = cm; vkCmdSetCullMode(cb, cm); }
