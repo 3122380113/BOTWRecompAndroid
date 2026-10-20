@@ -1288,6 +1288,32 @@ static void wb_apply(uint64_t done) {
     pthread_mutex_unlock(&wb_lock);
 }
 
+TexBackend *g_dump_sampled;  // (LARECOMP_DUMP_SAMPLED: the texture to dump after the pass)
+static void dump_layers_raw(TexBackend *b) {  // every layer, level 0, as stored (R8 / R16 / RGBA8 / RGBA16F...)
+    uint32_t bpp = b->format == VK_FORMAT_R16_UNORM || b->format == VK_FORMAT_R16_SFLOAT ? 2 : b->format == VK_FORMAT_R8_UNORM ? 1
+                 : b->format == VK_FORMAT_R16G16B16A16_SFLOAT ? 8 : 4;
+    uint32_t nl = b->layers ? b->layers : 1;
+    uint32_t lvl = getenv("LARECOMP_DUMP_SAMPLED_LEVEL") ? (uint32_t)atoi(getenv("LARECOMP_DUMP_SAMPLED_LEVEL")) : 0;
+    if (lvl >= b->levels) lvl = 0;
+    uint32_t w = b->width >> lvl ? b->width >> lvl : 1, h = b->height >> lvl ? b->height >> lvl : 1;
+    uint64_t one = (uint64_t)w * h * bpp;
+    VkCommandBuffer cb = vk_cmd();
+    vk_full_barrier(cb);
+    VkSpan out = vk_readback(one * nl);
+    for (uint32_t l = 0; l < nl; l++) {
+        VkBufferImageCopy c = {.bufferOffset = out.off + one * l, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lvl, l, 1},
+                               .imageExtent = {w, h, 1}};
+        vkCmdCopyImageToBuffer(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &c);
+    }
+    renderer_flush();
+    for (uint32_t l = 0; l < nl; l++) {
+        char p[128];
+        snprintf(p, sizeof p, "build/sampled_%ux%u_L%u.raw", b->width, b->height, l);
+        FILE *f = fopen(p, "wb");
+        if (f) { fwrite((const uint8_t *)out.ptr + one * l, 1, one, f); fclose(f); }
+    }
+    LOG("[vk] dumped %u layers of %ux%u vkformat %d (%u bytes a texel)\n", nl, b->width, b->height, (int)b->format, bpp);
+}
 static void vk_end_pass_at(int line);
 static void save_texture_raw(TexBackend *b, const char *path);
 static TexBackend *pass_dump_b;  // (debug frame) the color target the open pass draws into
@@ -1299,6 +1325,9 @@ static void vk_end_pass_at(int line) {
     if (prof && line < 4096) prof_end_line[line]++;
     vkCmdEndRendering(vk_cmd());
     in_pass = false;
+    {   extern TexBackend *g_dump_sampled;
+        if (g_dump_sampled) { TexBackend *db = g_dump_sampled; g_dump_sampled = NULL; dump_layers_raw(db); }
+    }
     for (int i = 0; i < wb_npass; i++) wb_queue(wb_pass[i]);
     wb_npass = 0;
     // (the pass's own first color target: by now st.rt may already name the next pass's)
@@ -3988,6 +4017,36 @@ static void draw_(CmdRec *r, bool indexed) {
                 }
             }
         }
+        {   // (LARECOMP_WATCH_TEXADDR + LARECOMP_WATCH_DRAWS=1) each draw into that memory: its vertex constants (bank 3),
+            // vertices, view and scissor - where its quad lands
+            extern uint64_t nvn_watch_texaddr(void);
+            static int wd = -1;
+            if (wd < 0) wd = getenv("LARECOMP_WATCH_DRAWS") != NULL;
+            NvnTexture *w0 = st.rt.ncolor ? st.rt.color[0] : NULL;
+            uint64_t wa = wd ? nvn_watch_texaddr() : 0;
+            if (wa && w0 && w0->addr <= wa && wa < w0->addr + tegra_total_size(&w0->layout)) {
+                static int nw;
+                bool lv0 = !(st.rt.has_cview[0] && st.rt.cview[0].base_level);
+                if ((lv0 || getenv("LARECOMP_WATCH_DRAWS_ALL")) && nw++ < 3000) {
+                    const float *u = st.ubuf[0][0].addr ? (const float *)(uintptr_t)st.ubuf[0][0].addr : NULL;
+                    const float *v = st.vbuf[0].addr ? (const float *)(uintptr_t)st.vbuf[0].addr : NULL;
+                    LOG("[wdraw] frame %llu layer %u level %u fs %016llx vp %.0f %.0f %.0f %.0f sc %d %d %d %d | cb3:",
+                        (unsigned long long)renderer_present_count(), st.rt.has_cview[0] ? st.rt.cview[0].min_layer : 0,
+                        st.rt.has_cview[0] ? st.rt.cview[0].base_level : 0, (unsigned long long)last_hash, st.viewport[0][0],
+                        st.viewport[0][1], st.viewport[0][2], st.viewport[0][3], st.scissor[0][0], st.scissor[0][1], st.scissor[0][2],
+                        st.scissor[0][3]);
+                    for (int k = 0; u && k < 16; k++) LOG(" %.5g", u[k]);
+                    LOG(" | vb:");
+                    for (int k = 0; v && k < 16; k++) LOG(" %.4g", v[k]);
+                    for (int k = 0; k < pr->fi->ntex && k < 4; k++) {
+                        NvnTexture *tt = shader_texture_object(1, &pr->fi->tex[k]);
+                        if (tt) LOG(" | ftex%d %ux%ux%u f%#x lv %u @%llx%s", k, tt->width, tt->height, tt->layout.layers, tt->format, tt->levels,
+                                    (unsigned long long)tt->addr, tt == w0 ? " (the target)" : "");
+                    }
+                    LOG("\n");
+                }
+            }
+        }
         extern void widescreen_backdrop_seen(uint64_t hash);
         if (last_hash) widescreen_backdrop_seen(last_hash);
         extern void widescreen_scene_ubo(const float *u, uint64_t size);  // (the camera's view-projection)
@@ -4499,6 +4558,17 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
         }
         LOG("[draw]   tex%d: %p %ux%u f%#x lv %u -> %ux%u scale %.4f %.4f%s\n", i, (void *)t, t->width, t->height, t->format,
             b ? b->levels : 0, b ? b->width : 0, b ? b->height : 0, b ? b->sx : 0, b ? b->sy : 0, b && b->scalable ? " scalable" : "");
+        {   // LARECOMP_DUMP_SAMPLED=<w>x<h>:<hex nvn format>: that sampled texture's every layer, level 0, raw (once a
+            // debug frame, after the current pass: build/sampled_<w>x<h>_L<layer>.raw)
+            static int dw = -1, dh, df;
+            if (dw < 0) { dw = 0; const char *e = getenv("LARECOMP_DUMP_SAMPLED"); if (e) sscanf(e, "%dx%d:%x", &dw, &dh, &df); }
+            extern TexBackend *g_dump_sampled;
+            static uint64_t dumped_frame = ~0ull;
+            if (dw && b && (int)t->width == dw && (int)t->height == dh && (int)t->format == df && dumped_frame != renderer_present_count()) {
+                dumped_frame = renderer_present_count();
+                g_dump_sampled = b;
+            }
+        }
         if (getenv("LARECOMP_DEBUG_TEXSTATE") && !b) {
             uint64_t n = t->layout.fmt && t->addr ? tegra_total_size(&t->layout) : 0, nz = 0;
             for (uint64_t k = 0; k < n; k += 64) nz += ((const uint8_t *)(uintptr_t)t->addr)[k] != 0;

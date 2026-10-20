@@ -446,6 +446,24 @@ Rodada 3, com referências do Switch (vídeo, porta abrindo e terminal Sheikah):
   automática pelos alvos devolvidos à memória: avisa inf/NaN no 12x1 / 1x1 (R11G11B10F) e registra um quadro
   escuro (luminância 2x2 do quadro anterior < 0.02) com os 12 parâmetros. Nas 4 execuções não houve nenhum
   aviso. Pode ter sido um artefato de captura ou algo raro.
+- Chão sumido abaixo do planalto / Link afundando (aberto, 2026-10-20). Achado: as alturas do terreno (array
+  1024x1024x8 R16, 4 níveis, em 362ab4000) estão incompletas.
+  - Estado no fim: no nível 0, as camadas 0-2 têm dados e as 3-6 estão ~98% zeradas (uma faixa só); a 7 está vazia.
+    No nível 1, as camadas 0-1 estão vazias.
+  - Efeito: o terreno dessas regiões é desenhado plano e baixo. As árvores flutuam sobre névoa, e o Link (na altura
+    real) parece afundado onde o tile cai numa camada ruim. O usuário notou que num ponto de camada boa os pés não
+    afundam.
+  - Como as camadas são feitas: as 0-2 vêm de tiles 256x256 R16 (fs `bdf3958d`). As 3-7 vêm de `91fe757c` /
+    `1cebab02`, que amostram o próprio array (camada e LOD em v0.z / v0.w, + offset em cb3[2]). Os mips vêm de
+    `35da1c5a`, que amostra o nível 0 da mesma camada. Ou seja, textura amostrada enquanto é render target: passa
+    pelo snapshot de feedback, que copia só camada 0 / nível 0 numa view 2D.
+  - Testes: snapshot completo (todas as camadas e níveis, view do tipo certo) ficou pior (camadas 4-7 vazias,
+    revertido). `LARECOMP_NO_FEEDBACK=1` (amostrar ao vivo) melhorou os mips (camada 2 nível 1 completa), mas
+    não resolveu. Os resultados variam entre execuções: suspeita de ordem / corrida.
+  - Ferramentas: F9 pelo adb (`adb shell input keyevent 139`) tira um debug frame do jogo em andamento;
+    `LARECOMP_DUMP_SAMPLED=<w>x<h>:<fmt>` (+ `_LEVEL`) salva todas as camadas de uma textura amostrada no debug
+    frame; `LARECOMP_WATCH_DRAWS=1` (+ `_ALL`) com `LARECOMP_WATCH_TEXADDR` registra cada draw nessa memória
+    (constantes do VS, vértices, texturas).
 - Brilho Sheikah em blocos (ainda aberto): a textura do bloom (320x180, 5 níveis) é registrada uma vez, sem view
   (`LARECOMP_WATCH_TEXID=7fffffff` registra a do bloom); todas as passadas de redução / blur leem com um sampler de LOD
   0..0 (nível 0) e escrevem no nível k (view do render target); a composição final lê com LOD 1..1 (nível 1). O jogo
