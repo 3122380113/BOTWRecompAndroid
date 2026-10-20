@@ -14,7 +14,22 @@ so a wrong build fails here instead of patching the wrong code. Example, from LA
 
     PATCHES[0x7000xxxxxx] = _aspect_load
 
-BOTW: none yet (the code addresses are BOTW v1.0.0's; docs/BOTW-PORT.md).
+BOTW v1.0.0 (the code addresses are that build's; docs/BOTW-PORT.md):
+- 0x70010c1aa0: act::ClusteredRenderer's teardown (f_70010c1a04) calls the virtual destroy of its display-list heap
+  at this+0xc60 without a null check. Its setup (f_70010c084c) sets the "created" flag even when that 7 MB heap
+  could not be made - here OpenWorldStage runs ~13 MB short and it never is - so a reload (dying, loading a save)
+  crashed. A null heap now skips the destroy (the field and the flag are cleared as before).
 """
+import struct
 
 PATCHES = {}
+
+
+def _clustered_dl_heap_null(gen, a):
+    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    assert w == 0xf9400008, hex(w)  # ldr x8, [x0]
+    return ('if (c->x[0] == 0) { c->x[21] = c->x[20] + 0xc60ull; goto L_70010c1ad8; }  /* (tools/patches.py) */ '
+            '{ uint64_t ea = c->x[0] + 0x0ull; uint64_t v = LD64(ea); c->x[8] = (uint64_t)(v); }')
+
+
+PATCHES[0x70010c1aa0] = _clustered_dl_heap_null

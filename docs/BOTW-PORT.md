@@ -356,7 +356,12 @@ Rodada 3, com referências do Switch (vídeo, porta abrindo e terminal Sheikah):
   near plane): visto do sol, o chão do corredor aparecia sem nada em cima. Com o depth clamp (66d40a9) a sala fica
   escura e com névoa, como no Switch em 3:56. Ainda aparece clara em algumas execuções (1 de 3): resta algo dependente
   de tempo. O debug frame agora salva passes só de profundidade (as cascatas, em vermelho).
-- Fechamento ao recarregar (morrer -> Continuar, ou Sistema -> Carregar): causa achada (2026-10-19), sem correção ainda.
+- Fechamento ao recarregar (morrer -> Continuar, ou Sistema -> Carregar): contornado (2026-10-19) com um patch no
+  código do jogo (`tools/patches.py`, 0x70010c1aa0). A desmontagem pula o destroy quando a heap é nula, o mesmo
+  estado em que o jogo roda a sessão inteira. Testado: carregar um save pelo menu recarrega e o jogo continua. Para
+  reconstruir rápido, edite o .c gerado correspondente em `generated-android-dyn/main/` e rode
+  `android/build_gamelib.sh`: o Ninja recompila só esse arquivo (minutos). Abaixo, a causa (a falta de memória
+  continua; achar qual heap está maior que no Switch fica em aberto):
   - O que falha: `act::ClusteredRenderer` (f_1010c084c, chamado de f_1010679e4) cria, da heap **OpenWorldStage**,
     a heap "clustered" (10 MiB, limitada ao maior bloco livre: recebe 9,6) e depois "act::ClusteredRenderer - DL
     Heap" (7 MiB). Essa segunda falha (sead::ExpHeap::create devolve nulo), mas o flag 0x40000 em +0xd0c é ligado
@@ -369,8 +374,6 @@ Rodada 3, com referências do Switch (vídeo, porta abrindo e terminal Sheikah):
     KingSystem 2598,6, com ~30 filhas de tamanho calculado) -> GameScene -> OpenWorldStage 367,9 (resto).
   - Descartado: valores de nvnDeviceGetInteger (`LARECOMP_DEVINFO=i=v+...`: <= 0,5 MiB), máscara de núcleos (o NPDM
     diz 0-2; `LARECOMP_CORE_MASK`, sem efeito), memória total/usada (o jogo não pergunta), taxa de quadros.
-  - Opções: um patch no código do jogo (null-check na desmontagem, `tools/patches.py` e rebuild de ~2 h) ou achar
-    qual heap do KingSystem/GraphicsSystem está maior que no Switch.
   - Ferramentas: `LARECOMP_PEEK=<end>:<len>` (+ `LARECOMP_PEEK_EVERY`), `LARECOMP_CRASH_MEM=<reg>:<off>:<len>[:<deref>]`,
     `LARECOMP_WATCH_REGS`, `LARECOMP_WATCH_READ_PERIOD_US`.
 - Limitador de quadros (2026-10-19): ligado por padrão. O present espera max(intervalo do jogo, teto do menu Vídeo)
