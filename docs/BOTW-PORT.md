@@ -358,7 +358,8 @@ Rodada 3, com referências do Switch (vídeo, porta abrindo e terminal Sheikah):
   de tempo. O debug frame agora salva passes só de profundidade (as cascatas, em vermelho).
 - Fechamento ao recarregar (morrer -> Continuar, ou Sistema -> Carregar): contornado (2026-10-19) com um patch no
   código do jogo (`tools/patches.py`, 0x70010c1aa0). A desmontagem pula o destroy quando a heap é nula, o mesmo
-  estado em que o jogo roda a sessão inteira. Testado: carregar um save pelo menu recarrega e o jogo continua. Para
+  estado em que o jogo roda a sessão inteira. Testado: carregar um save pelo menu recarrega e o jogo continua;
+  morrer e Continuar também (confirmado pelo usuário no celular). Para
   reconstruir rápido, edite o .c gerado correspondente em `generated-android-dyn/main/` e rode
   `android/build_gamelib.sh`: o Ninja recompila só esse arquivo (minutos). Abaixo, a causa (a falta de memória
   continua; achar qual heap está maior que no Switch fica em aberto):
