@@ -1264,6 +1264,9 @@ extern "C" void launcher_run(const char *root) {
                 // the in-game menu's tabs (runtime/ui/menu.mm), in a window like the in-game one; tabs that need a
                 // loaded game say so
                 float sc = ds.y / 1080.0f, w = fminf(ds.x * 0.9f, 1500 * sc), h = ds.y - 2 * 18 * sc;  // (all the height: a slim margin)
+#ifdef __ANDROID__
+                w = ds.x * 0.94f;  // (touch: the category rail and full-width rows, menu.mm)
+#endif
                 ImGui::GetWindowDrawList()->AddRectFilled(ImGui::GetWindowPos(), ImVec2(ImGui::GetWindowPos().x + ds.x,
                                                           ImGui::GetWindowPos().y + ds.y), IM_COL32(0, 0, 0, 110));
                 ImVec2 wp = ImGui::GetWindowPos();
@@ -1296,6 +1299,10 @@ extern "C" void launcher_run(const char *root) {
                 }
                 bool popup = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);  // (before the pages run, like the menu)
                 menu_tabs_draw(sc, g_font_small, g_font_menu, false, prelaunch_tab);
+#ifdef __ANDROID__
+                extern bool menu_settings_back_requested();
+                back |= menu_settings_back_requested();
+#endif
                 int cap_dev;
                 bind_capture_active(&cap_dev, NULL, NULL);
                 if (!popup && !typing && cap_dev < 0 && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
