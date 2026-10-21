@@ -33,3 +33,18 @@ def _clustered_dl_heap_null(gen, a):
 
 
 PATCHES[0x70010c1aa0] = _clustered_dl_heap_null
+
+
+# - 0x7000c4f4d4: sead's frame loop (f_7000c4f430) picks the present interval from the last frame's duration
+#   (this+0x240, ticks): floor(vsyncs) + 1, or + 2 past a 0.9 fraction, never under 2. A frame over ~1.9 vsyncs takes it
+#   to 20 fps (interval 3), where our GPU's clocks settle low and it stays. The menu's fixed frame rate (Video: Frame
+#   rate 30 / 60) caps the duration read here (rt_frame_ticks), so the game itself keeps 2 - its state matches what is
+#   presented; a frame that doesn't fit plays slightly slower. Auto: the game's own choice.
+def _frame_ticks(gen, a):
+    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    assert w == 0xf9412269, hex(w)  # ldr x9, [x19, #0x240]
+    return ('{ extern int64_t rt_frame_ticks(int64_t); uint64_t ea = c->x[19] + 0x240ull; '
+            'c->x[9] = (uint64_t)rt_frame_ticks((int64_t)LD64(ea)); }  /* (tools/patches.py) */')
+
+
+PATCHES[0x7000c4f4d4] = _frame_ticks

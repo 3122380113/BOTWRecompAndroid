@@ -1095,11 +1095,26 @@ NVN(nvnWindowGetNumTextures) { RET(WIN->num); }
 NVN(nvnWindowGetNumActiveTextures) { RET(WIN->active); }
 NVN(nvnWindowSetNumActiveTextures) { WIN->active = (int)A(1); }
 NVN(nvnWindowGetPresentInterval) { RET(WIN->interval); }
+// The last frame's duration as sead's frame loop reads it to pick the present interval (tools/patches.py,
+// 0x7000c4f4d4: Switch ticks, 19.2 MHz). A fixed frame rate in the menu caps it under 1.9 vsyncs, so the game keeps its
+// 30 fps mode (interval 2; BOTW never goes under 2) instead of dropping to 20 - where our GPU's clocks settle low and
+// it stayed. Auto (0): the game's own measurement.
+int64_t rt_frame_ticks(int64_t ticks) {
+    if (!g_settings.fps_mode) return ticks;
+    const int64_t cap = 19200000ll * 185 / 100 / 60;  // (1.85 vsyncs)
+    return ticks > cap ? cap : ticks;
+}
+
 #ifdef __ANDROID__
 int g_present_interval = 1;  // the game's latest (1: 60 fps, 2: 30 fps): the frame pacer (vulkan/exec.c)
 NVN(nvnWindowSetPresentInterval) {
+    static int force = -1;  // (LARECOMP_FORCE_INTERVAL=<n>, diagnosis: the game's choice replaced - slow motion if it doesn't fit)
+    if (force < 0) force = getenv("LARECOMP_FORCE_INTERVAL") ? atoi(getenv("LARECOMP_FORCE_INTERVAL")) : 0;
+    if (force > 0) c->x[1] = (uint64_t)force;
     if ((int)A(1) != g_present_interval)
-        LOG("[pace] the game sets its present interval to %d (lr %llx)\n", (int)A(1), (unsigned long long)c->x[30]);
+        LOG("[pace] the game sets its present interval to %d (lr %llx, x19 %llx [+0x240] %lld)\n", (int)A(1),
+            (unsigned long long)c->x[30], (unsigned long long)c->x[19],
+            c->x[19] > 0x100000000ull ? (long long)*(const int64_t *)(uintptr_t)(c->x[19] + 0x240) : 0ll);
     WIN->interval = g_present_interval = (int)A(1);
 }
 #else

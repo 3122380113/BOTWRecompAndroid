@@ -588,6 +588,23 @@ Medição no planalto (2026-10-21, save do usuário perto da igreja, POCO F7 Ult
   relógio faz uma requisição HTTP.
 - Próximo: o custo da GPU - o G-buffer (~7 ms), 15 cópias de feedback (~2.5 ms) e ~220 passes pequenos (~16 ms, cada
   um com uma barreira completa no início em `begin_pass`).
+- Tempo real de GPU por quadro (novo: `gpu` na linha `[pace]`, de `gpu_busy_total`): ~30 ms em 20 fps. As barreiras
+  no início de cada pass custam ~1.7 ms (`LARECOMP_VK_NO_PASS_BARRIER=1`, só medida: inseguro). Por draw
+  (`LARECOMP_GPUPROF_DRAWS=1`) o custo se espalha, nenhum shader domina; os shaders do G-buffer leem as constantes
+  com índices fixos.
+- Clocks (perfetto `power/cpu_frequency`): núcleos de desempenho com média de 1.94 GHz, prime 1.13 GHz, a ~76 °C.
+  Em 20 fps a GPU trabalha ~30 de cada 50 ms, o governador vê folga e baixa o clock: o jogo não volta a caber em 30.
+  Forçando o intervalo 2 (`LARECOMP_FORCE_INTERVAL=2`, só teste: o jogo acha que está em 3) a GPU cai para 23.7 ms
+  por quadro e roda a 28.9 fps.
+- A decisão do jogo (sead, f_100c4f430): duração do quadro anterior em this+0x240 (ticks de 19.2 MHz) -> vsyncs;
+  pede floor + 1 (+ 2 se a fração passa de 0.9), nunca menos de 2. Medido: 31 a 47 ms. Correção:
+  `tools/patches.py` troca essa leitura (0x7000c4f4d4) por `rt_frame_ticks` (objects.c), que com a taxa fixa no menu
+  (Vídeo: Taxa de quadros 30 / 60) limita a 1.85 vsync: o próprio jogo fica no 2, com o estado coerente. Auto: a
+  escolha do jogo. Com isso e `LARECOMP_VK_SPLIT_US=3000`: 30.0 fps cravados, período 33.3 ms, GPU 23.1 ms (sem o
+  split: 25.5 fps, em câmera lenta). O split ficou ligado por padrão no Turnip (3 ms).
+- Em aberto (testes pausados a pedido do usuário): na captura de conferência (save novo, no morro) o Link aparecia
+  afundado de novo. Falta ver se é o split (o write-back da grade de alturas?) ou esse lugar: comparar o mesmo save
+  com `LARECOMP_VK_SPLIT_US=0`.
 
 - Threads do Havok e dos jobs do jogo nos núcleos (o LAS precisou emular o núcleo 0 do Switch), thread de render,
   resolução interna, ritmo de quadros (o jogo roda a 30 fps no Switch).

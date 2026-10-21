@@ -146,6 +146,7 @@ uint64_t vk_pending_seq(void) { return submit_seq + 1; }
 // before.
 #define CQ_QUERIES (CQ_MAX + 2)
 static _Atomic uint64_t gpu_busy_total;  // (GPU ns working, all submissions so far: ADPF's GPU time per frame)
+static double g_pace_gpu_ms;  // (the last presented frame's GPU busy time: LARECOMP_LOG_PACE)
 #else
 #define CQ_QUERIES CQ_MAX
 #endif
@@ -222,6 +223,7 @@ void vk_pace_frame(void) {
         static uint64_t last_busy;
         uint64_t total = gpu_busy_total, gpu = total - last_busy;
         last_busy = total;
+        g_pace_gpu_ms = gpu / 1e6;
         // (per presented frame, against 60 fps's budget in either mode: a 30 fps frame renders one image too - its GPU
         // time is what a 60 fps frame would take, and halved it looked comfortable: the clock stayed low)
         plat_frame_work_gpu((uint64_t)(busy * 1e6), no_gpu ? 0 : gpu, follow && pace_slow ? 33333333ull : 16666667ull);
@@ -248,9 +250,9 @@ void vk_pace_frame(void) {
         static uint64_t le, lu;
 #ifdef __ANDROID__
         extern int g_present_interval;
-        LOG("[pace] period %.2f blocked %.2f busy %.2f ms exec %.2f tex %.2f interval %d slow %d game %.2f render %.2f\n",
+        LOG("[pace] period %.2f blocked %.2f busy %.2f ms exec %.2f tex %.2f interval %d slow %d game %.2f render %.2f gpu %.2f\n",
             p / 1e6, wt / 1e6, busy, (cum_exec - le) / 1e6, (prof_up_cum - lu) / 1e6, g_present_interval, pace_slow,
-            game_busy, render_busy);
+            game_busy, render_busy, g_pace_gpu_ms);
 #else
         LOG("[pace] period %.2f blocked %.2f busy %.2f ms exec %.2f tex %.2f\n", p / 1e6, wt / 1e6, busy,
             (cum_exec - le) / 1e6, (prof_up_cum - lu) / 1e6);
@@ -1433,7 +1435,9 @@ static void begin_pass(void) {
     if (dl_on == 2) renderer_flush();  // (LARECOMP_VK_DEVLOST_TRACE=2: each pass its own submission)
     st.rt_dirty = false;
     VkCommandBuffer cb = vk_cmd();
-    vk_full_barrier(cb);  // passes, copies and dispatches see each other's results
+    static int no_barrier = -1;  // (LARECOMP_VK_NO_PASS_BARRIER=1: none - unsafe, a measurement of what it costs)
+    if (no_barrier < 0) no_barrier = getenv("LARECOMP_VK_NO_PASS_BARRIER") != NULL;
+    if (!no_barrier) vk_full_barrier(cb);  // passes, copies and dispatches see each other's results
     {
         NvnTexture *t0n = st.rt.ncolor ? st.rt.color[0] : NULL;
         dl_note("pass %d color %ux%u fmt %#x depth %p", st.rt.ncolor, t0n ? t0n->width : 0, t0n ? t0n->height : 0, t0n ? t0n->format : 0,
@@ -5294,13 +5298,17 @@ void renderer_save_texture_tex(TexBackend *b, const char *path) {
 }
 
 // ================================================================== executor (renderer.m exec_list)
-// LARECOMP_VK_SPLIT_US=<us> (Android, async): a pass that has been translating that long without a submission is
+// LARECOMP_VK_SPLIT_US=<us> (Android, async; 3000 on Turnip): a pass translating that long without a submission is
 // ended and submitted after a draw, so the GPU starts on it while the rest is translated (the next draw reopens it,
 // loading its targets). BOTW's G-buffer is one pass of ~3250 draws, ~10 ms of translation the GPU waited for.
 static void split_long_pass(void) {
 #ifdef __ANDROID__
     static long split = -1;
-    if (split < 0) { const char *e = getenv("LARECOMP_VK_SPLIT_US"); split = e ? atol(e) : 0; }
+    if (split < 0) {  // (3 ms by default; not on Qualcomm's driver, as LARECOMP_VK_CHUNK_US)
+        extern bool vk_driver_is_qualcomm(void);
+        const char *e = getenv("LARECOMP_VK_SPLIT_US");
+        split = e ? atol(e) : vk_driver_is_qualcomm() ? 0 : 3000;
+    }
     extern bool vk_async_on(void);
     if (split > 0 && in_pass && vk_async_on() && last_submit_ns && SDL_GetTicksNS() - last_submit_ns > (uint64_t)split * 1000)
         renderer_submit();
