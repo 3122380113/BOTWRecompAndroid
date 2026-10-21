@@ -47,6 +47,7 @@ typedef struct {
                             // exact even with a discard (in the padding too)
     uint32_t vs_out_mask;   // fragment: varyings the vertex shader provides
     uint8_t glsl;           // emit Vulkan GLSL (see the contract above) instead of MSL
+    bool gmem_linear_lookup;  // Qualcomm compute: cached linear GMap lookup avoids its compiler's binary-search failure
 } ShaderKey;
 
 typedef struct {

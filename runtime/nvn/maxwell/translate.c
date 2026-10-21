@@ -2524,17 +2524,23 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         sp(&s, "layout(std140, set = %d, binding = %d) uniform GMap { uvec4 gmap[%d]; };\n", set, GMAP_BUFFER_INDEX, GMAP_MAX + 1);
         sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GFast { uint w[]; } gfast_;\n", set, GFAST_BUFFER_INDEX,
            c->uses_gmem_store ? "" : "readonly ");
-        if (maxwell_gmem_map_all)  // (Android's copy mode: the tables are sorted by address and grew with the ranges
+        if (maxwell_gmem_map_all) {  // (Android's copy mode: the tables are sorted by address and grew with the ranges
                                    // learned from misses - a binary search: the lighting reads the light list in its
                                    // inner loop, every read through here)
             sp(&s, "uvec3 gc_ = uvec3(0u, 0u, 0u);\n"  // (the entry last found: the next read nearly always hits it - the
                                                         // lighting's loop over the light list; the copy mode's lit pass ran
                                                         // ~9x slower per pixel than Turnip's, every read searching the table)
-                   "uint gfind(uint g) { uint o = g - gc_.x; if (o < gc_.y) return gc_.z + (o >> 2); "
+                   "uint gfind(uint g) { uint o = g - gc_.x; if (o < gc_.y) return gc_.z + (o >> 2); ");
+            // Qualcomm's compiler rejects BOTW's large compute shader with the binary-search loop (-13).
+            // Both searches resolve the same disjoint GMap ranges; retain the last-hit cache for repeated loads.
+            if (key && key->gmem_linear_lookup)
+                sp(&s, "for (uint i = 0u; i < gmap[%d].x; i++) { uvec4 e = gmap[i]; o = g - e.x; "
+                       "if (g >= e.x && o < e.y) { gc_ = e.xyz; return e.z + (o >> 2); } } return 0xFFFFFFFFu; }\n", GMAP_MAX);
+            else sp(&s,
                    "uint lo = 0u, hi = gmap[%d].x; while (lo < hi) { uint m = (lo + hi) >> 1; "
                    "if (gmap[m].x <= g) lo = m + 1u; else hi = m; } if (lo == 0u) return 0xFFFFFFFFu; uvec4 e = gmap[lo - 1u]; "
                    "o = g - e.x; if (o >= e.y) return 0xFFFFFFFFu; gc_ = e.xyz; return e.z + (o >> 2); }\n", GMAP_MAX);
-        else
+        } else
         sp(&s, "uint gfind(uint g) { uint n = gmap[%d].x; for (uint i = 0u; i < n; i++) { uint o = g - gmap[i].x; "
                "if (g >= gmap[i].x && o < gmap[i].y) return gmap[i].z + (o >> 2); } return 0xFFFFFFFFu; }\n", GMAP_MAX);
         if (GMISS_ON(stage)) {

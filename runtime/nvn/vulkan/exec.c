@@ -72,6 +72,7 @@ static uint64_t last_submit_ns;  // (begin_pass: LARECOMP_VK_CHUNK_US)
 static pthread_mutex_t seq_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool in_pass;
 static uint32_t pass_written;  // (the attachments this pass's draws wrote so far: draw_writes)
+static uint32_t pass_dup_null;  // (color slots left unbound: their image is bound in another slot - begin_pass)
 
 uint64_t vk_completed_seq(void) {
     uint64_t v = 0;
@@ -1490,6 +1491,20 @@ static void begin_pass(void) {
         if (eh < minh) minh = eh;
         pass_samples = b->samples;
     }
+    // The same image in two color slots: only the one the draws write stays bound. BOTW's G-buffer binds its albedo and
+    // normals targets twice each (slots 1/2, 3/4), writing one slot of each pair (channel mask f0f0f0ff); a tiler keeps
+    // a copy per slot and stores both at the end of the pass - on Qualcomm's driver the masked slot's stale copy landed
+    // last: no albedo, Link a black silhouette, the scene only fog. (A later draw writing a dropped slot: a new pass.)
+    pass_dup_null = 0;
+    for (int i = 1; i < st.rt.ncolor; i++)
+        for (int j = 0; j < i && ca[i].imageView; j++) {
+            if (ca[j].imageView != ca[i].imageView) continue;
+            bool wi = (st.channel_mask >> (i * 4)) & 0xF, wj = (st.channel_mask >> (j * 4)) & 0xF;
+            int drop = wj || !wi ? i : j;
+            ca[drop].imageView = VK_NULL_HANDLE;
+            pass_color[drop] = VK_FORMAT_UNDEFINED;
+            pass_dup_null |= 1u << drop;
+        }
     pass_depth = pass_stencil = VK_FORMAT_UNDEFINED;
     bool has_d = false, has_s = false;
     if (st.rt.depth) {
@@ -2407,7 +2422,8 @@ static TexBackend *snapshot_image(NvnTexture *t, TexBackend *src) {
 
 // (debug frames) a depth image's depth values as a greyscale PGM, stretched over its own min..max
 static void debug_save_depth(TexBackend *b, const char *path) {
-    if (!b || !b->image || !(b->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) || b->format != VK_FORMAT_D32_SFLOAT_S8_UINT) return;
+    if (!b || !b->image || !(b->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) ||
+        (b->format != VK_FORMAT_D32_SFLOAT_S8_UINT && b->format != VK_FORMAT_D32_SFLOAT)) return;
     uint64_t n = (uint64_t)b->width * b->height;
     VkSpan out = vk_readback(n * 4);
     VkCommandBuffer cb = vk_cmd();
@@ -2643,7 +2659,17 @@ static void resolve_feedback(Prog *pr) {
                 uint32_t bit = 0;
                 if (t == st.rt.depth) bit |= 1u << 8;
                 for (int k = 0; k < st.rt.ncolor; k++) if (st.rt.color[k] == t) bit |= 1u << k;
-                if (bit && !(written & bit)) { stat_feedback_reads++; continue; }
+                if (bit && !(written & bit)) {
+                    stat_feedback_reads++;
+                    if (g_debug_frame && t == st.rt.depth) {  // (debug frames: the depth sampled in place, as it is now)
+                        static int nd;
+                        char path[128];
+                        snprintf(path, sizeof path, "build/fbdepth_%03d_inplace.pgm", nd++);
+                        vk_end_pass();
+                        debug_save_depth(vk_tex(t, true), path);
+                    }
+                    continue;
+                }
             }
             bool have = false;
             for (int k = 0; k < nfeedback; k++) have |= feedback_tex[k] == t;
@@ -3782,7 +3808,10 @@ static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo
                 }
         }
     }
-    if (h && st.spool && tsc < (uint32_t)st.spool->count) smp = vk_sampler(&((NvnSamplerDesc *)st.spool->entries)[tsc]);
+    if (h && st.spool && tsc < (uint32_t)st.spool->count) {
+        NvnSamplerDesc *sd = &((NvnSamplerDesc *)st.spool->entries)[tsc];
+        smp = st_->shadow ? vk_sampler(sd) : vk_sampler_plain(sd);
+    }
     if (!view) view = vk_dummy_view(st_->type);
     if (!smp) smp = vk_default_sampler(true);
     *out = (VkDescriptorImageInfo){smp, view, VK_IMAGE_LAYOUT_GENERAL};
@@ -3918,7 +3947,7 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
 }
 
 // ================================================================== compute
-typedef struct { Prog p; ShaderInfo *si; VkPipeline pipe; uint32_t local[3]; } CsProg;
+typedef struct { Prog p; ShaderInfo *si; VkPipeline pipe; uint32_t local[3]; uint64_t code_addr; } CsProg;
 
 static void build_compute(void *arg) {
     CsProg *cp = arg;
@@ -3927,7 +3956,6 @@ static void build_compute(void *arg) {
     if (!spv) { atomic_store(&cp->p.state, 2); return; }
     cp->p.nbinds = vk_reflect(spv, n, cp->p.binds, MAX_BIND);
     VkShaderModule m = vk_module(spv, n);
-    free(spv);
     cp->p.layout = make_layout(&cp->p, 1, VK_SHADER_STAGE_COMPUTE_BIT, 0);
     VkSpecializationMapEntry me[3] = {{0, 0, 4}, {1, 4, 4}, {2, 8, 4}};
     VkSpecializationInfo spec = {3, me, 12, cp->local};
@@ -3939,7 +3967,17 @@ static void build_compute(void *arg) {
     VkResult r = vkCreateComputePipelines(g_vk.dev, g_vk.pcache, 1, &ci, NULL, &cp->pipe);
     atomic_fetch_add(&stat_compiles, 1);
     atomic_store(&cp->p.state, r == VK_SUCCESS ? 1 : 2);
-    if (r != VK_SUCCESS) LOG("[compute] pipeline failed: %d\n", r);
+    if (r != VK_SUCCESS || getenv("LARECOMP_LOG_CS_PIPELINES"))
+        LOG("[compute] pipeline %llx: result %d, local %ux%ux%u, %zu SPIR-V words, %d bindings\n",
+            (unsigned long long)cp->code_addr, r, cp->local[0], cp->local[1], cp->local[2], n, cp->p.nbinds);
+    if (r != VK_SUCCESS && getenv("LARECOMP_SAVE_MSL")) {
+        char path[1100];
+        snprintf(path, sizeof path, "%s/build/glsl/%llx_cs.spv", rt_data_root(), (unsigned long long)cp->code_addr);
+        FILE *f = fopen(path, "wb");
+        if (f) { fwrite(spv, 4, n, f); fclose(f); }
+    }
+    vkDestroyShaderModule(g_vk.dev, m, NULL);
+    free(spv);
 }
 
 static struct CsEnt { uint64_t addr; CsProg *cp; } g_cs_tab[256];  // compute programs by code address
@@ -3951,6 +3989,7 @@ static CsProg *compute_program(NvnProgram *np) {
     int n = g_cs_n;
     for (int i = 0; i < n; i++) if (tab[i].addr == ss->code_addr) return tab[i].cp;
     CsProg *cp = calloc(1, sizeof *cp);
+    cp->code_addr = ss->code_addr;
     if (n < 256) { tab[n].addr = ss->code_addr; tab[n].cp = cp; g_cs_n = n + 1; }
     maxwell_gmem_base = HEAP_BASE;
     maxwell_gmem_size = HEAP_MAX;
@@ -3969,6 +4008,12 @@ static CsProg *compute_program(NvnProgram *np) {
 #endif
     ShaderKey k = {0};
     k.glsl = 1;
+#ifdef __ANDROID__
+    {   // Keep the cached binary lookup for graphics and Turnip; Qualcomm rejects it in large compute shaders.
+        extern bool vk_driver_is_qualcomm(void);
+        k.gmem_linear_lookup = vk_driver_is_qualcomm();
+    }
+#endif
     pthread_mutex_lock(&translate_lock);
     cp->si = maxwell_translate((const uint8_t *)(uintptr_t)ss->code_addr, ss->const_offset ? ss->const_offset : 0x10000, STAGE_COMPUTE, &k);
     pthread_mutex_unlock(&translate_lock);
@@ -4233,6 +4278,7 @@ static void draw_(CmdRec *r, bool indexed) {
         if (fb) snapshots_mark_fb_dirty(st.rt.depth);
         else snapshots_invalidate(st.rt.depth);
     }
+    if (in_pass && (draw_writes(pr) & pass_dup_null)) st.rt_dirty = true;  // (writes a slot begin_pass left unbound)
     snap_reason = "draw-colorwrite";
     for (int i = 0; i < st.rt.ncolor; i++) {
         if (st.rt.color[i] && ((pr->fi->out_mask >> (i * 4)) & 0xF) && ((st.channel_mask >> (i * 4)) & 0xF)) {

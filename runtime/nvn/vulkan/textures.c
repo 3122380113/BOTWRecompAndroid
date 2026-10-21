@@ -1016,8 +1016,30 @@ static VkCompareOp compare_op(uint32_t f) {
     }
 }
 
+static VkSampler make_sampler(const NvnSamplerDesc *d, bool compare);
+
 VkSampler vk_sampler(NvnSamplerDesc *d) {
-    if (d->backend) return (VkSampler)d->backend;
+    if (!d->backend) d->backend = (void *)make_sampler(d, true);
+    return (VkSampler)d->backend;
+}
+
+// The sampler for a lookup without depth comparison (a plain texture() in the shader): a comparison sampler there is
+// undefined in Vulkan. Turnip ignores the comparison; Qualcomm's driver applies it - BOTW's linear-depth pass samples
+// its depth buffer through a comparison sampler and got 0 everywhere: no lighting, Link a black silhouette. Kept per
+// comparison sampler (the slot's VkSampler), so the descriptor struct the game sees stays as it is.
+VkSampler vk_sampler_plain(NvnSamplerDesc *d) {
+    VkSampler s = vk_sampler(d);
+    if (!d->compare_mode) return s;
+    static struct { VkSampler cmp, plain; } tab[256];
+    static int n, next;
+    for (int i = 0; i < n; i++) if (tab[i].cmp == s) return tab[i].plain;
+    VkSampler p = make_sampler(d, false);
+    int i = n < 256 ? n++ : next++ % 256;  // (full: the oldest pair goes; its sampler stays alive, as the slots' do)
+    tab[i].cmp = s; tab[i].plain = p;
+    return p;
+}
+
+static VkSampler make_sampler(const NvnSamplerDesc *d, bool compare) {
     VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
     si.magFilter = d->mag_filter == 1 ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
     uint32_t mf = d->min_filter;
@@ -1052,7 +1074,7 @@ VkSampler vk_sampler(NvnSamplerDesc *d) {
     static int stest = -1;
     if (stest < 0) stest = getenv("LARECOMP_SAMPLER_TEST") != NULL;
     if (stest && mf > 1) { si.minLod = 0; si.maxLod = VK_LOD_CLAMP_NONE; si.anisotropyEnable = VK_TRUE; si.maxAnisotropy = 16; }
-    if (d->compare_mode) {
+    if (d->compare_mode && compare) {
         si.compareEnable = VK_TRUE;
         si.compareOp = getenv("LARECOMP_NO_SHADOW") ? VK_COMPARE_OP_ALWAYS : compare_op(d->compare_func);
     }
@@ -1070,7 +1092,6 @@ VkSampler vk_sampler(NvnSamplerDesc *d) {
     }
     VkSampler s;
     VK_CHECK(vkCreateSampler(g_vk.dev, &si, NULL, &s));
-    d->backend = (void *)s;
     return s;
 }
 

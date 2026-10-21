@@ -636,6 +636,12 @@ Medição no planalto (2026-10-21, save do usuário perto da igreja, POCO F7 Ult
   (fd do native handle mapeado no HEAP_BASE e importado no Vulkan) - o gralloc recusa qualquer BLOB neste processo,
   até 16 MB, com qualquer combinação de usos (-129; -22 com GPU_SAMPLED_IMAGE). As três vias foram desfeitas. Sem
   heap compartilhado, o driver da Qualcomm fica no modo de cópia: sem luz e ~2x mais lento na thread de render.
+- **Driver da Qualcomm: imagem corrigida (2026-10-21).** A falta de luz não vinha do modo de cópia: o Turnip no modo
+  de cópia (`LARECOMP_VK_NO_PLACED=1`) ilumina normalmente. O G-buffer liga albedo e normais em dois slots de cor cada
+  (1/2, 3/4) e escreve só um de cada par; o driver da Qualcomm gravava por último a cópia de tile do slot mascarado
+  (conteúdo antigo). `begin_pass` agora deixa ligado só o slot escrito. Também: leituras sem comparação usam um
+  sampler sem comparação (`vk_sampler_plain`). Os 2 compute pipelines (`-13`) foram corrigidos pelo Astra (busca
+  linear no GMap). Detalhes em [ANALISE-DRIVER-PADRAO-2026-10-21.md](ANALISE-DRIVER-PADRAO-2026-10-21.md).
 - Folga hoje: render ~16 ms livres, GPU ~10 ms. Para 60 fps seria preciso GPU <= ~14 ms (~40% menos) e um patch
   no jogo (o sead nunca escolhe menos de 2 vsyncs, e a lógica do jogo conta com 30).
 
