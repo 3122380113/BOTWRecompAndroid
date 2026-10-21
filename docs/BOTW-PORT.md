@@ -575,6 +575,19 @@ Medição no planalto (2026-10-21, save do usuário perto da igreja, POCO F7 Ult
   preciso sobrepor a tradução do quadro seguinte com a GPU do atual (submeter mais cedo e em pedaços), e baixar o
   custo da GPU por draw/pass (o Adreno 830 é várias vezes o Tegra X1: 27 ms indicam desperdício nosso). A resolução
   interna não muda nada no BOTW (escala de alvos desligada, ver `tex_scalable`): o jogo desenha sempre em 1600x900.
+- Linha do tempo (`LARECOMP_LOG_SYNCSEQ=1`): depois do present, submissões em +4, +15, +17, +19, +21 ms; o buraco de
+  ~10 ms é um pass só (o G-buffer, ~3250 draws), que a divisão por fronteira de pass (`LARECOMP_VK_CHUNK_US`, 2 ms
+  no Turnip) não alcança. O jogo espera a cerca do quadro antes de apresentá-lo, então o quadro é tradução + GPU.
+- `LARECOMP_VK_SPLIT_US=<us>` (novo, desligado por padrão): divide passes longos no meio, depois de um draw, quando a
+  tradução passou desse tempo sem submissão (o pass reabre com LOAD). Com 3000: GPU parada no início 9 -> 2.9 ms,
+  G-buffer 7 -> 8.9 ms (o custo das divisões), período médio 50 -> 45.7 ms (1500: 45.4); o jogo passa a alternar 30 e
+  20 em vez de ficar em 20. Não é o bastante para 30: o trabalho da GPU continua em ~27 ms.
+- Modos do Turnip (`TU_DEBUG`, com o split): automático 27 ms de trabalho, sysmem 32.5 ms, gmem 41.6 ms. O
+  automático é o melhor.
+- O serviço de mapa do relógio (companion) não pesa: fica desligado por padrão e só lê a memória do jogo quando o
+  relógio faz uma requisição HTTP.
+- Próximo: o custo da GPU - o G-buffer (~7 ms), 15 cópias de feedback (~2.5 ms) e ~220 passes pequenos (~16 ms, cada
+  um com uma barreira completa no início em `begin_pass`).
 
 - Threads do Havok e dos jobs do jogo nos núcleos (o LAS precisou emular o núcleo 0 do Switch), thread de render,
   resolução interna, ritmo de quadros (o jogo roda a 30 fps no Switch).

@@ -5294,6 +5294,19 @@ void renderer_save_texture_tex(TexBackend *b, const char *path) {
 }
 
 // ================================================================== executor (renderer.m exec_list)
+// LARECOMP_VK_SPLIT_US=<us> (Android, async): a pass that has been translating that long without a submission is
+// ended and submitted after a draw, so the GPU starts on it while the rest is translated (the next draw reopens it,
+// loading its targets). BOTW's G-buffer is one pass of ~3250 draws, ~10 ms of translation the GPU waited for.
+static void split_long_pass(void) {
+#ifdef __ANDROID__
+    static long split = -1;
+    if (split < 0) { const char *e = getenv("LARECOMP_VK_SPLIT_US"); split = e ? atol(e) : 0; }
+    extern bool vk_async_on(void);
+    if (split > 0 && in_pass && vk_async_on() && last_submit_ns && SDL_GetTicksNS() - last_submit_ns > (uint64_t)split * 1000)
+        renderer_submit();
+#endif
+}
+
 static void exec_list(uint64_t handle, int depth) {
     uint64_t p = handle;
     for (int guard = 0; guard < 10000000; guard++) {
@@ -5458,8 +5471,8 @@ static void exec_list(uint64_t handle, int depth) {
             }
             break;
         case CMD_DISPATCH: dispatch_compute((uint32_t)r->x[0], (uint32_t)r->x[1], (uint32_t)r->x[2]); break;
-        case CMD_DRAW_ARRAYS: draw(r, false); break;
-        case CMD_DRAW_ELEMENTS: draw(r, true); break;
+        case CMD_DRAW_ARRAYS: draw(r, false); split_long_pass(); break;
+        case CMD_DRAW_ELEMENTS: draw(r, true); split_long_pass(); break;
         case CMD_UPDATE_UNIFORM_BUFFER: {
             uint64_t dst = r->x[0] + r->x[2], sz = r->x[3];
             if (sz && memcmp((const void *)(uintptr_t)dst, x, sz)) {
