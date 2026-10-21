@@ -1908,6 +1908,17 @@ static struct { uint64_t key; Prog *prog; } prog_tab[PROG_TAB];
 
 static Prog *get_program(NvnProgram *np, ShaderKey *vkey, ShaderKey *fkey) {
     if (!(np->stage_mask & 1) || !(np->stage_mask & 2)) return NULL;
+    // (the previous draw's program and keys again - most draws: no hashing; the code addresses are part of it, as
+    // the program object can be reused for other code)
+    static NvnProgram *last_np;
+    static uint64_t last_code[2];
+    static ShaderKey last_vkey, last_fkey;
+    static Prog *last_prog;
+    if (last_prog && np == last_np && last_code[0] == np->stages[0].code_addr && last_code[1] == np->stages[1].code_addr &&
+        !memcmp(vkey, &last_vkey, sizeof *vkey) && !memcmp(fkey, &last_fkey, sizeof *fkey))
+        return last_prog;
+    last_np = np, last_code[0] = np->stages[0].code_addr, last_code[1] = np->stages[1].code_addr;
+    last_vkey = *vkey, last_fkey = *fkey;
     uint64_t h = 0xcbf29ce484222325ull;
     for (int i = 0; i < 2; i++) { uint64_t a = np->stages[i].code_addr; for (int k = 0; k < 8; k++) { h ^= (a >> (k * 8)) & 0xFF; h *= 0x100000001B3ull; } }
     const uint8_t *vb = (const uint8_t *)vkey;
@@ -1919,8 +1930,9 @@ static Prog *get_program(NvnProgram *np, ShaderKey *vkey, ShaderKey *fkey) {
     if (!h) h = 1;
     uint32_t slot = (uint32_t)(h ^ (h >> 31)) & (PROG_TAB - 1);
     while (prog_tab[slot].key && prog_tab[slot].key != h) slot = (slot + 1) & (PROG_TAB - 1);
-    if (prog_tab[slot].key) return prog_tab[slot].prog;
+    if (prog_tab[slot].key) return last_prog = prog_tab[slot].prog;
     Prog *p = calloc(1, sizeof *p);
+    last_prog = p;
     prog_tab[slot].key = h;
     prog_tab[slot].prog = p;
     for (int i = 0; i < 2; i++) {
@@ -4072,7 +4084,18 @@ static void draw_(CmdRec *r, bool indexed) {
 #endif
     Prog *pr = get_program(st.program, &vkey, &fkey);
     bool keep = false;  // (a target built once and kept: wait for the shader and pipeline - wait_built)
-    for (int i = 0; i < st.rt.ncolor && !keep; i++) keep = rt_is_persistent(st.rt.color[i]);
+    {   // (the same targets as the previous draw: their answer again - reading 6 texture objects a draw showed up)
+        static NvnTexture *kc[8];
+        static int kn = -1;
+        static bool kkeep;
+        if (kn != st.rt.ncolor || memcmp(kc, st.rt.color, sizeof kc)) {
+            kn = st.rt.ncolor;
+            memcpy(kc, st.rt.color, sizeof kc);
+            kkeep = false;
+            for (int i = 0; i < st.rt.ncolor && !kkeep; i++) kkeep = rt_is_persistent(st.rt.color[i]);
+        }
+        keep = kkeep;
+    }
     if (pr && keep) wait_built(&pr->state);
     if (!pr || atomic_load(&pr->state) != 1) { stat_skipped++; return; }
     {   // fragment-shader hash: interior backdrop detection (widescreen), skip lists, item twinkle (renderer.m)
@@ -4083,9 +4106,10 @@ static void draw_(CmdRec *r, bool indexed) {
 #ifdef __ANDROID__
             // (memoized per shader address, checked against a copy of its bytes: the byte-serial hash on every
             // fragment-shader change was ~40% of draw_)
-            static struct { uint64_t addr, hash; uint8_t code[0x200]; } fsh[64];
+            // (1024 slots: BOTW draws a few hundred fragment shaders a frame, and 64 kept colliding)
+            static struct { uint64_t addr, hash; uint8_t code[0x200]; } fsh[1024];
             const void *code = (const void *)(uintptr_t)(fs + 0x30);
-            unsigned i = (unsigned)(fs >> 8) & 63;
+            unsigned i = (unsigned)((fs * 0x9E3779B97F4A7C15ull) >> 54);
             if (!fs) last_hash = 0;
             else if (fsh[i].addr == fs && !memcmp(fsh[i].code, code, 0x200)) last_hash = fsh[i].hash;
             else {
@@ -5310,7 +5334,9 @@ static void split_long_pass(void) {
         split = e ? atol(e) : vk_driver_is_qualcomm() ? 0 : 3000;
     }
     extern bool vk_async_on(void);
-    if (split > 0 && in_pass && vk_async_on() && last_submit_ns && SDL_GetTicksNS() - last_submit_ns > (uint64_t)split * 1000)
+    static unsigned n;  // (the clock every 32 draws: a clock read per draw showed up in the profile)
+    if (split > 0 && in_pass && !(++n & 31) && vk_async_on() && last_submit_ns &&
+        SDL_GetTicksNS() - last_submit_ns > (uint64_t)split * 1000)
         renderer_submit();
 #endif
 }

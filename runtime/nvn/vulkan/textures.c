@@ -596,9 +596,11 @@ static uint64_t hash_full(const uint8_t *p, uint64_t n) {
     return h ^ (h >> 31);
 }
 
+// (1024 bytes spread over the texture: without page write tracking (Android) every check samples, and 4096 a texture -
+// cache misses mostly - were ~10% of the render thread in the overworld; the periodic full hash stays the safety net)
 static uint64_t fnv_sample(const uint8_t *p, uint64_t n) {
     uint64_t h = 1469598103934665603ull;
-    uint64_t step = n > 4096 ? n / 4096 : 1;
+    uint64_t step = n > 1024 ? n / 1024 : 1;
     for (uint64_t i = 0; i < n; i += step) { h ^= p[i]; h *= 1099511628211ull; }
     return h ^ n;
 }
