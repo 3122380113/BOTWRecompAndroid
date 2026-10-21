@@ -492,12 +492,12 @@ static void tab_display(void) {
     opt_toggle("Touch controls", &g_settings.touch_controls, false,
                "On-screen buttons and stick while no controller is connected. The back button opens this menu.");
     {
-        static const char *fr[] = {"Auto (30 / 60)", "30 fps", "60 fps"};
-        opt_choice("Frame rate", &g_settings.fps_mode, fr, 3, 0,
-                   "The game runs in steps of a 60 Hz clock: at 60 fps one step per frame, at 30 fps two. Auto: the "
-                   "game picks, as on the Switch, and drops to 30 where 60 doesn't fit. 30 fps: always 30, steady. "
-                   "60 fps: always 60 - where a frame takes longer, the game runs in slow motion (it can't run above "
-                   "60: it would speed up).");
+        // (BOTW never runs above 30: its frame loop picks 2 or 3 vsyncs. A 60 saved by LAS's menu counts as 30.)
+        if (g_settings.fps_mode > 1) g_settings.fps_mode = 1;
+        static const char *fr[] = {"Auto (20 / 30)", "30 fps"};
+        opt_choice("Frame rate", &g_settings.fps_mode, fr, 2, 0,
+                   "Auto: the game picks, as on the Switch, and drops to 20 fps where a frame doesn't fit in 30. 30 fps: "
+                   "always 30 - where a frame takes longer, the game runs slightly slower instead of dropping to 20.");
     }
 #endif
 
