@@ -617,6 +617,12 @@ Medição no planalto (2026-10-21, save do usuário perto da igreja, POCO F7 Ult
   `pass_written`) é amostrado direto, sem cópia (o Vulkan permite: não há laço sem escrita). Cópias ~15 -> ~11 por
   quadro (`fbcopy N (read M)` na linha de estatísticas), GPU 23.4 -> 22.5 ms, render 17.4 -> 16.1 ms.
   `LARECOMP_FEEDBACK_ALWAYS=1` volta ao antigo.
+- A GPU paga por draw, não por pixel. O modo portátil (`LARECOMP_HANDHELD=1`, ideia do nxnative/TOTK: o jogo
+  desenha 1280x720 em vez de 1600x900) deixa a GPU nos mesmos ~23 ms (G-buffer ~7.5 ms com 3000 draws a 720p).
+  Compressão e early-Z não pesam: `TU_DEBUG=noubwc` +1 ms, `TU_DEBUG=nolrz` igual; render targets sem
+  MUTABLE_FORMAT (`LARECOMP_VK_NO_MUTABLE=1`, só medida) igual.
+- Driver da Qualcomm (`LARECOMP_VK_DRIVER=none`): com o cache quente, render 33.7 ms, GPU 24 ms, 13-15 fps e draws
+  pulados (o primeiro run frio mostrou GPU 17.6 ms, mas compilando). O Turnip continua melhor.
 - Folga hoje: render ~16 ms livres, GPU ~10 ms. Para 60 fps seria preciso GPU <= ~14 ms (~40% menos) e um patch
   no jogo (o sead nunca escolhe menos de 2 vsyncs, e a lógica do jogo conta com 30).
 

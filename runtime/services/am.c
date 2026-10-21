@@ -39,6 +39,12 @@ static uint32_t new_event(void) {
 
 #define UNHANDLED(iface) LOG("[am] %s cmd %u (unhandled, ok)\n", iface, req->cmd)
 
+static int am_handheld(void) {
+    static int v = -1;
+    if (v < 0) v = getenv("LARECOMP_HANDHELD") && atoi(getenv("LARECOMP_HANDHELD"));
+    return v;
+}
+
 static void common_state_getter(Service *s, IpcReq *req, IpcResp *resp) {
     (void)s;
     switch (req->cmd) {
@@ -55,8 +61,9 @@ static void common_state_getter(Service *s, IpcReq *req, IpcResp *resp) {
         }
         pthread_mutex_unlock(&g_klock);
         break;
-    case 5: OUT(uint8_t, 0) = 1; resp_size(resp, 1); break;   // GetOperationMode: docked
-    case 6: OUT(uint32_t, 0) = 1; resp_size(resp, 4); break;  // GetPerformanceMode: boost
+    // (LARECOMP_HANDHELD=1, a test: handheld mode as a Switch off its dock - BOTW renders 1280x720, not 1600x900)
+    case 5: OUT(uint8_t, 0) = am_handheld() ? 0 : 1; resp_size(resp, 1); break;   // GetOperationMode: docked
+    case 6: OUT(uint32_t, 0) = am_handheld() ? 0 : 1; resp_size(resp, 4); break;  // GetPerformanceMode: boost
     case 8: OUT(uint8_t, 0) = 0; resp_size(resp, 1); break;   // GetBootMode
     case 9: OUT(uint8_t, 0) = 1; resp_size(resp, 1); break;   // GetCurrentFocusState: in focus
     case 13: case 61: resp->copy_handles[resp->ncopy++] = new_event(); break;
