@@ -602,9 +602,19 @@ Medição no planalto (2026-10-21, save do usuário perto da igreja, POCO F7 Ult
   (Vídeo: Taxa de quadros 30 / 60) limita a 1.85 vsync: o próprio jogo fica no 2, com o estado coerente. Auto: a
   escolha do jogo. Com isso e `LARECOMP_VK_SPLIT_US=3000`: 30.0 fps cravados, período 33.3 ms, GPU 23.1 ms (sem o
   split: 25.5 fps, em câmera lenta). O split ficou ligado por padrão no Turnip (3 ms).
-- Em aberto (testes pausados a pedido do usuário): na captura de conferência (save novo, no morro) o Link aparecia
-  afundado de novo. Falta ver se é o split (o write-back da grade de alturas?) ou esse lugar: comparar o mesmo save
-  com `LARECOMP_VK_SPLIT_US=0`.
+- Afundamento depois do split: conferido no save da igreja, com e sem `LARECOMP_VK_SPLIT_US=0`, o Link fica de pé
+  nos dois. A captura do morro era de outro save (não reproduzido depois).
+- Menu (Android): "Auto (20 / 30)" ou "30 fps", 30 por padrão; um 60 salvo vira 30 (o BOTW nunca passa de 30).
+- Thread de render (simpleperf, ciclos por função; o clock varia com o calor, ~46 °C na pele): sem hash por draw
+  quando o programa e as chaves se repetem (`get_program` 5% -> 1.4%), 1024 entradas no cache do hash dos fragment
+  shaders, `rt_is_persistent` só quando os alvos mudam, amostra de textura de 4096 para 1024 bytes (`fnv_sample`
+  10.6% -> 4.6%: sem rastreio de escrita de páginas no Android, cada checagem amostra), o relógio do split a cada
+  32 draws. Render 18.6 -> 16.7 ms por quadro; GPU ~23 ms; período 33.6 ms.
+- Intervalo do split (3 / 5 / 8 ms): GPU ~23 ms nos três; fica em 3 ms.
+- Cópias de feedback (~15 por quadro, 0.1-0.2 ms cada): espalhadas por decais, luz e terreno. Tirá-las pede outro
+  tratamento de ler um alvo enquanto se desenha nele (ler o alvo direto já foi mais lento: sai da GMEM).
+- Folga hoje: render ~16 ms livres, GPU ~10 ms. Para 60 fps seria preciso GPU <= ~14 ms (~40% menos) e um patch
+  no jogo (o sead nunca escolhe menos de 2 vsyncs, e a lógica do jogo conta com 30).
 
 - Threads do Havok e dos jobs do jogo nos núcleos (o LAS precisou emular o núcleo 0 do Switch), thread de render,
   resolução interna, ritmo de quadros (o jogo roda a 30 fps no Switch).
