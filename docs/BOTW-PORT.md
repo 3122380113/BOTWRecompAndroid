@@ -632,9 +632,10 @@ Medição no planalto (2026-10-21, save do usuário perto da igreja, POCO F7 Ult
   `VK_EXT_descriptor_buffer`, `VK_KHR_push_descriptor`, sem placed / host.
   Tentado e desfeito: (1) `vkMapMemory` e `mremap` para o HEAP_BASE - o kernel recusa mover o mapeamento do KGSL
   (EINVAL; e o mremap com MREMAP_FIXED desmapeia o destino antes de recusar); (2) memória exportável
-  `OPAQUE_FD` e `mmap` do fd no HEAP_BASE - `VK_ERROR_INVALID_EXTERNAL_HANDLE`. Resta (3) um AHardwareBuffer
-  (BLOB ~3 GB, fd do native handle mapeado no HEAP_BASE, importado no Vulkan): API fora do NDK público e
-  coerência CPU/GPU incerta.
+  `OPAQUE_FD` e `mmap` do fd no HEAP_BASE - `VK_ERROR_INVALID_EXTERNAL_HANDLE`; (3) um AHardwareBuffer BLOB
+  (fd do native handle mapeado no HEAP_BASE e importado no Vulkan) - o gralloc recusa qualquer BLOB neste processo,
+  até 16 MB, com qualquer combinação de usos (-129; -22 com GPU_SAMPLED_IMAGE). As três vias foram desfeitas. Sem
+  heap compartilhado, o driver da Qualcomm fica no modo de cópia: sem luz e ~2x mais lento na thread de render.
 - Folga hoje: render ~16 ms livres, GPU ~10 ms. Para 60 fps seria preciso GPU <= ~14 ms (~40% menos) e um patch
   no jogo (o sead nunca escolhe menos de 2 vsyncs, e a lógica do jogo conta com 30).
 
