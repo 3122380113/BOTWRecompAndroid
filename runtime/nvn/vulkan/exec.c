@@ -570,6 +570,7 @@ void vk_gpuprof_report(void) {
             LOG("[gpuprof] %6.3f ms %5.1f%%  %s%s", ms, 100 * ms / (total > 0 ? total : 1), gp_label[i], gp_draws[i] ? "" : "\n");
             if (gp_draws[i]) LOG(", %u draws\n", gp_draws[i]);
         }
+        LOG("[gpuprof] (last mark: %s)\n", gp_label[gp_n - 1]);
     }
     gp_n = 0;
 }

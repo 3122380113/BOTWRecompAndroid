@@ -1098,7 +1098,8 @@ NVN(nvnWindowGetPresentInterval) { RET(WIN->interval); }
 #ifdef __ANDROID__
 int g_present_interval = 1;  // the game's latest (1: 60 fps, 2: 30 fps): the frame pacer (vulkan/exec.c)
 NVN(nvnWindowSetPresentInterval) {
-    if ((int)A(1) != g_present_interval) LOG("[pace] the game sets its present interval to %d\n", (int)A(1));
+    if ((int)A(1) != g_present_interval)
+        LOG("[pace] the game sets its present interval to %d (lr %llx)\n", (int)A(1), (unsigned long long)c->x[30]);
     WIN->interval = g_present_interval = (int)A(1);
 }
 #else

@@ -559,6 +559,23 @@ Falta (precisa rodar o jogo):
 
 ### Fase 7: desempenho
 
+Medição no planalto (2026-10-21, save do usuário perto da igreja, POCO F7 Ultra, Turnip Gen8 V37):
+
+- 20 fps cravados. Quem escolhe é o próprio jogo: o laço do quadro do sead (f_100c4f430, `nvnWindowSetPresentInterval`
+  chamado de 0x100c4f4a8) passa de 2 para 3 assim que entra no mundo. A escolha vem do tempo de quadro que ele mesmo
+  mede (no Switch o jogo também cai de 30 direto para 20 quando não cabe), não dos counters de GPU: com o menu em
+  60 fps os counters já saem curtos e o jogo continua em 3. Por isso o controle de FPS do menu não muda nada aqui.
+- Quadro (`LARECOMP_LOG_PACE=1`): período 50 ms; o jogo ocupado ~2.6 ms; a thread de render ~19-21 ms.
+- GPU (`LARECOMP_GPUPROF_AT`): ~47 ms do primeiro ao último marco, dos quais ~9 ms parada no início (esperando a
+  thread de render) e ~10 ms na última linha, que vai do último pass até a próxima submissão (inclui a ociosidade
+  do present; o pass em si, fs `5bf14136`, é uma cópia de uma amostra por pixel). Trabalho real ~27 ms: o G-buffer
+  1600x900 de 6 alvos com ~3250 draws ~7 ms, o resto em ~230 passes pequenos e ~15 cópias de feedback (~0.2 ms cada).
+- CPU (simpleperf, 8 s): nenhuma thread saturada (render ~34% de um núcleo, threads do jogo ~11% e ~8%).
+- Conclusão: tradução e GPU estão em série (~20 + ~27 ms > 33 ms), por isso o jogo escolhe 20 fps. Para 30 é
+  preciso sobrepor a tradução do quadro seguinte com a GPU do atual (submeter mais cedo e em pedaços), e baixar o
+  custo da GPU por draw/pass (o Adreno 830 é várias vezes o Tegra X1: 27 ms indicam desperdício nosso). A resolução
+  interna não muda nada no BOTW (escala de alvos desligada, ver `tex_scalable`): o jogo desenha sempre em 1600x900.
+
 - Threads do Havok e dos jobs do jogo nos núcleos (o LAS precisou emular o núcleo 0 do Switch), thread de render,
   resolução interna, ritmo de quadros (o jogo roda a 30 fps no Switch).
 
