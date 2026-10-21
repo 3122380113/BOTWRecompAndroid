@@ -19,6 +19,7 @@
 #include "../../paths.h"
 
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
+static uint64_t stat_feedback_reads;  // (attachments sampled as they are: only read, resolve_feedback)
 static uint64_t stat_upload_bytes;
 // LARECOMP_VK_PROF=1: render-thread time per category in the fps log (exec = whole command lists, draw = draw(),
 // sets = descriptor sets incl. cbuf copies, vtx = index scan + vertex copies, submit = vkQueueSubmit2)
@@ -70,6 +71,7 @@ static uint64_t last_submit_ns;  // (begin_pass: LARECOMP_VK_CHUNK_US)
 #endif
 static pthread_mutex_t seq_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool in_pass;
+static uint32_t pass_written;  // (the attachments this pass's draws wrote so far: draw_writes)
 
 uint64_t vk_completed_seq(void) {
     uint64_t v = 0;
@@ -1024,11 +1026,11 @@ const char *renderer_stats(void) {
         LOG("\n");
     }
     snprintf(stats_text, sizeof stats_text,
-             "%llu draws, %llu skipped, %llu passes, %llu dispatches, %llu flushes, wait %.0fms, compile %d (waited %.0fms), fbcopy %llu, upload %.1fMB",
+             "%llu draws, %llu skipped, %llu passes, %llu dispatches, %llu flushes, wait %.0fms, compile %d (waited %.0fms), fbcopy %llu (read %llu), upload %.1fMB",
              (unsigned long long)stat_draws, (unsigned long long)stat_skipped, (unsigned long long)stat_passes,
              (unsigned long long)stat_dispatches, (unsigned long long)stat_flushes, (double)stat_wait_ns / 1e6,
-             atomic_exchange(&stat_compiles, 0), (double)stat_build_wait_ns / 1e6, (unsigned long long)stat_feedback_copies, (double)stat_upload_bytes / 1048576.0);
-    stat_feedback_copies = stat_upload_bytes = stat_build_wait_ns = 0;
+             atomic_exchange(&stat_compiles, 0), (double)stat_build_wait_ns / 1e6, (unsigned long long)stat_feedback_copies, (unsigned long long)stat_feedback_reads, (double)stat_upload_bytes / 1048576.0);
+    stat_feedback_copies = stat_feedback_reads = stat_upload_bytes = stat_build_wait_ns = 0;
     {   // (GPU memory in use, every heap, and the game's textures with an image)
         VmaBudget bud[VK_MAX_MEMORY_HEAPS];
         vmaGetHeapBudgets(g_vk.vma, bud);
@@ -1531,6 +1533,7 @@ static void begin_pass(void) {
     }
     ss_forget();  // (whatever ran between the passes may have set its own state)
     in_pass = true;
+    pass_written = 0;
     vp_sx = pass_sx; vp_sy = pass_sy; vp_ox = 0; vp_oy = 0;
     stat_passes++;
 }
@@ -2606,17 +2609,40 @@ static void alias_draw_check(void) {
     if (writes || is_dst) alias_before_write(d, 0, writes ? "depth write" : "dst bound");
 }
 
+// The attachments a draw writes: bit i color target i (its shader outputs it and its channel mask lets it through),
+// bit 8 depth / stencil.
+static uint32_t draw_writes(const Prog *pr) {
+    uint32_t w = 0;
+    for (int i = 0; i < st.rt.ncolor; i++)
+        if (st.rt.color[i] && ((pr->fi->out_mask >> (i * 4)) & 0xF) && ((st.channel_mask >> (i * 4)) & 0xF)) w |= 1u << i;
+    if (st.rt.depth && ((st.ds[0] && st.ds[1]) || (st.ds[3] && ((st.stencil_mask[0] | st.stencil_mask[1]) & 0xFF)))) w |= 1u << 8;
+    return w;
+}
+
 static void resolve_feedback(Prog *pr) {
     nfeedback = 0;
     static int off = -1;
     if (off < 0) off = getenv("LARECOMP_NO_FEEDBACK") != NULL;
     if (off) return;
+    // An attachment only read - not written by this draw nor by an earlier one of its pass - is sampled as it is: the
+    // memory holds what the pass loaded, and Vulkan allows that read (no feedback loop without a write). BOTW's decals,
+    // light and terrain passes test depth without writing it, or sample a target they mask out: ~15 copies a frame of
+    // 1600x900 targets (~2.5 ms of GPU) each time it changed. LARECOMP_FEEDBACK_ALWAYS=1: a copy whenever bound.
+    static int always = -1;
+    if (always < 0) always = getenv("LARECOMP_FEEDBACK_ALWAYS") != NULL;
+    uint32_t written = draw_writes(pr) | (in_pass && !st.rt_dirty ? pass_written : 0);
     ShaderInfo *infos[2] = {pr->vi, pr->fi};
     for (int sg = 0; sg < 2; sg++)
         for (int i = 0; i < infos[sg]->ntex; i++) {
             NvnTexEntry *e = shader_texture_entry(sg, &infos[sg]->tex[i]);
             if (!is_attachment_entry(e)) continue;
             NvnTexture *t = e->tex;
+            if (!always) {
+                uint32_t bit = 0;
+                if (t == st.rt.depth) bit |= 1u << 8;
+                for (int k = 0; k < st.rt.ncolor; k++) if (st.rt.color[k] == t) bit |= 1u << k;
+                if (bit && !(written & bit)) { stat_feedback_reads++; continue; }
+            }
             bool have = false;
             for (int k = 0; k < nfeedback; k++) have |= feedback_tex[k] == t;
             if (have || nfeedback == 4) continue;
@@ -4596,6 +4622,7 @@ static void draw_(CmdRec *r, bool indexed) {
     // ---- draw
     if (!use_index) vkCmdDraw(cb, count, inst, first, base_inst);
     else vkCmdDrawIndexed(cb, icount, inst, 0, base_vertex, base_inst);
+    pass_written |= draw_writes(pr);
     stat_draws++;
     cum_draws++;
     if (g_gpuprof_frame && gp_n) {

@@ -613,6 +613,10 @@ Medição no planalto (2026-10-21, save do usuário perto da igreja, POCO F7 Ult
 - Intervalo do split (3 / 5 / 8 ms): GPU ~23 ms nos três; fica em 3 ms.
 - Cópias de feedback (~15 por quadro, 0.1-0.2 ms cada): espalhadas por decais, luz e terreno. Tirá-las pede outro
   tratamento de ler um alvo enquanto se desenha nele (ler o alvo direto já foi mais lento: sai da GMEM).
+- Cópias de feedback: um alvo só lido (sem escrita deste draw nem de um anterior no pass, `draw_writes` /
+  `pass_written`) é amostrado direto, sem cópia (o Vulkan permite: não há laço sem escrita). Cópias ~15 -> ~11 por
+  quadro (`fbcopy N (read M)` na linha de estatísticas), GPU 23.4 -> 22.5 ms, render 17.4 -> 16.1 ms.
+  `LARECOMP_FEEDBACK_ALWAYS=1` volta ao antigo.
 - Folga hoje: render ~16 ms livres, GPU ~10 ms. Para 60 fps seria preciso GPU <= ~14 ms (~40% menos) e um patch
   no jogo (o sead nunca escolhe menos de 2 vsyncs, e a lógica do jogo conta com 30).
 
