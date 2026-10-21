@@ -623,6 +623,18 @@ Medição no planalto (2026-10-21, save do usuário perto da igreja, POCO F7 Ult
   MUTABLE_FORMAT (`LARECOMP_VK_NO_MUTABLE=1`, só medida) igual.
 - Driver da Qualcomm (`LARECOMP_VK_DRIVER=none`): com o cache quente, render 33.7 ms, GPU 24 ms, 13-15 fps e draws
   pulados (o primeiro run frio mostrou GPU 17.6 ms, mas compilando). O Turnip continua melhor.
+- Driver da Qualcomm (pedido do usuário: base para 60 fps): a imagem sai quebrada (sem luz, o Link em silhueta
+  preta) e ~200 draws pulados a cada 2 s. Causa principal: sem `VK_EXT_map_memory_placed` nem
+  `VK_EXT_external_memory_host` o heap do jogo não vira memória da GPU; o modo de cópia (`gcopy`) copia ~4 GB a
+  cada 2 s (render ~34 ms) e não sincroniza o que um compute escreve com o que os fragment shaders leem (a lista de
+  luzes). Mais 2 compute pipelines falham (`-13`). Extensões do driver (`LARECOMP_VK_LIST_EXT=1`):
+  `VK_KHR_external_memory_fd`, `VK_ANDROID_external_memory_android_hardware_buffer`, `VK_KHR_map_memory2`,
+  `VK_EXT_descriptor_buffer`, `VK_KHR_push_descriptor`, sem placed / host.
+  Tentado e desfeito: (1) `vkMapMemory` e `mremap` para o HEAP_BASE - o kernel recusa mover o mapeamento do KGSL
+  (EINVAL; e o mremap com MREMAP_FIXED desmapeia o destino antes de recusar); (2) memória exportável
+  `OPAQUE_FD` e `mmap` do fd no HEAP_BASE - `VK_ERROR_INVALID_EXTERNAL_HANDLE`. Resta (3) um AHardwareBuffer
+  (BLOB ~3 GB, fd do native handle mapeado no HEAP_BASE, importado no Vulkan): API fora do NDK público e
+  coerência CPU/GPU incerta.
 - Folga hoje: render ~16 ms livres, GPU ~10 ms. Para 60 fps seria preciso GPU <= ~14 ms (~40% menos) e um patch
   no jogo (o sead nunca escolhe menos de 2 vsyncs, e a lógica do jogo conta com 30).
 

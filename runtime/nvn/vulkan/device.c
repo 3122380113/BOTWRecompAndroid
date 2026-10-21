@@ -145,6 +145,8 @@ static void create_device(void) {
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
     VkExtensionProperties *ep = calloc(ne, sizeof *ep);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
+    if (getenv("LARECOMP_VK_LIST_EXT"))  // (=1: the driver's device extensions, for comparing drivers)
+        for (uint32_t i = 0; i < ne; i++) LOG("[vk] device extension %s %u\n", ep[i].extensionName, ep[i].specVersion);
     const char *ext[8];
     uint32_t n_ext = 0;
     ext[n_ext++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
