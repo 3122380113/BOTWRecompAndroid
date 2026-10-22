@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Long-press the app icon: back to the system's Vulkan driver without opening the app first (a custom driver that
-     draws garbage, or never draws, leaves Settings out of reach). BOTWRecompActivity.SYSTEM_DRIVER. -->
+     draws garbage, or never draws, leaves Settings out of reach). BOTWRecompAndroidActivity.SYSTEM_DRIVER. -->
 <shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
     <shortcut
         android:shortcutId="watch_map"
@@ -9,9 +9,9 @@
         android:shortcutShortLabel="@string/shortcut_watch_map"
         android:shortcutLongLabel="@string/shortcut_watch_map_long">
         <intent
-            android:action="com.botwrecomp.action.WATCH_MAP"
+            android:action="com.botwrecompandroid.action.WATCH_MAP"
             android:targetPackage="com.botwrecomp.android"
-            android:targetClass="com.botwrecomp.BOTWRecompActivity" />
+            android:targetClass="com.botwrecompandroid.BOTWRecompAndroidActivity" />
     </shortcut>
     <shortcut
         android:shortcutId="system_driver"
@@ -20,8 +20,8 @@
         android:shortcutShortLabel="@string/shortcut_system_driver"
         android:shortcutLongLabel="@string/shortcut_system_driver_long">
         <intent
-            android:action="com.botwrecomp.action.SYSTEM_DRIVER"
+            android:action="com.botwrecompandroid.action.SYSTEM_DRIVER"
             android:targetPackage="com.botwrecomp.android"
-            android:targetClass="com.botwrecomp.BOTWRecompActivity" />
+            android:targetClass="com.botwrecompandroid.BOTWRecompAndroidActivity" />
     </shortcut>
 </shortcuts>

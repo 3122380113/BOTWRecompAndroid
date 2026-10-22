@@ -12,7 +12,15 @@
 // LARECOMP_SETTINGS=<path>: another settings file (test runs never touch the player's larecomp.ini)
 static const char *settings_file(void) {
     const char *e = getenv("LARECOMP_SETTINGS");
-    return e && *e ? e : "botwrecomp.ini";
+    if (e && *e) return e;
+    static int moved;  // (the project's former name: the player's settings carry over, once)
+    if (!moved) {
+        moved = 1;
+        FILE *f = fopen("botwrecompandroid.ini", "rb");
+        if (f) fclose(f);
+        else rename("botwrecomp.ini", "botwrecompandroid.ini");
+    }
+    return "botwrecompandroid.ini";
 }
 
 Settings g_settings = {
@@ -145,7 +153,7 @@ void settings_load(void) {
 void settings_save(void) {
     FILE *f = fopen(SETTINGS_FILE, "w");
     if (!f) { LOG("[settings] cannot write %s\n", SETTINGS_FILE); return; }
-    fprintf(f, "# BOTW Recomp settings (edited from the in-game menu: F1, Esc, or Minus+Plus on a controller)\n");
+    fprintf(f, "# BOTWRecompAndroid settings (edited from the in-game menu: F1, Esc, or Minus+Plus on a controller)\n");
     fprintf(f, "aspect = %s\n", g_settings.aspect == ASPECT_ORIGINAL ? "original" : "unlocked");
     fprintf(f, "fullscreen = %d\n", g_settings.fullscreen);
     fprintf(f, "volume = %.2f\n", g_settings.volume);

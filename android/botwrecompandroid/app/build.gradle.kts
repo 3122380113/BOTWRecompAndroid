@@ -6,13 +6,13 @@ plugins {
 
 val repo: File = rootDir.resolve("../..").canonicalFile
 val deps: File = repo.resolve("android/deps/out")  // android/deps/build_deps.sh
-val gen = layout.buildDirectory.dir("generated/botwrecomp")
-// The release key: outside the repository, in ~/.botwrecomp/keystore.properties (storeFile, storePassword, keyAlias,
+val gen = layout.buildDirectory.dir("generated/botwrecompandroid")
+// The release key: outside the repository, in ~/.botwrecompandroid/keystore.properties (storeFile, storePassword, keyAlias,
 // keyPassword); without it, release builds are signed with the debug key
-val releaseKey: File = File(System.getProperty("user.home"), ".botwrecomp/keystore.properties")
+val releaseKey: File = File(System.getProperty("user.home"), ".botwrecompandroid/keystore.properties")
 
 android {
-    namespace = "com.botwrecomp"
+    namespace = "com.botwrecompandroid"
     compileSdk = 36
     ndkVersion = "30.0.16248370"
 
@@ -86,7 +86,7 @@ android {
 
 // What the native build and the APK need: the SMAA shader as a C string (smaa_hlsl.inc),
 // the prebuilt libraries, and the shipped resources (the start screen's font, the icon).
-val prepareBotwRecomp by tasks.registering {
+val prepareBotwRecompAndroid by tasks.registering {
     val smaa = repo.resolve("third_party/smaa/SMAA.hlsl")
     val font = repo.resolve("third_party/fonts/Baloo2/Baloo2-SemiBold.ttf")
     val icon = repo.resolve("assets/artwork/triforce-icon-v2.png")
@@ -118,7 +118,7 @@ val prepareBotwRecomp by tasks.registering {
         icon.copyTo(out.resolve("res/mipmap-xxxhdpi/ic_launcher.png"), overwrite = true)
         // the game code's builder (docs/las/ANDROID-PORT.md, Fase 6; android/deps/build_gen_deps.sh): its programs and
         // libraries as native libraries (Android runs binaries only from nativeLibraryDir), the rest as assets/gen
-        // (runtime/gamebuild.c; unpacked by BOTWRecompActivity)
+        // (runtime/gamebuild.c; unpacked by BOTWRecompAndroidActivity)
         val g = deps.resolve("gen")
         if (g.resolve("zig/libzig.so").exists()) {
             val jni = out.resolve("jniLibs/arm64-v8a")
@@ -139,7 +139,7 @@ val prepareBotwRecomp by tasks.registering {
         }
     }
 }
-tasks.named("preBuild") { dependsOn(prepareBotwRecomp) }
+tasks.named("preBuild") { dependsOn(prepareBotwRecompAndroid) }
 tasks.matching { it.name.startsWith("configureCMake") || it.name.startsWith("buildCMake") }.configureEach {
-    dependsOn(prepareBotwRecomp)
+    dependsOn(prepareBotwRecompAndroid)
 }

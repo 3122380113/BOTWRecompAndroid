@@ -1,10 +1,10 @@
-# Levantamento Completo de Mods de Desempenho de Breath of the Wild e sua Aplicação no BOTWRecomp
+# Levantamento Completo de Mods de Desempenho de Breath of the Wild e sua Aplicação no BOTWRecompAndroid
 
-Este documento consolida a análise técnica e o levantamento aprofundado de todas as principais modificações de desempenho desenvolvidas para *The Legend of Zelda: Breath of the Wild* ao longo dos anos nas plataformas de emulação e modding (**Wii U / Cemu**, **Nintendo Switch / Yuzu / Ryujinx**, **Skyline**, **EggNS** e **UltraCam / NX-Optimizer**), detalhando seus princípios matemáticos/arquiteturais e **como cada técnica pode ser aproveitada diretamente na recompilação estática (`BOTWRecomp`)**.
+Este documento consolida a análise técnica e o levantamento aprofundado de todas as principais modificações de desempenho desenvolvidas para *The Legend of Zelda: Breath of the Wild* ao longo dos anos nas plataformas de emulação e modding (**Wii U / Cemu**, **Nintendo Switch / Yuzu / Ryujinx**, **Skyline**, **EggNS** e **UltraCam / NX-Optimizer**), detalhando seus princípios matemáticos/arquiteturais e **como cada técnica pode ser aproveitada diretamente na recompilação estática (`BOTWRecompAndroid`)**.
 
 ---
 
-> **Verificação no BOTWRecomp (21/10/2026, POCO F7 Ultra, Turnip, cena do platô).** Este estudo junta fontes externas e inferências. Abaixo, o que foi conferido no projeto. O restante do texto vale como mapa de ideias, não como medição.
+> **Verificação no BOTWRecompAndroid (21/10/2026, POCO F7 Ultra, Turnip, cena do platô).** Este estudo junta fontes externas e inferências. Abaixo, o que foi conferido no projeto. O restante do texto vale como mapa de ideias, não como medição.
 >
 > - **Confirmado:**
 >   - A queda para 20 fps pelo `sead` (seção 1.2), já corrigida com `rt_frame_ticks`.
@@ -165,7 +165,7 @@ O **UltraCam** representa o pacote mais sofisticado e moderno de otimização de
 
 ---
 
-## 3. Diagnóstico Atual do BOTWRecomp no Hardware Alvo
+## 3. Diagnóstico Atual do BOTWRecompAndroid no Hardware Alvo
 
 Nos testes realizados no **Xiaomi POCO F7 Ultra (Snapdragon 8 Elite / Adreno 830v1)**:
 
@@ -178,17 +178,17 @@ Nos testes realizados no **Xiaomi POCO F7 Ultra (Snapdragon 8 Elite / Adreno 830
     - O G-buffer de 6 alvos executa sozinho **$\approx 3.250$ draw calls** ($\approx 7\text{ ms}$).
     - Há cerca de **220 a 230 pequenos passes** adicionais com barreiras completas.
 - **Comportamento do Pacer:**
-  - Em [`tools/patches.py`](file:///d:/Projetos/Jogos/Android/BOTWRecomp/tools/patches.py#L38-L55), já substituímos a leitura de ticks em `0x7000c4f4d4` (`sead` `f_7000c4f430`) por `rt_frame_ticks` (em [`runtime/nvn/objects.c`](file:///d:/Projetos/Jogos/Android/BOTWRecomp/runtime/nvn/objects.c#L1102-L1120)), travando a duração máxima em 1.85 vsyncs para impedir a queda para o intervalo 3 (20 FPS).
+  - Em [`tools/patches.py`](file:///d:/Projetos/Jogos/Android/BOTWRecompAndroid/tools/patches.py#L38-L55), já substituímos a leitura de ticks em `0x7000c4f4d4` (`sead` `f_7000c4f430`) por `rt_frame_ticks` (em [`runtime/nvn/objects.c`](file:///d:/Projetos/Jogos/Android/BOTWRecompAndroid/runtime/nvn/objects.c#L1102-L1120)), travando a duração máxima em 1.85 vsyncs para impedir a queda para o intervalo 3 (20 FPS).
 
 ---
 
-## 4. Guia de Aplicação Direta no BOTWRecomp
+## 4. Guia de Aplicação Direta no BOTWRecompAndroid
 
-Ao contrário de emuladores que dependem de injeção em memória em tempo de execução via JIT, o **BOTWRecomp recompila o código AArch64 para C antecipadamente (`botwgame.so`)**. Isso nos dá controle absoluto para aplicar qualquer uma dessas correções diretamente em C puro.
+Ao contrário de emuladores que dependem de injeção em memória em tempo de execução via JIT, o **BOTWRecompAndroid recompila o código AArch64 para C antecipadamente (`botwgame.so`)**. Isso nos dá controle absoluto para aplicar qualquer uma dessas correções diretamente em C puro.
 
 ### 1. Implementação de Dynamic FPS Nativo em C
 Em vez de estarmos limitados a travas fixas de 30 FPS ou 60 FPS estáticos (onde 45 FPS causaria lentidão):
-- No lifter ([`tools/patches.py`](file:///d:/Projetos/Jogos/Android/BOTWRecomp/tools/patches.py)), podemos substituir o cálculo de delta-time por uma função de tempo real em [`runtime/nvn/objects.c`](file:///d:/Projetos/Jogos/Android/BOTWRecomp/runtime/nvn/objects.c):
+- No lifter ([`tools/patches.py`](file:///d:/Projetos/Jogos/Android/BOTWRecompAndroid/tools/patches.py)), podemos substituir o cálculo de delta-time por uma função de tempo real em [`runtime/nvn/objects.c`](file:///d:/Projetos/Jogos/Android/BOTWRecompAndroid/runtime/nvn/objects.c):
   ```c
   // Exemplo de integração em C no runtime
   float rt_dynamic_timestep(float nominal_dt) {
@@ -215,7 +215,7 @@ Em vez de estarmos limitados a travas fixas de 30 FPS ou 60 FPS estáticos (onde
 
 ### 3. Poda de Passes de Pós-Processamento e FXAA
 - O BOTW executa passes de tela cheia para FXAA e blur de profundidade.
-- No executor Vulkan ([`runtime/nvn/vulkan/exec.c`](file:///d:/Projetos/Jogos/Android/BOTWRecomp/runtime/nvn/vulkan/exec.c)), já temos o mecanismo `LARECOMP_SKIP_FSHASH`.
+- No executor Vulkan ([`runtime/nvn/vulkan/exec.c`](file:///d:/Projetos/Jogos/Android/BOTWRecompAndroid/runtime/nvn/vulkan/exec.c)), já temos o mecanismo `LARECOMP_SKIP_FSHASH`.
 - Ao identificar o hash do fragment shader responsável pelo FXAA do motor, podemos saltar o draw:
   - Elimina a leitura e escrita de tela inteira na GPU.
   - Economiza **1,5 a 2,5 ms** de tempo de renderização por quadro.
@@ -232,7 +232,7 @@ Em vez de estarmos limitados a travas fixas de 30 FPS ou 60 FPS estáticos (onde
 
 ## 5. Matriz de Síntese e Prioridades de Otimização
 
-| Mod / Otimização | Origem | Impacto Técnico | Prioridade no BOTWRecomp |
+| Mod / Otimização | Origem | Impacto Técnico | Prioridade no BOTWRecompAndroid |
 |---|---|---|---|
 | **Dynamic FPS Nativo** | FPS++ / BOTW-DFPS | Elimina câmera lenta quando o FPS fica entre 35 e 55 FPS; permite desbloquear 60 FPS com velocidade 1.0x contínua. | **Alta** (Experiência de jogo fluida) |
 | **LOD / Render Distance Scaler** | UltraCam | Reduz o número de draw calls do G-buffer em 30–40%, aliviando o maior gargalo atual da GPU (23 ms $\to$ 15 ms). | **Alta** (Caminho direto para 60 FPS) |

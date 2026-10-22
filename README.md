@@ -1,4 +1,4 @@
-# BOTW Recomp
+# BOTWRecompAndroid
 
 **English** | [Português](README.pt-BR.md)
 
@@ -40,7 +40,7 @@ Windows, Linux or macOS may still be used as development hosts with the Android 
 With the Android SDK / NDK, a phone on adb and your dump in `Dump/`:
 
 ```bash
-cd android/botwrecomp && ./gradlew assembleDebug    # the app
+cd android/botwrecompandroid && ./gradlew assembleDebug    # the app
 android/build_gamelib.sh Dump/01007EF00011E000/exefs  # the game code (about an hour)
 android/push_game.sh Dump/01007EF00011E000           # game files and game code onto the phone
 android/run_boot.sh 120                               # start the game, log to android/out/boot.log

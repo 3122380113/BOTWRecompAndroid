@@ -1,14 +1,14 @@
-// Where BOTW Recomp keeps its files (runtime/paths.c).
+// Where BOTWRecompAndroid keeps its files (runtime/paths.c).
 //
 // Data root: everything the app writes or the user brings - extracted/ (game files), save/,
 // cache/ (shaders / pipelines), fonts/ (imported), larecomp.ini. rt_paths_init() picks it and makes it the
 // working directory, so the rest of the runtime opens those by their relative names. In order:
 //   1. LARECOMP_DATA_ROOT (tests, scratch installs)
-//   2. dev / portable mode: the starting directory already has extracted/ (a source checkout: `./build/botwrecomp
+//   2. dev / portable mode: the starting directory already has extracted/ (a source checkout: `./build/botwrecompandroid
 //      extracted`, the test scripts) - used as is
-//   3. macOS: ~/Library/Application Support/com.mamcjr.botwrecomp (the .app bundle itself is never written to)
+//   3. macOS: ~/Library/Application Support/com.mamcjr.botwrecompandroid (the .app bundle itself is never written to)
 //      Windows: the folder of the .exe (portable, no installer); refuses to start, with a message, if not writable
-//      Linux: $XDG_DATA_HOME/botwrecomp (~/.local/share/botwrecomp)
+//      Linux: $XDG_DATA_HOME/botwrecompandroid (~/.local/share/botwrecompandroid)
 //
 // Resources: files that ship with the app (helper programs, the window icon) - next to the executable (the
 // Windows folder, the .app's Contents/MacOS), in the .app's Contents/Resources, or in the source tree.
@@ -20,7 +20,7 @@
 extern "C" {
 #endif
 
-#define RT_BUNDLE_ID "com.mamcjr.botwrecomp"
+#define RT_BUNDLE_ID "com.mamcjr.botwrecompandroid"
 
 void rt_paths_init(void);         // first thing in main(), after plat_init
 const char *rt_data_root(void);   // absolute

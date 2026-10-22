@@ -6,7 +6,7 @@
     "appType": "app",
     "icon": "icon.png",
     "version": { "code": 7, "name": "0.2.1" },
-    "vender": "BOTW Recomp",
+    "vender": "BOTWRecompAndroid",
     "description": "Mapa local com posição e objetivos do Recomp"
   },
   "permissions": [],

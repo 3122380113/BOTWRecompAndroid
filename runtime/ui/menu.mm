@@ -577,8 +577,8 @@ static void tab_quit(float scale, bool in_game) {
         ask = 0;
     const char *lost = in_game ? "\n\nProgress since your last save is lost." : "";
     char d1[200], d2[200];
-    snprintf(d1, sizeof d1, "Leaves the game and goes back to the BOTW Recomp start screen.%s", lost);
-    snprintf(d2, sizeof d2, "Closes BOTW Recomp.%s", lost);
+    snprintf(d1, sizeof d1, "Leaves the game and goes back to the BOTWRecompAndroid start screen.%s", lost);
+    snprintf(d2, sizeof d2, "Closes BOTWRecompAndroid.%s", lost);
 #ifdef __ANDROID__
     const char *quit_app = "Close app", *quit_app_yes = "Close app";
     const char *quit_start = "Return to start", *quit_start_yes = "Return to start";

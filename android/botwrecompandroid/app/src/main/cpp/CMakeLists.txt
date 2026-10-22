@@ -1,8 +1,8 @@
-# libmain.so: the BOTW Recomp runtime for Android, with the
+# libmain.so: the BOTWRecompAndroid runtime for Android, with the
 # Vulkan backend and the ImGui UI. The game code is not in it: botwgame.so, generated with gen.py --dyn-base and built
 # from the player's own game files, is loaded at run time (docs/las/ANDROID-PORT.md).
 cmake_minimum_required(VERSION 3.22)
-project(botwrecomp C CXX)
+project(botwrecompandroid C CXX)
 
 set(R ${CMAKE_CURRENT_SOURCE_DIR}/../../../../../..)   # the repository
 get_filename_component(R ${R} ABSOLUTE)

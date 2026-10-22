@@ -1,8 +1,8 @@
 AppSettingsPage({
   build(props) {
     return Section({}, [
-      Text({ style: { fontSize: '20px', fontWeight: 'bold' } }, ['BOTW Recomp • Mapa no relógio']),
-      Text({}, ['No Android, mantenha pressionado o ícone do BOTW Recomp e abra “Mapa no relógio”. Ative o compartilhamento e copie o código abaixo.']),
+      Text({ style: { fontSize: '20px', fontWeight: 'bold' } }, ['BOTWRecompAndroid • Mapa no relógio']),
+      Text({}, ['No Android, mantenha pressionado o ícone do BOTWRecompAndroid e abra “Mapa no relógio”. Ative o compartilhamento e copie o código abaixo.']),
       TextInput({
         label: 'Código de conexão',
         placeholder: 'Cole o código de 32 caracteres',

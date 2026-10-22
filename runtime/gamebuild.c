@@ -184,7 +184,7 @@ static bool find_tools(Tools *t) {
     if (b > s) s = b;
     if (s) *s = 0;
 #ifdef _WIN32
-    if (!rt_resource("botwrecomp.dll.a", "build/botwrecomp.dll.a", t->implib, sizeof t->implib)) return false;
+    if (!rt_resource("botwrecompandroid.dll.a", "build/botwrecompandroid.dll.a", t->implib, sizeof t->implib)) return false;
     t->zig_rt[0] = 0;
     if (t->zig && rt_resource("zig" SEP "rt" SEP "link.rsp", NULL, t->zig_rt, sizeof t->zig_rt)) {
         char *s = strrchr(t->zig_rt, '/'), *b = strrchr(t->zig_rt, '\\');
@@ -319,7 +319,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
     if (!registered) registered = true, atexit(end_all);
     Tools t;
     if (!find_tools(&t)) {
-        snprintf(why, why_size, "the game code builder is missing from this copy of BOTW Recomp");
+        snprintf(why, why_size, "the game code builder is missing from this copy of BOTWRecompAndroid");
         return false;
     }
     char work[1100], lib[1100], tmp[1100];

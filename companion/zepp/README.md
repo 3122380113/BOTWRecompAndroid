@@ -12,7 +12,7 @@ O desenho reutiliza no máximo 16 componentes de imagem e os componentes dos mar
 
 ## Instalação
 
-1. Instale o APK atualizado de `android/botwrecomp/app/build/outputs/apk/debug/app-debug.apk`.
+1. Instale o APK atualizado de `android/botwrecompandroid/app/build/outputs/apk/debug/app-debug.apk`.
 2. No Android, mantenha pressionado o ícone do Recomp → **Mapa no relógio**. Ative o compartilhamento, salve e copie o código.
 3. No modo desenvolvedor do Zepp, adicione o Mini Program pelo QR da prévia 0.2.0. Use o alvo **Amazfit GTR 4 new** (9437441), API 1.0 e tela 480×480. A versão do sistema exibida no relógio não corresponde ao API_LEVEL do catálogo.
 4. Nas configurações do Mini Program no Zepp, cole o código de 32 caracteres. O código anterior continua válido após atualizar o APK.

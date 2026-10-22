@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- After SDL3's android-project template (3.4.16), with BOTW Recomp's activity. -->
+<!-- After SDL3's android-project template (3.4.16), with BOTWRecompAndroid's activity. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-feature android:name="android.hardware.vulkan.version" android:version="0x403000" android:required="true" />
@@ -13,7 +13,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
 
     <application
-        android:label="BOTW Recomp"
+        android:label="BOTWRecompAndroid"
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="false"
         android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
@@ -27,7 +27,7 @@
         <profileable android:shell="true" />
 
         <activity
-            android:name=".BOTWRecompActivity"
+            android:name=".BOTWRecompAndroidActivity"
             android:alwaysRetainTaskState="true"
             android:launchMode="singleInstance"
             android:screenOrientation="sensorLandscape"

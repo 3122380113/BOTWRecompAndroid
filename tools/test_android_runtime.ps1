@@ -3,7 +3,7 @@ param([string]$Sdk, [string]$DeviceSerial)
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path $PSScriptRoot -Parent
 if (-not $Sdk) {
-    $sdkProperties = Join-Path $repoRoot 'android/botwrecomp/local.properties'
+    $sdkProperties = Join-Path $repoRoot 'android/botwrecompandroid/local.properties'
     if (Test-Path -LiteralPath $sdkProperties) {
         $sdkLine = Get-Content -LiteralPath $sdkProperties | Where-Object { $_ -match '^sdk\.dir=' } | Select-Object -First 1
         if ($sdkLine) { $Sdk = $sdkLine.Substring(8).Replace('\:', ':').Replace('\\', '\') }
@@ -15,7 +15,7 @@ $compilerPath = Join-Path $Sdk 'ndk/30.0.16248370/toolchains/llvm/prebuilt/windo
 $adbPath = Join-Path $Sdk 'platform-tools/adb.exe'
 $deviceArgs = @()
 if ($DeviceSerial) { $deviceArgs = @('-s', $DeviceSerial) }
-$deviceDir = '/data/local/tmp/botwrecomp-tests'
+$deviceDir = '/data/local/tmp/botwrecompandroid-tests'
 Push-Location $repoRoot
 try {
     New-Item -ItemType Directory -Force 'android/out' | Out-Null

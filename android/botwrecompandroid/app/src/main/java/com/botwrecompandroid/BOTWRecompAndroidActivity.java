@@ -1,4 +1,4 @@
-// BOTW Recomp on Android: SDL's activity runs the runtime (libmain.so, runtime/main.c). Before the native code starts
+// BOTWRecompAndroid on Android: SDL's activity runs the runtime (libmain.so, runtime/main.c). Before the native code starts
 // this sets up what the desktop finds next to its executable (runtime/platform/android.c, runtime/paths.c):
 // - the shipped resources (assets/res: the start screen's font, the icon) copied to <internal files>/res;
 // - the Vulkan driver: the first driver in <external files>/drivers (a .so, or an adrenotools .zip: Turnip), copied to
@@ -14,7 +14,7 @@
 // The data root (game files, saves, settings) is <external files>: /sdcard/Android/data/com.botwrecomp.android/files.
 // While in front it reports the battery and thermal state once a second for the performance overlay
 // (runtime/ui/perf_overlay.mm): apps can't read those in /sys.
-package com.botwrecomp;
+package com.botwrecompandroid;
 
 import android.app.Activity;
 import android.content.ContentResolver;
@@ -48,8 +48,8 @@ import java.util.List;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
-public class BOTWRecompActivity extends SDLActivity {
-    private static final String TAG = "BOTWRecomp";
+public class BOTWRecompAndroidActivity extends SDLActivity {
+    private static final String TAG = "BOTWRecompAndroid";
 
     private final Handler stats = new Handler(Looper.getMainLooper());
     private final Runnable report = new Runnable() {
@@ -69,7 +69,7 @@ public class BOTWRecompActivity extends SDLActivity {
     private static native void nativeDriverPicked(String name);
 
     private static final int REQ_GAME = 0x4c41, REQ_DRIVER = 0x4c42;
-    private static BOTWRecompActivity self;
+    private static BOTWRecompAndroidActivity self;
     private WatchMapServer watchMap;
 
     @Override
@@ -94,7 +94,7 @@ public class BOTWRecompActivity extends SDLActivity {
             setenv("LARECOMP_VK_DRIVER", driver != null ? driver.getAbsolutePath() : "");
             // testing: the runtime's LARECOMP_* switches from the launch intent, separated by commas (adb shell drops
             // the quotes around spaces), e.g. LARECOMP_VK_DRIVER= is the system driver:
-            // adb shell am start -n com.botwrecomp.android/com.botwrecomp.BOTWRecompActivity --es env LARECOMP_NO_LAUNCHER=1,LARECOMP_VK_DRIVER=
+            // adb shell am start -n com.botwrecomp.android/com.botwrecompandroid.BOTWRecompAndroidActivity --es env LARECOMP_NO_LAUNCHER=1,LARECOMP_VK_DRIVER=
             String env = getIntent() != null ? getIntent().getStringExtra("env") : null;
             if (env != null) {  // (a piece without '=' continues the previous value: LARECOMP_GPUPROF_AT=1500,1750)
                 String name = null, value = null;
@@ -245,7 +245,7 @@ public class BOTWRecompActivity extends SDLActivity {
     // The app icon's long-press shortcut (res/xml/shortcuts.xml): the system driver, settings out of reach or not - a
     // custom driver that draws garbage (Turnip_v26.3.0-R6 on an Adreno 830: stripes, the menus unreadable) or crashes.
     // Before the driver loads when it starts the app; a running one (a single instance) drops it and starts again.
-    static final String SYSTEM_DRIVER = "com.botwrecomp.action.SYSTEM_DRIVER";
+    static final String SYSTEM_DRIVER = "com.botwrecompandroid.action.SYSTEM_DRIVER";
 
     @Override
     protected void onNewIntent(Intent intent) {

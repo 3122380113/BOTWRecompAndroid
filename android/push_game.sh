@@ -11,7 +11,7 @@ SRC=${1:?usage: android/push_game.sh <folder with exefs/ and romfs/>}
 # (GAME_DEST / GAMELIB_OUT: another game version in its own data root, e.g. 1.6.0 in files/v160 - android/run_v160.sh)
 D=${GAME_DEST:-/sdcard/Android/data/com.botwrecomp.android/files/extracted}
 LIB=${GAMELIB_OUT:-android/out}
-DEV_TMP=/data/local/tmp/botwrecomp
+DEV_TMP=/data/local/tmp/botwrecompandroid
 
 SDK=${ANDROID_HOME:-${LOCALAPPDATA:-$HOME}/Android/Sdk}
 SDK=${SDK//\\//}

@@ -1,4 +1,4 @@
-# Contributing to BOTW Recomp
+# Contributing to BOTWRecompAndroid
 
 Thanks for wanting to help! Bug reports, testing on different hardware and code contributions are all welcome.
 
@@ -21,12 +21,12 @@ fine.
 
 ## Reporting bugs
 
-Open a [GitHub issue](https://github.com/mamcjr/BOTWRecomp/issues). Please include the Android device, OS version, GPU and driver, what you did, what happened, and logcat output (tag `BOTWRecomp`).
+Open a [GitHub issue](https://github.com/mamcjr/BOTWRecompAndroid/issues). Please include the Android device, OS version, GPU and driver, what you did, what happened, and logcat output (tag `BOTWRecompAndroid`).
 
 ## Building
 
 Android is the only application target. The plan and phase notes are in [docs/BOTW-PORT.md](docs/BOTW-PORT.md) (Portuguese).
-Build the APK with `cd android/botwrecomp && ./gradlew assembleDebug` (Windows: `gradlew.bat assembleDebug`).
+Build the APK with `cd android/botwrecompandroid && ./gradlew assembleDebug` (Windows: `gradlew.bat assembleDebug`).
 Check your dump with `cd tools && python botw_dump.py`. Build its game library with
 `android/build_gamelib.sh Dump/01007EF00011E000/exefs`.
 

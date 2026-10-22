@@ -1,4 +1,4 @@
-# BOTW Recomp
+# BOTWRecompAndroid
 
 [English](README.md) | **Português**
 
@@ -40,7 +40,7 @@ Windows, Linux e macOS podem continuar sendo usados como ambientes de desenvolvi
 Com o Android SDK / NDK, um celular no adb e o seu dump em `Dump/`:
 
 ```bash
-cd android/botwrecomp && ./gradlew assembleDebug    # o app
+cd android/botwrecompandroid && ./gradlew assembleDebug    # o app
 android/build_gamelib.sh Dump/01007EF00011E000/exefs  # o código do jogo (cerca de uma hora)
 android/push_game.sh Dump/01007EF00011E000           # arquivos e código do jogo para o celular
 android/run_boot.sh 120                               # abre o jogo, log em android/out/boot.log

@@ -1,4 +1,4 @@
-# Plano: BOTW Recomp
+# Plano: BOTWRecompAndroid
 
 Recompilação estática de *The Legend of Zelda: Breath of the Wild* (Nintendo Switch, **v1.0.0**) para Android, a partir do motor do [LAS Recomp](https://github.com/peiikai/LASRecomp) e do seu
 porte para Android ([LASRecompAndroid](https://github.com/mamcjr/LASRecompAndroid)). Como no LAS, não é emulação:
@@ -82,11 +82,11 @@ O SDK/NDK Android e o Gradle são o caminho de compilação do aplicativo.
 - Novo: `LARECOMP_MODS=<pasta>` com um `romfs/` que substitui / acrescenta arquivos do jogo (o mecanismo de
   sobreposição das seeds, agora para mods).
 - O launcher confere o build id do BOTW v1.0.0 e acha o romfs pela pasta `Pack/` (no PC e no Android).
-- Renome: `botwrecomp` (executável, pacote Android `com.botwrecomp`, `BOTWRecompActivity`, pasta
-  `android/botwrecomp`), `botwgame` (a biblioteca do código do jogo), `botwgen` (o helper do gerador),
-  `botwrecomp.ini`, bundle id `com.mamcjr.botwrecomp`. **As variáveis de ambiente continuam `LARECOMP_*`** e os
+- Renome: `botwrecompandroid` (executável, pacote Android `com.botwrecompandroid`, `BOTWRecompAndroidActivity`, pasta
+  `android/botwrecompandroid`), `botwgame` (a biblioteca do código do jogo), `botwgen` (o helper do gerador),
+  `botwrecompandroid.ini`, bundle id `com.mamcjr.botwrecompandroid`. **As variáveis de ambiente continuam `LARECOMP_*`** e os
   identificadores internos também: o motor é o do LAS, e assim fica mais fácil trazer melhorias de lá.
-- Verificação: o app Android (`android/botwrecomp`, `gradlew assembleDebug`) compila e linka com `--no-undefined`.
+- Verificação: o app Android (`android/botwrecompandroid`, `gradlew assembleDebug`) compila e linka com `--no-undefined`.
   Os arquivos só do macOS (`renderer.m`, `metal.m`) foram editados do mesmo jeito, mas não compilados aqui.
 - O build desktop citado no plano original foi descontinuado; o alvo atual é Android.
 

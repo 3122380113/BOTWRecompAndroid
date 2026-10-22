@@ -1,7 +1,7 @@
 // Android host layer (runtime/platform.h), arm64. Based on linux.c; what differs:
 // - the guest window goes wherever the app process has room (android/common/guest_window.h) instead of a fixed
 //   address: an app process is forked from the zygote, with its libraries already mapped, and can't re-exec itself;
-// - stdout / stderr go to logcat (tag BOTWRecomp);
+// - stdout / stderr go to logcat (tag BOTWRecompAndroid);
 // - no execinfo: backtraces through the unwinder; no re-exec.
 #define _GNU_SOURCE
 #include <SDL3/SDL.h>
@@ -46,14 +46,14 @@ static void *log_pump(void *arg) {
         char *start = buf, *nl;
         while ((nl = memchr(start, '\n', (size_t)(buf + n - start)))) {
             *nl = 0;
-            __android_log_write(ANDROID_LOG_INFO, "BOTWRecomp", start);
+            __android_log_write(ANDROID_LOG_INFO, "BOTWRecompAndroid", start);
             start = nl + 1;
         }
         n = (size_t)(buf + n - start);
         memmove(buf, start, n);
         if (n == sizeof buf - 1) {  // (a line longer than the buffer: in pieces)
             buf[n] = 0;
-            __android_log_write(ANDROID_LOG_INFO, "BOTWRecomp", buf);
+            __android_log_write(ANDROID_LOG_INFO, "BOTWRecompAndroid", buf);
             n = 0;
         }
     }
@@ -239,7 +239,7 @@ void plat_init(void) { log_to_logcat(); }
 bool plat_exe_path(char *buf, size_t size) {
     const char *files = SDL_GetAndroidInternalStoragePath();
     if (!files) return false;
-    return (size_t)snprintf(buf, size, "%s/res/botwrecomp", files) < size;
+    return (size_t)snprintf(buf, size, "%s/res/botwrecompandroid", files) < size;
 }
 
 void plat_exec(char *const argv[]) { (void)argv; }  // (an app process can't replace itself: the caller reports it)
@@ -254,8 +254,8 @@ const char *plat_symbol(uint64_t pc, uint64_t *offset) {
 
 void plat_fatal_notice(void) {
     fflush(stderr);
-    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "BOTW Recomp", "BOTW Recomp stopped because of an error.\n\n"
-                             "Details: logcat, tag BOTWRecomp.", NULL);
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "BOTWRecompAndroid", "BOTWRecompAndroid stopped because of an error.\n\n"
+                             "Details: logcat, tag BOTWRecompAndroid.", NULL);
 }
 
 const char *rt_host_fn_name(uint64_t pc, uint64_t *offset);  // runtime/dispatch.c
@@ -372,12 +372,12 @@ void plat_terminate(void) { _exit(0); }
 #include <jni.h>
 #include <stdatomic.h>
 
-// What the activity reports once a second (BOTWRecompActivity.reportDeviceStats: public Android APIs; apps can't read
+// What the activity reports once a second (BOTWRecompAndroidActivity.reportDeviceStats: public Android APIs; apps can't read
 // the battery or most thermal sensors in /sys).
 static pthread_mutex_t g_ds_lock = PTHREAD_MUTEX_INITIALIZER;
 static PlatDeviceStats g_ds = {.batt_temp_c = -1, .batt_pct = -1, .thermal = -1, .headroom = -1};
 
-JNIEXPORT void JNICALL Java_com_botwrecomp_BOTWRecompActivity_nativeDeviceStats(JNIEnv *env, jclass cls, jfloat batt_temp_c,
+JNIEXPORT void JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeDeviceStats(JNIEnv *env, jclass cls, jfloat batt_temp_c,
                                                                             jfloat batt_pct, jfloat watts, jint thermal,
                                                                             jfloat headroom) {
     (void)env, (void)cls;

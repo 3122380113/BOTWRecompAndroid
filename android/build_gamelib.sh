@@ -18,8 +18,8 @@ NDK=${ANDROID_NDK:-$SDK/ndk/30.0.16248370}
 CMAKE_DIR=$SDK/cmake/3.30.4/bin
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) EXE=.exe; PY=tools/venv/Scripts/python.exe ;; *) EXE=; PY=tools/venv/bin/python ;; esac
 
-LIBMAIN=$(ls -t "$R"/android/botwrecomp/app/build/intermediates/cxx/*/*/obj/arm64-v8a/libmain.so 2>/dev/null | head -1 || true)
-[ -n "$LIBMAIN" ] || { echo "build the app first (android/botwrecomp: gradlew assembleDebug)"; exit 1; }
+LIBMAIN=$(ls -t "$R"/android/botwrecompandroid/app/build/intermediates/cxx/*/*/obj/arm64-v8a/libmain.so 2>/dev/null | head -1 || true)
+[ -n "$LIBMAIN" ] || { echo "build the app first (android/botwrecompandroid: gradlew assembleDebug)"; exit 1; }
 
 if [ ! -f "$GEN/main/main_table.c" ] || [ ! -f "$GEN/sdk/sdk_table.c" ]; then
     (cd tools && "../$PY" gen.py sdk "$EXEFS/sdk" 0x7004000000 "$GEN/sdk" --hle ../runtime/hle/hle_symbols.txt --simd asm --dyn-base)

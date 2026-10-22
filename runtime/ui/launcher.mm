@@ -1,5 +1,5 @@
 // Start screen, shown before the game boots (from LAS Recomp's, styled after Dusklight's launcher): PLAY, SETTINGS,
-// QUIT, game-files status at the lower left. Nothing of the game ships with BOTW Recomp: on first launch the user picks
+// QUIT, game-files status at the lower left. Nothing of the game ships with BOTWRecompAndroid: on first launch the user picks
 // the folder with their own game files (v1.0.0), we check the main module's build id, copy the files and build the
 // game's data image; PLAY stays disabled until that worked. The background uses the bundled artwork, with a frame
 // from the user's game files as a fallback for packages without the artwork.
@@ -94,8 +94,8 @@ static const uint8_t BUILD_ID[8] = {0x20, 0x94, 0xf1, 0x52, 0x83, 0x66, 0x83, 0x
 // The start screen asks GitHub for the project's releases once per launch (a background curl, which macOS and
 // Windows 10+ ship) and offers the best one if it outranks this build: any v1.0.0+ above every beta, betas by
 // number; other tags (the alpha_* ones) are ignored. Offline / no curl / anything unexpected: nothing is shown.
-#define RELEASES_URL "https://api.github.com/repos/mamcjr/BOTWRecomp/releases?per_page=100"
-#define RELEASE_PAGE "https://github.com/mamcjr/BOTWRecomp/releases/tag/"
+#define RELEASES_URL "https://api.github.com/repos/mamcjr/BOTWRecompAndroid/releases?per_page=100"
+#define RELEASE_PAGE "https://github.com/mamcjr/BOTWRecompAndroid/releases/tag/"
 
 static long long tag_rank(const std::string &t) {
     int n, a, b, c;
@@ -136,7 +136,7 @@ static void *update_thread(void *) {
         std::string out = std::string(rt_data_root()) + "/cache/releases.json";
         mkdir((std::string(rt_data_root()) + "/cache").c_str(), 0755);
         const char *av[] = {curl.c_str(), "-fsSL", "--max-time", "15", "-H", "Accept: application/vnd.github+json",
-                            "-A", "BOTWRecomp/" LARECOMP_VERSION, RELEASES_URL, NULL};
+                            "-A", "BOTWRecompAndroid/" LARECOMP_VERSION, RELEASES_URL, NULL};
         PlatProc p = plat_spawn(av, out.c_str(), false);
         if (!p || plat_proc_wait(p, true) != 0) { remove(out.c_str()); return NULL; }
         if (FILE *f = fopen(out.c_str(), "rb")) {
@@ -221,7 +221,7 @@ static void set_failure(int k) {
         "Choose the folder that holds the game files.",
         "Choose the folder that holds the game files.",
         "Make sure there's about 30 GB free and try again.",
-        "BOTW Recomp needs version 1.0.0 of the game, without updates.",
+        "BOTWRecompAndroid needs version 1.0.0 of the game, without updates.",
         "Some files are missing. Choose the folder again; if it happens again, dump the game again.",
         "Make sure there's about 2 GB free and try again. If it keeps happening, report it on GitHub."};
     if (k >= 1 && k <= 6) set_job(head[k], true, hint[k]);
@@ -330,7 +330,7 @@ static void *extract_thread(void *) {
     if (exefs.empty() || romfs.empty()) { set_failure(unusable ? FAIL_UNUSABLE : FAIL_NOT_FOUND); goto done; }
     if (!build_id_ok(exefs + "/main")) { set_failure(FAIL_VERSION); goto done; }
     {
-        // (the picked folder can't be BOTW Recomp's own copy: setting up again deletes that first)
+        // (the picked folder can't be BOTWRecompAndroid's own copy: setting up again deletes that first)
         char a[4096], b[4096];
         mkdir(g_root.c_str(), 0755);
         if (realpath(exefs.c_str(), a) && realpath(g_root.c_str(), b) && !strncmp(a, b, strlen(b)) &&
@@ -373,7 +373,7 @@ done:
 
 #ifdef __ANDROID__
 // ------------------------------------------------------------------ Android: the system's pickers (SAF)
-// Android has no POSIX path to a folder the player picks: BOTWRecompActivity opens the system's folder picker, finds
+// Android has no POSIX path to a folder the player picks: BOTWRecompAndroidActivity opens the system's folder picker, finds
 // exefs/ and romfs/ in the picked folder (a few levels down too, as find_game), checks the game version with
 // nativeBuildIdOk and copies them into <g_root> (nativeImportBegin / Progress / Done); the setup then goes on as on the
 // desktop: the data image, then the game code (runtime/gamebuild.c, on the phone itself). The Vulkan driver is
@@ -394,14 +394,14 @@ static void android_call(const char *method) {  // a static method of the activi
     env->DeleteLocalRef(act);
 }
 
-extern "C" JNIEXPORT jboolean JNICALL Java_com_botwrecomp_BOTWRecompActivity_nativeBuildIdOk(JNIEnv *env, jclass, jbyteArray head) {
+extern "C" JNIEXPORT jboolean JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeBuildIdOk(JNIEnv *env, jclass, jbyteArray head) {
     if (env->GetArrayLength(head) < 0x48) return JNI_FALSE;
     jbyte b[8];
     env->GetByteArrayRegion(head, 0x40, 8, b);
     return memcmp(b, BUILD_ID, 8) == 0 ? JNI_TRUE : JNI_FALSE;
 }
 
-extern "C" JNIEXPORT void JNICALL Java_com_botwrecomp_BOTWRecompActivity_nativeImportBegin(JNIEnv *env, jclass, jstring name) {
+extern "C" JNIEXPORT void JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeImportBegin(JNIEnv *env, jclass, jstring name) {
     const char *n = env->GetStringUTFChars(name, NULL);
     pthread_mutex_lock(&g_lock);
     g_busy = true;
@@ -414,13 +414,13 @@ extern "C" JNIEXPORT void JNICALL Java_com_botwrecomp_BOTWRecompActivity_nativeI
     set_job("Copying the game files...");
 }
 
-extern "C" JNIEXPORT void JNICALL Java_com_botwrecomp_BOTWRecompActivity_nativeImportProgress(JNIEnv *, jclass, jlong done, jlong total) {
+extern "C" JNIEXPORT void JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeImportProgress(JNIEnv *, jclass, jlong done, jlong total) {
     g_total = 2ull * (unsigned long long)total;  // (the copy, then the data image: each about the size of romfs/)
     g_done = (unsigned long long)done;
 }
 
 // 0 copied, 1 cancelled, 2 no game files found, 3 game packages instead of files, 4 another version, 5 copy failed
-extern "C" JNIEXPORT void JNICALL Java_com_botwrecomp_BOTWRecompActivity_nativeImportDone(JNIEnv *, jclass, jint result) {
+extern "C" JNIEXPORT void JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeImportDone(JNIEnv *, jclass, jint result) {
     if (result == 0) {
         g_android_imported = true;
         pthread_t t;
@@ -435,11 +435,11 @@ extern "C" JNIEXPORT void JNICALL Java_com_botwrecomp_BOTWRecompActivity_nativeI
     set_failure(result == 2 ? FAIL_NOT_FOUND : result == 3 ? FAIL_UNUSABLE : result == 4 ? FAIL_VERSION : FAIL_COPY);
 }
 
-extern "C" JNIEXPORT void JNICALL Java_com_botwrecomp_BOTWRecompActivity_nativeDriverPicked(JNIEnv *env, jclass, jstring name) {
+extern "C" JNIEXPORT void JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeDriverPicked(JNIEnv *env, jclass, jstring name) {
     const char *n = env->GetStringUTFChars(name, NULL);
     pthread_mutex_lock(&g_lock);
-    g_driver_msg = n && !strcmp(n, "-") ? "The system's driver from the next start on. Restart BOTW Recomp to use it."
-                   : n && *n                ? std::string(n) + " installed. Restart BOTW Recomp to use it."
+    g_driver_msg = n && !strcmp(n, "-") ? "The system's driver from the next start on. Restart BOTWRecompAndroid to use it."
+                   : n && *n                ? std::string(n) + " installed. Restart BOTWRecompAndroid to use it."
                                             : "That file isn't a driver.";
     pthread_mutex_unlock(&g_lock);
     if (n) env->ReleaseStringUTFChars(name, n);
@@ -615,7 +615,7 @@ extern "C" void menu_apply_window_requests(void *sdl_window);
 extern "C" int g_start_screen;  // runtime/hle/game.c: the start screen is up (no game loaded: don't read its memory)
 static float g_menu_gap = 0.35f;  // space under each item, in line heights
 
-// The first PLAY ever (settings.menu_tip_seen): a note on opening the BOTW Recomp menu in game (it isn't obvious),
+// The first PLAY ever (settings.menu_tip_seen): a note on opening the BOTWRecompAndroid menu in game (it isn't obvious),
 // OK starts the game. Returns true once OK is pressed.
 static bool g_tip_test;  // (LARECOMP_LAUNCHER_SHOT=<frame>:tip)
 // First PLAY ever, before the menu note: authentic 16:9 or the unlocked (fill the window) aspect ratio.
@@ -676,7 +676,7 @@ static bool menu_tip(float s) {
         static const char *const home[] = {"Home button", "Xbox button", "PlayStation button"};  // (bind_label_family)
         static const char *const pad[] = {"Minus + Plus", "View + Menu", "Create + Options"};
         ImGui::PushTextWrapPos(0);
-        ImGui::TextUnformatted("BOTW Recomp has its own menu for settings and controls.");
+        ImGui::TextUnformatted("BOTWRecompAndroid has its own menu for settings and controls.");
         ImGui::Spacing();
         int fam = bind_label_family() % 3;
 #ifdef __ANDROID__
@@ -938,7 +938,7 @@ static void prelaunch_tab(float sc) {
         ImGui::PushFont(g_font_menu);
         ImGui::TextColored(ImVec4(1, 0.72f, 0.4f, 1), "Are you sure?");
         ImGui::PopFont();
-        ImGui::Text("This deletes BOTW Recomp's copy of the game files (%.1f GB).", gb);
+        ImGui::Text("This deletes BOTWRecompAndroid's copy of the game files (%.1f GB).", gb);
         ImGui::TextDisabled("Saves and settings are kept. Your own game files aren't touched.");
         if (rt_dev_mode()) {  // (a source checkout: the files are the project's own extracted/)
             bool abs = !g_root.empty() && (g_root[0] == '/' || (g_root.size() > 1 && g_root[1] == ':'));
@@ -948,7 +948,7 @@ static void prelaunch_tab(float sc) {
         ImGui::Spacing();
         if (ImGui::Button("Delete", ImVec2(220 * sc, 0))) {
             bool ok = rt_remove_game_files(g_root.c_str());  // (runtime/paths.c: only what the extraction made)
-            set_job(ok ? "Game files deleted." : "Could not delete the game files (not in BOTW Recomp's data folder?).", !ok);
+            set_job(ok ? "Game files deleted." : "Could not delete the game files (not in BOTWRecompAndroid's data folder?).", !ok);
             g_files_deleted = true, gb = -1;
             ImGui::CloseCurrentPopup();
         }
@@ -1189,7 +1189,7 @@ extern "C" void launcher_run(const char *root) {
             ImGui::SetCursorPos(ImVec2(x0, 120 * s));
             ImGui::PushFont(g_font_title);
             if (page == MAIN) {  // gold to orange, shadowed (not behind the Settings / Game Files windows)
-                const char *t = "BOTW Recompiled";
+                const char *t = "BOTWRecompAndroid";
                 ImVec2 p = ImGui::GetCursorScreenPos();
                 text_fx(ImGui::GetWindowDrawList(), ImGui::GetFont(), ImGui::GetFontSize(), p, IM_COL32(255, 232, 120, 255),
                         IM_COL32(255, 138, 48, 255), t, 3 * s);
@@ -1397,11 +1397,11 @@ extern "C" void launcher_run(const char *root) {
                     dl->AddLine(ImVec2(x + u * 0.35f, cy + u * 0.35f), ImVec2(x + u, cy - u * 0.4f), g, fs * 0.11f);
                 };
                 std::string src_d = "The folder with your own game folders (exefs/romfs) of The Legend of Zelda: Breath "
-                                    "of the Wild for Nintendo Switch, version 1.0.0. The game isn't included with BOTW Recomp.";
+                                    "of the Wild for Nintendo Switch, version 1.0.0. The game isn't included with BOTWRecompAndroid.";
                 if (!src.empty()) src_d += "\n\nChosen: " + src;
                 // the step that's running / its result, under the rows and in the Set up row's explanation
                 const std::string &job_line = job;
-                std::string ex_d = "Copies the game files BOTW Recomp needs and recompiles the game from them. This only "
+                std::string ex_d = "Copies the game files BOTWRecompAndroid needs and recompiles the game from them. This only "
                                    "needs to be done once and may take a while. Your own files aren't changed.";
                 if (!job.empty()) ex_d += "\n\n" + job + (job_hint.empty() ? "" : ".\n" + job_hint);
 
@@ -1436,14 +1436,14 @@ extern "C" void launcher_run(const char *root) {
                     }
                     files_gb = -1;  // (re-measured after a setup)
                 } else {
-                    // DELETE: frees BOTW Recomp's copy (runtime/paths.c removes only what the setup made, only inside
+                    // DELETE: frees BOTWRecompAndroid's copy (runtime/paths.c removes only what the setup made, only inside
                     // the data root). Saves, settings and the user's own files stay.
                     if (files_gb < 0) files_gb = rt_game_files_size(g_root.c_str()) / 1e9;
                     char gb[32];
                     snprintf(gb, sizeof gb, "%.1f GB", files_gb);
                     opt_section("Game files");
                     if (!g_confirm_delete) {
-                        if (opt_action("Delete game files", gb, "Frees the space BOTW Recomp's copy of the game files takes. "
+                        if (opt_action("Delete game files", gb, "Frees the space BOTWRecompAndroid's copy of the game files takes. "
                                        "Saves and settings are kept, and your own game files aren't touched: you can "
                                        "set the game files up again from them.", true))
                             g_confirm_delete = true;
@@ -1453,7 +1453,7 @@ extern "C" void launcher_run(const char *root) {
                             bool ok = rt_remove_game_files(g_root.c_str());
                             status = check_game_files(g_root);
                             if (ok) set_job("Game files deleted.");
-                            else set_job("Couldn't delete the game files", true, "They aren't in BOTW Recomp's data folder, "
+                            else set_job("Couldn't delete the game files", true, "They aren't in BOTWRecompAndroid's data folder, "
                                          "so they were left alone.");
                             if (!status.empty()) g_bg = 0;
                             g_confirm_delete = false, files_gb = -1;
