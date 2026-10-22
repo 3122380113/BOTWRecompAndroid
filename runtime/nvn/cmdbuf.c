@@ -293,6 +293,9 @@ NVN(nvnCommandBufferBindStorageBuffer) {
 }
 // (cmd, stage, first, count, const handle*)
 NVN(nvnCommandBufferBindTextures) { record_copy(c, CMD_BIND_TEXTURES, 4, (uint32_t)A(3) * 8); }
+// BindTexturesDeferred(cmd, stage, first, count, handles): the handles are read when the command runs, not now -
+// BOTW 1.8.2 binds its deferred lighting's inputs this way (normals, albedo, depth, light buffers; SavageWindRecomp)
+NVN(nvnCommandBufferBindTexturesDeferred) { Snap s = snap(c); record(c, CMD_BIND_TEXTURES_DEFERRED, 0, &s); }
 NVN(nvnCommandBufferBindTexture) {
     {   extern int nvn_watch_texid(void);
         if ((int)(A(3) & 0xFFFFF) == nvn_watch_texid())
