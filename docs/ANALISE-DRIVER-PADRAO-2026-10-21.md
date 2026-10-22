@@ -233,3 +233,7 @@ Perfil da thread de render no driver da Qualcomm (simpleperf, platô): ~37 ms po
   Imagem correta nos dois.
 - **Contagem nova no log de estatísticas** (`binds N pipe N sets`), Turnip, por quadro: ~5.100 draws, ~850 trocas de pipeline e ~4.050 binds de descriptor set. Cada objeto tem constantes próprias, então os offsets mudam a cada draw.
 - **O custo de GPU por draw (~2 µs) não mudou.** Timestamps por draw (`LARECOMP_GPUPROF_DRAWS`) dão mediana ~8 µs e mínimo ~4 µs, mas serializam a GPU e não separam o custo do bind. Ficou aberto se vale separar os UBOs (que mudam a cada draw) das texturas em sets próprios.
+- **Experimento (revertido): UBOs em sets próprios.**
+  - **O que foi feito:** os buffers de constantes do jogo foram para os sets 2 e 3, separados das texturas (sets 0 e 1), e os sets de texturas só eram religados quando mudavam.
+  - **Turnip, platô:** binds de set de texturas de ~4.050 → ~910 por quadro, com os UBOs religados a cada draw. A GPU ficou igual: 22,8 ms contra 22,1 ms sem a separação, dentro do ruído.
+  - **Conclusão:** o custo de GPU por draw não está no bind de descriptor sets. O próximo suspeito é o próprio trabalho por draw no shader (por exemplo, as leituras de constantes via `cbr` com `min` por acesso) ou o custo fixo de draw do Turnip.
