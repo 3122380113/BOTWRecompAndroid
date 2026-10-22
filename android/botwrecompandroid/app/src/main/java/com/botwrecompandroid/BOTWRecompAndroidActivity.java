@@ -96,17 +96,20 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
             // the quotes around spaces), e.g. LARECOMP_VK_DRIVER= is the system driver:
             // adb shell am start -n com.botwrecomp.android/com.botwrecompandroid.BOTWRecompAndroidActivity --es env LARECOMP_NO_LAUNCHER=1,LARECOMP_VK_DRIVER=
             String env = getIntent() != null ? getIntent().getStringExtra("env") : null;
+            // Opened again from the recent apps, Android hands back that test launch's intent: keep only which game
+            // version it ran (a scripted input left in it ignored the touch screen - the menu looked frozen)
+            boolean recents = getIntent() != null && (getIntent().getFlags() & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0;
             if (env != null) {  // (a piece without '=' continues the previous value: LARECOMP_GPUPROF_AT=1500,1750)
                 String name = null, value = null;
                 for (String kv : env.trim().split("[,\\s]+")) {
                     int eq = kv.indexOf('=');
                     if (eq > 0) {
-                        if (name != null) setenv(name, value);
+                        if (name != null && (!recents || KEEP_FROM_RECENTS.contains(name))) setenv(name, value);
                         name = kv.substring(0, eq);
                         value = kv.substring(eq + 1);
                     } else if (name != null) value += "," + kv;
                 }
-                if (name != null) setenv(name, value);
+                if (name != null && (!recents || KEEP_FROM_RECENTS.contains(name))) setenv(name, value);
                 // (debugging) the game code built on the phone, out where adb can read it: a crash's host addresses
                 if (env.contains("LARECOMP_EXPORT_GAMELIB")) {
                     File lib = new File(res, "botwgame.so");
@@ -246,6 +249,9 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
     // custom driver that draws garbage (Turnip_v26.3.0-R6 on an Adreno 830: stripes, the menus unreadable) or crashes.
     // Before the driver loads when it starts the app; a running one (a single instance) drops it and starts again.
     static final String SYSTEM_DRIVER = "com.botwrecompandroid.action.SYSTEM_DRIVER";
+    // (android/run_ver.sh: the game version a test launch ran, and its own start without the launcher)
+    static final List<String> KEEP_FROM_RECENTS = Arrays.asList("LARECOMP_DATA_ROOT", "LARECOMP_GAME_LIB",
+            "LARECOMP_SAVE_SEED", "LARECOMP_NO_LAUNCHER");
 
     @Override
     protected void onNewIntent(Intent intent) {
