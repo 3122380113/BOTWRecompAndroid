@@ -15,8 +15,10 @@ TITLE_ID = '01007EF00011E000'
 # build id of main -> game version (the generator and the hooks are tied to one exact build)
 VERSIONS = {
     '2094f152836683a3632c6153fd84ab80': '1.0.0',
+    '8e9978d50bdd20b4c8395a106c27ffde': '1.6.0',  # (the update 01007EF00011E800 v786432, on its own SDK: MODULES_160)
 }
 TARGET = '1.0.0'
+OTHER_SUPPORTED = {'1.6.0'}  # (being brought up: checked, not refused)
 
 # what each module is (from its own build paths and the NEEDED list of main), and how the recompilation treats it
 MODULES = [
@@ -26,6 +28,15 @@ MODULES = [
     ('subsdk1', 'nnDisplay.nss: vi/display', 'HLE'),
     ('subsdk2', 'libcurl.nss: network', 'stub'),
     ('subsdk3', 'multimedia.nss: movie playback (nn::mm)', 'HLE: FFmpeg (runtime/hle/movie.c)'),
+    ('rtld', 'the dynamic loader', 'not used: runtime/loader.c'),
+]
+
+# 1.6.0 ships a newer SDK: NVN, nnDisplay and libcurl are inside nnSdk, and main needs only multimedia.nss and
+# nnSdk.nss (its NEEDED list) - subsdk0 is multimedia, no subsdk1-3
+MODULES_160 = [
+    ('main', "the game: KingSystem (U-King), sead, Havok, Effect/vfx, the game's own code", 'recompiled'),
+    ('sdk', 'nnSdk: the Nintendo SDK, with NVN, display (vi) and libcurl inside', 'recompiled; NVN to be intercepted inside it'),
+    ('subsdk0', 'multimedia.nss: movie playback (nn::mm)', 'HLE: FFmpeg (runtime/hle/movie.c)'),
     ('rtld', 'the dynamic loader', 'not used: runtime/loader.c'),
 ]
 
@@ -51,7 +62,10 @@ def main():
     print(f'dump: {dump}')
     ok = True
 
-    for name, what, how in MODULES:
+    modules = MODULES
+    if os.path.isfile(os.path.join(exefs, 'main')) and VERSIONS.get(Nso(os.path.join(exefs, 'main')).build_id[:32]) == '1.6.0':
+        modules = MODULES_160
+    for name, what, how in modules:
         path = os.path.join(exefs, name)
         if not os.path.isfile(path):
             print(f'  {name:8} MISSING')
@@ -68,6 +82,8 @@ def main():
             if version is None:
                 print(f'  main: unknown build: this project targets v{TARGET}')
                 ok = False
+            elif version in OTHER_SUPPORTED:
+                print(f'  game version: v{version} (being brought up; the builds target v{TARGET})')
             elif version != TARGET:
                 print(f'  main: v{version}, this project targets v{TARGET}')
                 ok = False
