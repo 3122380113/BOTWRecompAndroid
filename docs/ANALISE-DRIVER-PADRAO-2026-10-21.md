@@ -253,3 +253,9 @@ Perfil da thread de render no driver da Qualcomm (simpleperf, platô): ~37 ms po
   - O custo se divide em ~1,6 µs fixos por draw (~5,7 ms) mais ~3 ms de trabalho de vértice.
   - Os binds de set não explicam o custo fixo.
   - **Conclusão:** o custo fixo é do próprio Turnip por draw (estado, busca de vértices), e só cai com menos draws (LOD/distância do jogo) ou com shaders de vértice mais leves.
+- **Vertex shaders do G-buffer (Turnip).** Li o GLSL dos seis programas com mais draws (`LARECOMP_SAVE_MSL=1`).
+  - O trabalho é o do próprio jogo: transformações em FMA, normalizações e, em alguns, skinning por constantes indexadas e leituras de textura no vertex shader.
+  - Não há tabelas `gfind` nem memória global nesses shaders.
+  - O único acréscimo do tradutor por leitura é o `min(layer, textureSize(t, 0).z - 1)` nas texturas array, redundante no Vulkan, que já faz esse clamp ao amostrar.
+  - **Teste:** tirar esse clamp, com A/B alternado e média de 250 quadros: GPU 23,0 / 23,5 / 23,1 ms. Sem efeito; revertido.
+  - **Conclusão:** do lado do tradutor não há o que enxugar por vértice que pese. O que resta na GPU é o trabalho do jogo mais o custo fixo por draw do Turnip.
