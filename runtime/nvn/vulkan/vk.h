@@ -78,6 +78,7 @@ VkSpan vk_readback(uint64_t size);  // host-cached GPU -> CPU staging (read righ
 VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout layout);
 
 // ---- textures (textures.c)
+enum { RS_NONE = 0, RS_SCENE = 1, RS_OUT = 2 };  // render-target scale groups (textures.c)
 typedef struct TexBackend {
     VkImage image;
     VmaAllocation mem;
@@ -89,6 +90,7 @@ typedef struct TexBackend {
     uint64_t data_hash, sample_hash, checked_frame, full_frame;
     uint32_t wgen;  // page write tracking generation at the last upload check (textures.c)
     bool scalable, presented;
+    uint8_t rs_group;  // RS_*: which output scale its allocation follows (textures.c)
     uint64_t touched_frame, frame_cleared;
     uint32_t level_gen;
     float sx, sy;
@@ -105,6 +107,11 @@ typedef struct TexBackend {
 TexBackend *vk_tex(NvnTexture *t, bool for_render);  // backend image (uploads CPU contents unless for_render)
 VkFormat vk_format(uint32_t nvn_format);
 bool vk_format_alpha_one(uint32_t nvn_format);
+bool renderer_texture_scalable(NvnTexture *t);
+uint8_t vk_texture_scale_group(NvnTexture *t);
+void vk_make_scalable_like(NvnTexture *t, NvnTexture *like);  // (a pass's attachment the size of a scaled one)
+void renderer_get_scene_scale(float *sx, float *sy);
+void renderer_set_scene_scale(float sx, float sy);
 // View of t (optionally through an NVN texture view) for rendering or sampling.
 VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool render, int want_textype);
 VkImageView vk_image_view(TexBackend *b, VkImageViewType type, VkFormat fmt, uint32_t lv0, uint32_t nlv, uint32_t ly0,

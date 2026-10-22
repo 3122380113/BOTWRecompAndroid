@@ -468,7 +468,7 @@ static bool toggle(const char *label, bool *v) {
     return ch;
 }
 
-extern "C" void renderer_get_scale(float *sx, float *sy);
+extern "C" void renderer_get_scene_scale(float *sx, float *sy);  // (vulkan/textures.c: the 3D scene's)
 extern "C" int input_pad_family(void);  // runtime/hle/input.c
 extern "C" double output_scale_dynamic_factor(void);
 
@@ -518,12 +518,13 @@ static void tab_display(void) {
         int ri = RES_MATCH_AT;
         for (int i = 0; i < NRES; i++) if (res_mode[i] == g_settings.res_mode) ri = i;
         float sx, sy;
-        renderer_get_scale(&sx, &sy);
+        renderer_get_scene_scale(&sx, &sy);
         char d[400];
-        int n = snprintf(d, sizeof d, "How sharp the 3D image is. Match display: your screen's own resolution. Dynamic: "
-                                      "as sharp as your GPU keeps at full speed. 1x-4x: the Switch's 1080p times that. "
-                                      "75%% / 50%% / 25%%: a share of the display, for slower machines.\n\nRendering at "
-                                      "%.0f x %.0f.", 1920.0 * sx, 1080.0 * sy);
+        int n = snprintf(d, sizeof d, "How sharp the 3D image is (the HUD is always drawn at your screen's resolution). "
+                                      "Match display: your screen's own resolution. Dynamic: as sharp as your GPU keeps at "
+                                      "full speed. 1x-2x: the Switch's 900p times that. 75%% / 50%% / 25%%: a share of the "
+                                      "display, for slower devices.\n\nRendering the 3D image at %.0f x %.0f.",
+                         1600.0 * sx, 900.0 * sy);
         if (g_settings.res_mode == RES_DYNAMIC)
             snprintf(d + n, sizeof d - n, " Dynamic: %.0f%% of the display right now.", output_scale_dynamic_factor() * 100);
         if (opt_choice("Internal resolution", &ri, res, NRES, RES_MATCH_AT, d, false)) g_settings.res_mode = res_mode[ri];

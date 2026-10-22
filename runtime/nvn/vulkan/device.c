@@ -685,6 +685,7 @@ void backend_present(NvnTexture *t) {
         widescreen_present_crop(total_frames, shape, crop, &vx, &vy, &vw, &vh);
         widescreen_set_factor((float)shape);
         renderer_set_scale((float)sx, (float)sy);
+        renderer_set_scene_scale((float)os.scene_sx, (float)os.scene_sy);
         VkCommandBuffer cb = vk_cmd();
         float pv[8] = {renderer_origin_lower_left() ? 1.0f : 0.0f, 0, 0, 0, crop[0], crop[1], crop[2], crop[3]};
         memcpy(g_shot_crop, crop, sizeof crop);

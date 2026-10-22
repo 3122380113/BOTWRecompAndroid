@@ -3,7 +3,8 @@
 #include <stdbool.h>
 
 typedef struct {
-    double sx, sy;             // render-target scale (relative to the game's 1920x1080 sizes)
+    double sx, sy;             // the final image's render-target scale (relative to the game's 1920x1080 sizes)
+    double scene_sx, scene_sy; // the 3D scene's render targets' scale (vulkan/textures.c RS_SCENE)
     double shape;              // window aspect / 16:9 when the camera is widened, else 1
     double vx, vy, vw, vh;     // where the image is drawn in the window (pixels)
 } OutScale;

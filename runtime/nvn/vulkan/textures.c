@@ -225,23 +225,39 @@ static void bc_decode(VkFormat bc, const uint8_t *blocks, uint32_t wb, uint32_t 
 #endif
 
 // ================================================================== output resolution / per-frame clears
-// Same rules as metal.m (see the comments there).
-static float g_rs_x = 1, g_rs_y = 1;
-void renderer_get_scale(float *sx, float *sy) { *sx = g_rs_x; *sy = g_rs_y; }
-void renderer_set_scale(float sx, float sy) { g_rs_x = sx; g_rs_y = sy; }
+// Render targets are allocated at one of two scales (runtime/nvn/output_scale.c sets both every presented frame;
+// the rules come from SavageWindRecomp, which scales BOTW 1.8.2 the same way):
+//   RS_OUT    the game's final image (1920x1080, its halves) and the display images: the screen's resolution, so the
+//             HUD and menus are drawn sharp
+//   RS_SCENE  the 3D scene's targets (1600x900 docked, the game's dynamic sizes down to 1280x720, their fractions):
+//             the internal resolution (Video > Internal resolution)
+static float g_rs[3][2] = {{1, 1}, {1, 1}, {1, 1}};
+void renderer_get_scale(float *sx, float *sy) { *sx = g_rs[RS_OUT][0]; *sy = g_rs[RS_OUT][1]; }
+void renderer_set_scale(float sx, float sy) { g_rs[RS_OUT][0] = sx; g_rs[RS_OUT][1] = sy; }
+void renderer_get_scene_scale(float *sx, float *sy) { *sx = g_rs[RS_SCENE][0]; *sy = g_rs[RS_SCENE][1]; }
+void renderer_set_scene_scale(float sx, float sy) { g_rs[RS_SCENE][0] = sx; g_rs[RS_SCENE][1] = sy; }
 uint64_t renderer_present_count(void);
+static bool rs_stale(const TexBackend *b) {
+    return b->rs_group && (b->sx != g_rs[b->rs_group][0] || b->sy != g_rs[b->rs_group][1]);
+}
 
-// Render targets at the output resolution: LAS's rule (16:9 render targets are the screen's) does not hold for BOTW.
-// With it, BOTW's scene (1600x900) was drawn at 2133x1200 next to unscaled targets of the same size: the image filled
-// 3/4 of the screen, the lens flares grew into blue balls and Link went see-through. Off until BOTW has rules of its
-// own; LARECOMP_SCALE_TARGETS=1 turns LAS's back on (tests), LARECOMP_NO_SCALE still forces it off.
-static bool tex_scalable(const NvnTexture *t) {
+// Which scale a texture takes (RS_*): the game's screen-sized targets are 16:9 2D images or 2D arrays (BOTW renders
+// some half-size passes into layers of 800x450x2 arrays) with the compressible flag (render targets) or the display
+// flag. Everything else keeps its guest size: shadow maps, LUTs, cubemaps, the small odd-sized steps of the bloom and
+// exposure chains (sampled with normalized coordinates, they work at any size). LARECOMP_NO_SCALE=1: none scaled.
+static uint8_t tex_scale_group(const NvnTexture *t) {
     static int on = -1;
-    if (on < 0) on = getenv("LARECOMP_SCALE_TARGETS") && !getenv("LARECOMP_NO_SCALE");
-    if (!on) return false;
-    if (t->target != 1 || t->samples > 1 || !(t->flags & 8) || t->width < 32 || t->height < 16) return false;
+    if (on < 0) on = getenv("LARECOMP_NO_SCALE") == NULL;
+    if (!on) return RS_NONE;
+    if ((t->target != 1 && t->target != 4) || t->samples > 1 || !(t->flags & 9) || t->width < 32 || t->height < 16) return RS_NONE;
     float a = (float)t->width / (float)t->height;
-    return a > 1.74f && a < 1.81f;
+    if (a < 1.74f || a > 1.81f) return RS_NONE;
+    if (t->flags & 1) return RS_OUT;  // NVN_TEXTURE_FLAGS_DISPLAY: the images the game presents
+    for (int k = 0; k < 4; k++)       // the final image's 1920x1080 and its halves (rounded either way)
+        if ((t->width == 1920u >> k || t->width == (1920u + (1u << k) - 1) >> k) &&
+            (t->height == 1080u >> k || t->height == (1080u + (1u << k) - 1) >> k))
+            return RS_OUT;
+    return RS_SCENE;
 }
 
 bool renderer_texture_first_write(NvnTexture *t) {
@@ -263,9 +279,11 @@ void vk_level_change_check(void) {
     }
 }
 
+// (Link's Awakening cleared its scaled scene targets at their first use in each frame. BOTW keeps data in them from
+// frame to frame, as on the Switch, where nothing clears them: opt-in, LARECOMP_FRAME_CLEAR=1.)
 bool renderer_texture_frame_fresh(NvnTexture *t) {
     static int on = -1;
-    if (on < 0) on = getenv("LARECOMP_NO_FRAME_CLEAR") == NULL;
+    if (on < 0) on = getenv("LARECOMP_FRAME_CLEAR") != NULL;
     TexBackend *b = t ? (TexBackend *)t->backend : NULL;
     uint64_t total_frames = renderer_present_count();
     if (!on || !b || !b->scalable || b->frame_cleared == total_frames + 1) return false;
@@ -343,8 +361,9 @@ void vk_collect_dead(void) {
 
 static void create_image(NvnTexture *t, TexBackend *b) {
     VkFmt mf = fmt_of(t->format);
-    b->sx = b->scalable ? g_rs_x : 1;
-    b->sy = b->scalable ? g_rs_y : 1;
+    b->scalable = b->rs_group != RS_NONE;
+    b->sx = g_rs[b->rs_group][0];
+    b->sy = g_rs[b->rs_group][1];
     uint32_t tw = t->width ? t->width : 1, th = t->height ? t->height : 1;
     if (b->scalable) {
         tw = (uint32_t)lroundf(tw * b->sx); th = (uint32_t)lroundf(th * b->sy);
@@ -438,6 +457,11 @@ static void create_image(NvnTexture *t, TexBackend *b) {
                  : t->target == 8 ? VK_IMAGE_VIEW_TYPE_CUBE : t->target == 9 ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY
                  : layers > 1 || t->target == 4 || t->target == 6 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
     vk_image_init_layout(vk_upload_cmd(), b->image, b->aspect);
+    if (b->scalable && !depthfmt) {  // (made again at a new scale: no stale memory in what frames keep)
+        VkClearColorValue zero = {{0}};
+        VkImageSubresourceRange rg = {VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
+        vkCmdClearColorImage(vk_upload_cmd(), b->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &rg);
+    }
     if (depthfmt) {
         // New depth / stencil images start zeroed (as fresh memory reads on Apple GPUs). The game builds its depth
         // pyramid with depth-only copies, so the stencil of those images was never written: whatever the memory
@@ -537,7 +561,7 @@ static void live_remove(TexBackend *b) {
 static TexBackend *tex_backend(NvnTexture *t) {
     TexBackend *b = t->backend;
     if (b) {
-        if (b->scalable && (b->sx != g_rs_x || b->sy != g_rs_y)) {  // output resolution changed: reallocate
+        if (rs_stale(b)) {  // output resolution changed: reallocate
             destroy_image(b);
             create_image(t, b);
         }
@@ -545,7 +569,7 @@ static TexBackend *tex_backend(NvnTexture *t) {
     }
     vk_collect_dead();
     b = calloc(1, sizeof *b);
-    b->scalable = tex_scalable(t);
+    b->rs_group = tex_scale_group(t);
     create_image(t, b);
     t->backend = b;
     live_add(t, b);
@@ -610,6 +634,32 @@ static uint64_t fnv_sample(const uint8_t *p, uint64_t n) {
 
 static pthread_mutex_t pending_lock = PTHREAD_MUTEX_INITIALIZER;
 
+// Guest texels for a scaled image (the CPU filled a render target: the title screen's save pictures): they go into a
+// guest-size image of their own, then a filtered blit brings them to the allocation's size (SavageWindRecomp's).
+static void upload_scaled(VkCommandBuffer cb, TexBackend *b, VkSpan s, VkBufferImageCopy rg, uint32_t gw, uint32_t gh) {
+    VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = b->format,
+                            .extent = {gw, gh, 1}, .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
+                            .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    VkImage img;
+    VmaAllocation mem;
+    if (vmaCreateImage(g_vk.vma, &ci, &ai, &img, &mem, NULL) != VK_SUCCESS) return;
+    vk_image_init_layout(cb, img, VK_IMAGE_ASPECT_COLOR_BIT);
+    uint32_t lv = rg.imageSubresource.mipLevel, layer = rg.imageSubresource.baseArrayLayer;
+    rg.imageSubresource.mipLevel = 0;
+    rg.imageSubresource.baseArrayLayer = 0;
+    rg.imageExtent = (VkExtent3D){gw, gh, 1};
+    vkCmdCopyBufferToImage(cb, s.buf, img, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+    vk_full_barrier(cb);
+    VkImageBlit bl = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .srcOffsets = {{0, 0, 0}, {(int32_t)gw, (int32_t)gh, 1}},
+                      .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, layer, 1},
+                      .dstOffsets = {{0, 0, 0}, {(int32_t)level_w(b, lv), (int32_t)level_h(b, lv), 1}}};
+    bool lin = format_supports(b->format, VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT);
+    vkCmdBlitImage(cb, img, VK_IMAGE_LAYOUT_GENERAL, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &bl, lin ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
+    vk_full_barrier(cb);
+    vk_defer_image(img, mem);
+}
+
 static void upload_pending(TexBackend *b) {
     pthread_mutex_lock(&pending_lock);
     void *px = b->pending_rgba;
@@ -617,13 +667,15 @@ static void upload_pending(TexBackend *b) {
     b->pending_rgba = NULL;
     pthread_mutex_unlock(&pending_lock);
     if (!px) return;
-    if (w > b->width) w = b->width;
-    if (h > b->height) h = b->height;
+    bool scaled = b->scalable && (w != b->width || h != b->height);
+    if (!scaled && w > b->width) w = b->width;
+    if (!scaled && h > b->height) h = b->height;
     VkSpan s = vk_transient_copy(px, (uint64_t)stride * h, 16);
     free(px);
     VkBufferImageCopy rg = {.bufferOffset = s.off, .bufferRowLength = stride / 4,
                             .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
     VkCommandBuffer cb = vk_upload_cmd();
+    if (scaled) { upload_scaled(cb, b, s, rg, w, h); return; }
     vk_dl_note_upload((void *)b->image, rg.imageExtent.width, rg.imageExtent.height, rg.imageSubresource.mipLevel);
                 vkCmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
 }
@@ -790,6 +842,11 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
                                     .imageExtent = {w, b->base_type == VK_IMAGE_VIEW_TYPE_1D || b->base_type == VK_IMAGE_VIEW_TYPE_1D_ARRAY ? 1 : hh,
                                                     b->depth > 1 ? d : 1}};
             if (b->aspect == (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) continue;  // packed D/S: no CPU layout
+            if (b->scalable && b->aspect == VK_IMAGE_ASPECT_COLOR_BIT && b->depth == 1 &&
+                (l.w != level_w(b, lv) || l.h != level_h(b, lv))) {  // (guest-size texels into a scaled allocation)
+                upload_scaled(cb, b, s, rg, l.w, l.h);
+                continue;
+            }
             vk_dl_note_upload((void *)b->image, rg.imageExtent.width, rg.imageExtent.height, rg.imageSubresource.mipLevel);
                 vkCmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
         }
@@ -815,6 +872,20 @@ TexBackend *vk_tex(NvnTexture *t, bool for_render) {
 
 void renderer_mark_gpu_owned(NvnTexture *t) { tex_backend(t)->gpu_owned = true; }
 bool renderer_is_gpu_owned(NvnTexture *t) { return tex_backend(t)->gpu_owned; }
+
+bool renderer_texture_scalable(NvnTexture *t) { return tex_backend(t)->scalable; }
+uint8_t vk_texture_scale_group(NvnTexture *t) { return tex_backend(t)->rs_group; }
+
+// Render at the scale of `like` from now on (another attachment of the same pass): a target drawn into together with
+// scaled ones (its contents so far, kept at the guest size, are dropped: the pass about to run writes it)
+void vk_make_scalable_like(NvnTexture *t, NvnTexture *like) {
+    TexBackend *b = tex_backend(t);
+    uint8_t g = tex_backend(like)->rs_group;
+    if (b->rs_group || !g || (t->target != 1 && t->target != 4) || t->samples > 1) return;  // (a group stays)
+    b->rs_group = g;
+    destroy_image(b);
+    create_image(t, b);
+}
 void backend_pool_written(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
 
 // Host-produced texel data (decoded video, any thread): applied on the render thread at the texture's next use.

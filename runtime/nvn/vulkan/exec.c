@@ -1472,6 +1472,19 @@ static void begin_pass(void) {
         gp_mark(cb, "pass: %d color %ux%u fmt %#x, depth %s", st.rt.ncolor, t0 ? t0->width : 0, t0 ? t0->height : 0,
                 t0 ? t0->format : 0, st.rt.depth ? "yes" : "no");
     }
+    {   // one scale for the pass: attachments the size of a scaled one are scaled too (BOTW's G-buffer mixes
+        // targets the scaling rule takes and ones it does not; the unscaled ones got only part of the pass)
+        NvnTexture *all[9];
+        int n = 0;
+        for (int i = 0; i < st.rt.ncolor && i < 8; i++) if (st.rt.color[i]) all[n++] = st.rt.color[i];
+        if (st.rt.depth) all[n++] = st.rt.depth;
+        for (int i = 0; i < n; i++) {
+            if (!renderer_texture_scalable(all[i])) continue;
+            for (int k = 0; k < n; k++)
+                if (all[k]->width == all[i]->width && all[k]->height == all[i]->height) vk_make_scalable_like(all[k], all[i]);
+            break;
+        }
+    }
     VkRenderingAttachmentInfo ca[8], da = {0}, sa = {0};
     uint32_t w = 0, minw = UINT32_MAX, minh = UINT32_MAX;  // w: first attachment seen
     pass_ncolor = (uint32_t)st.rt.ncolor;
@@ -5851,7 +5864,14 @@ void backend_execute(uint64_t handle) {
 #ifdef __ANDROID__
     game_pending = true;  // (renderer_fence_seq)
 #endif
+    static int log_lists = -1;  // LARECOMP_LOG_LISTS=1: the command lists of one frame in 120 (draws, passes, time)
+    if (log_lists < 0) log_lists = getenv("LARECOMP_LOG_LISTS") != NULL;
+    uint64_t ll_d = stat_draws, ll_p = stat_passes, ll_t = log_lists ? plat_now_ns() : 0;
     exec_list(handle, 0);
+    if (log_lists && renderer_present_count() % 120 == 0)
+        LOG("[lists] frame %llu: list %llx %llu draws %llu passes %.2f ms\n", (unsigned long long)renderer_present_count(),
+            (unsigned long long)handle, (unsigned long long)(stat_draws - ll_d), (unsigned long long)(stat_passes - ll_p),
+            (plat_now_ns() - ll_t) / 1e6);
     PROF_ADD(prof_exec);
     if (prof) cum_exec += SDL_GetTicksNS() - prof_t0_;
     static int sync_submit = -1;

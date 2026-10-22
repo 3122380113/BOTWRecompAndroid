@@ -574,9 +574,20 @@ static const char *RSC2(Ctx *c, int slot, const char *fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(inner, sizeof inner, fmt, ap);
     va_end(ap);
-    if (c->stage == STAGE_VERTEX) { snprintf(o, 1024, "%s", inner); return o; }
+    if (c->stage == STAGE_VERTEX && !c->glsl) { snprintf(o, 1024, "%s", inner); return o; }  // (MSL: no table there)
     c->uses_rscale = true;
     snprintf(o, 1024, "rsc(%s, rscale[%d])", inner, slot + 1);
+    return o;
+}
+
+// Texel offsets are in guest texels: a scaled allocation (render-target scaling) has scale as many per guest texel,
+// so an offset moves the coordinates by offset * scale / allocated size (rscale[1 + slot])
+static const char *off_scale(Ctx *c, int slot, int comps) {
+    static char bufs[4][48];
+    static int bi;
+    char *o = bufs[bi++ & 3];
+    c->uses_rscale = true;
+    snprintf(o, 48, " * rscale[%d].%s", slot + 1, comps == 1 ? "x" : "xy");
     return o;
 }
 
@@ -613,13 +624,13 @@ static void glsl_sample(Ctx *c, char *out, int slot, const char *const *co, cons
     char L[600], xs[1600], P[2000];
     if (lod_kind == 1) snprintf(L, sizeof L, "int(%s)", lod); else strcpy(L, "0");
     if (n == 1) {
-        if (off) snprintf(xs, sizeof xs, "(%s + float((%s).x) / float(tsize%d(%s).x))", co[0], off, slot, L);
+        if (off) snprintf(xs, sizeof xs, "(%s + float((%s).x)%s / float(tsize%d(%s).x))", co[0], off, off_scale(c, slot, 1), slot, L);
         else snprintf(xs, sizeof xs, "%s", co[0]);
     } else if (n == 2) {
-        if (off) snprintf(xs, sizeof xs, "(vec2(%s, %s) + vec2(%s) / vec2(tsize%d(%s).xy))", co[0], co[1], off, slot, L);
+        if (off) snprintf(xs, sizeof xs, "(vec2(%s, %s) + vec2(%s)%s / vec2(tsize%d(%s).xy))", co[0], co[1], off, off_scale(c, slot, 2), slot, L);
         else snprintf(xs, sizeof xs, "vec2(%s, %s)", co[0], co[1]);
     } else {
-        if (off && !cube) snprintf(xs, sizeof xs, "vec3(vec2(%s, %s) + vec2(%s) / vec2(tsize%d(%s).xy), %s)", co[0], co[1], off, slot, L, co[2]);
+        if (off && !cube) snprintf(xs, sizeof xs, "vec3(vec2(%s, %s) + vec2(%s)%s / vec2(tsize%d(%s).xy), %s)", co[0], co[1], off, off_scale(c, slot, 2), slot, L, co[2]);
         else snprintf(xs, sizeof xs, "vec3(%s, %s, %s)", co[0], co[1], co[2]);  // cube lookups take no offset
     }
     const char *extra = NULL;  // separate compare argument (cube array shadow)
@@ -654,7 +665,7 @@ static void glsl_gather(Ctx *c, char *out, int slot, const char *const *co, cons
     int n = cube ? 3 : 2;
     char xs[1600], P[1800];
     if (n == 2) {
-        if (off) snprintf(xs, sizeof xs, "(vec2(%s, %s) + vec2(%s) / vec2(tsize%d(0).xy))", co[0], co[1], off, slot);
+        if (off) snprintf(xs, sizeof xs, "(vec2(%s, %s) + vec2(%s)%s / vec2(tsize%d(0).xy))", co[0], co[1], off, off_scale(c, slot, 2), slot);
         else snprintf(xs, sizeof xs, "vec2(%s, %s)", co[0], co[1]);
     } else {
         snprintf(xs, sizeof xs, "vec3(%s, %s, %s)", co[0], co[1], co[2]);
@@ -1231,16 +1242,11 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         int qt = (int)bits(w, 22, 6);
         uint32_t mask = (uint32_t)bits(w, 31, 4);
         int slot = tex_slot(c, index, -1, false, false);  // the type comes from a sample, if any
-        if (qt == 1 && c->glsl) {  // tsize<slot>() is emitted with the slot's final type
-            if (c->stage != STAGE_VERTEX) {
-                c->uses_rscale = true;
-                sp(&c->body, "    { uint lv = %s; uvec4 q = uvec4(uint(floor(float(tsize%d(int(lv)).x) / rscale[%d].x + 0.5f)), "
-                   "uint(floor(float(tsize%d(int(lv)).y) / rscale[%d].y + 0.5f)), 1u, uint(textureQueryLevels(t%d)));\n",
-                   R(a), slot, slot + 1, slot, slot + 1, slot);
-            } else {
-                sp(&c->body, "    { uint lv = %s; uvec4 q = uvec4(uint(tsize%d(int(lv)).x), uint(tsize%d(int(lv)).y), 1u, uint(textureQueryLevels(t%d)));\n",
-                   R(a), slot, slot, slot);
-            }
+        if (qt == 1 && c->glsl) {  // tsize<slot>() is emitted with the slot's final type (the guest size of scaled ones)
+            c->uses_rscale = true;
+            sp(&c->body, "    { uint lv = %s; uvec4 q = uvec4(uint(floor(float(tsize%d(int(lv)).x) / rscale[%d].x + 0.5f)), "
+               "uint(floor(float(tsize%d(int(lv)).y) / rscale[%d].y + 0.5f)), 1u, uint(textureQueryLevels(t%d)));\n",
+               R(a), slot, slot + 1, slot, slot + 1, slot);
             int n = 0;
             for (int i = 0; i < 4; i++)
                 if (mask & (1u << i)) { c->reg_used[d + n] = 1; sp(&c->body, "      r%d = q[%d];\n", d + n, i); n++; }
@@ -2558,7 +2564,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
                    "return 0u; }\n");
         }
     }
-    if (c->uses_rscale && stage != STAGE_VERTEX) {
+    if (c->uses_rscale) {  // (vertex shaders too: texel fetches from scaled targets)
         sp(&s, "layout(std140, set = %d, binding = 18) uniform RScale { vec4 rscale[%d]; };\n", set,
            key && key->flip_x ? 66 : 65);  // ([65]: mirror mode's render target width)
         info->uses_rscale = true;
