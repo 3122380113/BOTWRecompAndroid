@@ -6,6 +6,9 @@
 
 #include "hle.h"
 #include "input_bind.h"
+#ifdef __ANDROID__
+#include <sys/system_properties.h>
+#endif
 
 #define SETTINGS_FILE settings_file()
 
@@ -46,11 +49,13 @@ Settings g_settings = {
 // The game's own text languages: its RomFS carries these per region (regionUS/USen|USes|USfr, regionEU/EUen|EUes|...,
 // regionJP/JPja, regionKR/KRkr, regionTW/TWch, regionCN/CNch), and the game picks one from the system language it
 // reads back (runtime/services/am.c), exactly as it does on the console. Codes as the Switch reports them.
+// Brazilian Portuguese (regionUS/USpt, Pack/Bootup_USpt.pack) came with the game's v1.8.2 (runtime/language.c in
+// SavageWindRecomp); the older versions are told English instead.
 const char *const g_language_codes[N_LANGUAGES] = {"auto", "ja", "en-US", "es", "fr", "de", "it", "nl", "ru", "ko",
-                                                   "zh-CN", "zh-TW"};
+                                                   "zh-CN", "zh-TW", "pt-BR"};
 const char *const g_language_names[N_LANGUAGES] = {"Auto", "Japanese", "English", "Spanish", "French", "German",
                                                    "Italian", "Dutch", "Russian", "Korean", "Chinese (Simplified)",
-                                                   "Chinese (Traditional)"};
+                                                   "Chinese (Traditional)", "Portuguese (Brazil)"};
 
 // LANG_AUTO: the host's own language (LANG=es_ES.UTF-8 -> es), en-US when it is none of the game's. Linux only:
 // macOS / Windows apps get no locale variables from the system, so Auto is English there (pick one in settings).
@@ -58,24 +63,38 @@ static const char *host_language(void) {
 #ifndef __linux__
     return "en-US";
 #endif
+#ifdef __ANDROID__
+    // (Android: no locale variables; the system's language is a property, "pt-BR", "es-US", "zh-Hant-TW")
+    static char prop[PROP_VALUE_MAX];
+    if (!prop[0] && __system_property_get("persist.sys.locale", prop) <= 0) __system_property_get("ro.product.locale", prop);
+    const char *e = prop;
+#else
     const char *e = getenv("LC_ALL");
+#endif
+#ifndef __ANDROID__
     if (!e || !*e) e = getenv("LC_MESSAGES");
     if (!e || !*e) e = getenv("LANG");
+#endif
     if (!e || !*e || !strcmp(e, "C") || !strcmp(e, "POSIX")) return "en-US";
     char l[8] = {0};
     size_t n = 0;
-    for (const char *p = e; *p && *p != '.' && *p != '@' && *p != '_' && n < sizeof l - 1; p++) l[n++] = *p;
+    for (const char *p = e; *p && *p != '.' && *p != '@' && *p != '_' && *p != '-' && n < sizeof l - 1; p++) l[n++] = *p;
     static const struct { const char *loc, *code; } map[] = {{"ja", "ja"}, {"ko", "ko"}, {"ru", "ru"}, {"nl", "nl"},
                                                              {"de", "de"}, {"it", "it"}, {"fr", "fr"}, {"es", "es"}};
     for (size_t i = 0; i < sizeof map / sizeof *map; i++)
         if (!strcmp(l, map[i].loc)) return map[i].code;
-    if (!strcmp(l, "zh")) return e[n] == '_' && e[n + 1] == 'T' ? "zh-TW" : "zh-CN";  // (TW / HK: traditional)
+    if (!strcmp(l, "zh"))  // (TW / HK, Hant: traditional)
+        return strstr(e, "TW") || strstr(e, "HK") || strstr(e, "Hant") ? "zh-TW" : "zh-CN";
+    if (!strcmp(l, "pt")) return "pt-BR";  // (the only Portuguese the game has)
     return "en-US";
 }
 
 const char *settings_language(void) {
     int i = g_settings.language;
-    return i > LANG_AUTO && i < N_LANGUAGES ? g_language_codes[i] : host_language();
+    const char *code = i > LANG_AUTO && i < N_LANGUAGES ? g_language_codes[i] : host_language();
+    extern int g_game_version;
+    if (!strcmp(code, "pt-BR") && g_game_version && g_game_version < 182) return "en-US";  // (no Portuguese before 1.8.2)
+    return code;
 }
 
 const char *settings_language_name(void) {

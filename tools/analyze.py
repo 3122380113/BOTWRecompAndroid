@@ -46,6 +46,68 @@ def eh_frame_functions(n):
     return starts
 
 
+def uleb128(img, off):
+    v = shift = 0
+    while True:
+        b = img[off]
+        off += 1
+        v |= (b & 0x7F) << shift
+        shift += 7
+        if not b & 0x80:
+            return v, off
+
+
+def eh_frame_extents(n):
+    """[start, end) of every function with an FDE: the address range each one covers. [] if .eh_frame
+    isn't readable."""
+    img, hdr = n.image, n.eh_start
+    if not hdr or hdr >= len(img):
+        return []
+    try:
+        ver, ptr_enc, cnt_enc, tbl_enc = img[hdr:hdr + 4]
+        off = hdr + 4
+        _, sz = read_encoded(img, off, ptr_enc, hdr)
+        off += sz
+        count, sz = read_encoded(img, off, cnt_enc, hdr)
+        off += sz
+        fde_enc = {}  # CIE -> pointer encoding of its FDEs ('R' augmentation)
+        out = []
+        for _ in range(count):
+            loc, sz = read_encoded(img, off, tbl_enc, hdr)
+            off += sz
+            fde, sz = read_encoded(img, off, tbl_enc, hdr)
+            off += sz
+            cie = fde + 4 - struct.unpack_from('<I', img, fde + 4)[0]
+            if cie not in fde_enc:
+                o = cie + 8
+                version = img[o]
+                aug_end = img.index(b'\0', o + 1)
+                aug = img[o + 1:aug_end].decode()
+                _, o = uleb128(img, aug_end + 1)  # code alignment
+                _, o = uleb128(img, o)  # data alignment (sleb128: same length)
+                o = o + 1 if version == 1 else uleb128(img, o)[1]  # return address register
+                enc = 0
+                if aug.startswith('z'):
+                    _, o = uleb128(img, o)
+                    for ch in aug[1:]:
+                        if ch == 'R':
+                            enc = img[o]
+                            o += 1
+                        elif ch == 'P':
+                            o += 1 + read_encoded(img, o + 1, img[o], 0)[1]
+                        elif ch == 'L':
+                            o += 1
+                fde_enc[cie] = enc
+            enc = fde_enc[cie]
+            pc, sz = read_encoded(img, fde + 8, enc, 0)
+            size, _ = read_encoded(img, fde + 8 + sz, enc & 0x0F, 0)  # (the range: same format, absolute)
+            if pc == loc:
+                out.append((loc, loc + size))
+        return out
+    except (ValueError, IndexError, struct.error):
+        return []
+
+
 def discover(n):
     text_lo, text_hi = n.text[0], n.text[0] + n.text[1]
     in_text = lambda a: text_lo <= a < text_hi and a % 4 == 0

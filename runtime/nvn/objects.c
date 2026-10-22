@@ -5,6 +5,7 @@
 
 #include "../kernel.h"
 #include "../settings.h"
+#include "../framepace.h"
 #include "nvn.h"
 
 void renderer_sync(void);
@@ -75,9 +76,41 @@ NVN(nvnDeviceWaitForError) {
     RET(0);
 }
 NVN(nvnDeviceSetDebugLabel) { (void)c; }
+// NVNdeviceInfo -> value as the NVN 55.15 driver in BOTW 1.8.2's sdk answers (SavageWindRecomp, MIT): a constant
+// table, with what a Tegra X1 reports for the per-device entries. BOTW 1.8.2 creates its graphics system only when
+// the device reports 55.15 or later, and reads entries past NVN 53's (82, 85, 92: default command, compute and
+// queue control memory sizes).
+static uint32_t device_integer_v55(uint32_t which) {
+    static const uint32_t v[] = {
+        [0] = 55, [1] = 15,
+        [2] = 14, [3] = 0x10000, [4] = 0x100, [5] = 8, [6] = 0x10, [7] = 4, [8] = 0x10, [9] = 0x20,
+        [10] = 0x10, [11] = 4, [12] = 4, [13] = 4, [14] = 0x10, [15] = 0x20, [16] = 0x20,
+        [17] = 0x100, [18] = 0x100, [19] = 4, [20] = 8, [21] = 0x200, [22] = 0x100,
+        [23] = 256, [24] = 256,                    // scratch memory scale factors (per device)
+        [25] = 0x1000, [26] = 0x20000, [27] = 0x10, [28] = 0x600, [29] = 0x400, [30] = 0x40, [31] = 0x600,
+        [32] = 0xffff, [33] = 0xffff, [34] = 0xffff, [35] = 8, [36] = 0x100000, [37] = 0x1000, [38] = 0x10,
+        [39] = 0x1000, [40] = 1, [41] = 1, [42] = 1,
+        [43] = 0x40000,                            // L2 size (per device)
+        [44] = 0xf, [45] = 0x800, [46] = 1, [47] = 1, [48] = 0x10, [49] = 5, [50] = 1, [51] = 8, [52] = 8,
+        [53] = 4, [54] = 0x20,
+        [55] = 256, [56] = 0x20,                   // (per device)
+        [57] = 0x80,
+        [58] = 0x1000, [59] = 1,                   // memory pool page size, zero-filled unmapped pages (per device)
+        [60] = 4,
+        [61] = 16384, [62] = 0x8000000, [63] = 2048, [64] = 16384, [65] = 16384,  // texture limits (per device)
+        [66] = 1, [67] = 1, [68] = 1, [69] = 1, [70] = 5, [71] = 1, [72] = 1, [73] = 1, [74] = 1, [75] = 1,
+        [76] = 1, [77] = 0x10, [78] = 0x400, [79] = 0x20, [80] = 0x1000, [81] = 0x10000, [82] = 0x10000,
+        [83] = 0x100, [84] = 0x4000, [85] = 0x40000, [86] = 0x1000, [87] = 1, [88] = 4, [89] = 2, [90] = 0,
+        [91] = 0x1000, [92] = 0x4000, [93] = 0x1000, [94] = 0x80, [95] = 0x20, [96] = 0xffff, [97] = 1,
+        [98] = 0x20,                               // (per device)
+        [99] = 0x100, [100] = 0x10, [101] = 0xffff, [102] = 0xffff, [103] = 0x100, [104] = 0x3fff,
+    };
+    return which < sizeof v / sizeof *v ? v[which] : 0;
+}
+
 NVN(nvnDeviceGetInteger) {
     uint32_t which = (uint32_t)A(1);
-    uint32_t v = device_integer(which);
+    uint32_t v = g_game_version == 182 ? device_integer_v55(which) : device_integer(which);
     if (g_game_version == 160 && which <= 1) v = which ? 311 : 53;  // (v1.6.0 needs NVN 53.x, minor >= 311: its SDK 7.3.2)
     *(int32_t *)AP(2) = (int32_t)v;
 }
@@ -755,26 +788,27 @@ NVN(nvnTextureCompare) { RET(texture_same_desc(HOST(NvnTexture, A(0)), HOST(NvnT
 NVN(nvnTextureFlushTexels) { (void)c; }
 NVN(nvnTextureInvalidateTexels) { (void)c; }
 
-// Texture views (our layout of the 0x28-byte guest struct)
-#define TV(T, off) G(T, A(0), off)
-NVN(nvnTextureViewSetDefaults) { memset(AP(0), 0, 0x28); }
-NVN(nvnTextureViewSetLevels) { TV(uint32_t, 0) |= 1; TV(uint16_t, 4) = (uint16_t)A(1); TV(uint16_t, 6) = (uint16_t)A(2); }
-NVN(nvnTextureViewSetLayers) { TV(uint32_t, 0) |= 2; TV(uint16_t, 8) = (uint16_t)A(1); TV(uint16_t, 10) = (uint16_t)A(2); }
-NVN(nvnTextureViewSetFormat) { TV(uint32_t, 0) |= 4; TV(uint32_t, 12) = (uint32_t)A(1); }
+// Texture views: an NvnTextureView (nvn.h) packed into the guest's 16-byte NVNtextureView. Clearing NVN 53's 0x28
+// bytes here zeroed the next sead heap block's list link in BOTW 1.8.2, and its free list then looped.
+#define TV ((NvnTextureView *)AP(0))
+NVN(nvnTextureViewSetDefaults) { memset(AP(0), 0, sizeof(NvnTextureView)); }
+NVN(nvnTextureViewSetLevels) { TV->setmask |= 1; TV->base_level = (uint8_t)A(1); TV->num_levels = (uint8_t)A(2); }
+NVN(nvnTextureViewSetLayers) { TV->setmask |= 2; TV->min_layer = (uint16_t)A(1); TV->num_layers = (uint16_t)A(2); }
+NVN(nvnTextureViewSetFormat) { TV->setmask |= 4; TV->format = (uint16_t)A(1); }
 NVN(nvnTextureViewSetSwizzle) {
-    NvnTextureView *v = AP(0);
-    v->setmask |= 8;
-    v->swizzle[0] = (uint8_t)A(1); v->swizzle[1] = (uint8_t)A(2); v->swizzle[2] = (uint8_t)A(3); v->swizzle[3] = (uint8_t)A(4);
+    TV->setmask |= 8;
+    for (int i = 0; i < 4; i++) TV->swizzle[i] = (uint8_t)A(1 + i);
 }
-NVN(nvnTextureViewSetDepthStencilMode) { NvnTextureView *v = AP(0); v->setmask |= 16; v->ds_mode = (uint32_t)A(1); }
-NVN(nvnTextureViewSetTarget) { NvnTextureView *v = AP(0); v->setmask |= 32; v->target = (uint32_t)A(1); }
-NVN(nvnTextureViewGetLevels) { *(int32_t *)AP(1) = TV(uint16_t, 4); *(int32_t *)AP(2) = TV(uint16_t, 6); RET(TV(uint32_t, 0) & 1); }
-NVN(nvnTextureViewGetLayers) { *(int32_t *)AP(1) = TV(uint16_t, 8); *(int32_t *)AP(2) = TV(uint16_t, 10); RET(!!(TV(uint32_t, 0) & 2)); }
-NVN(nvnTextureViewGetFormat) { *(uint32_t *)AP(1) = TV(uint32_t, 12); RET(!!(TV(uint32_t, 0) & 4)); }
-NVN(nvnTextureViewGetSwizzle) { NvnTextureView *v = AP(0); for (int i = 0; i < 4; i++) *(uint32_t *)AP(1 + i) = v->swizzle[i]; RET(!!(v->setmask & 8)); }
-NVN(nvnTextureViewGetDepthStencilMode) { NvnTextureView *v = AP(0); *(uint32_t *)AP(1) = v->ds_mode; RET(!!(v->setmask & 16)); }
-NVN(nvnTextureViewGetTarget) { NvnTextureView *v = AP(0); *(uint32_t *)AP(1) = v->target; RET(!!(v->setmask & 32)); }
-NVN(nvnTextureViewCompare) { RET(memcmp(AP(0), AP(1), 0x1C) == 0); }
+NVN(nvnTextureViewSetDepthStencilMode) { TV->setmask |= 16; TV->ds_mode = (uint8_t)A(1); }
+NVN(nvnTextureViewSetTarget) { TV->setmask |= 32; TV->target = (uint8_t)A(1); }
+NVN(nvnTextureViewGetLevels) { *(int32_t *)AP(1) = TV->base_level; *(int32_t *)AP(2) = TV->num_levels; RET(TV->setmask & 1); }
+NVN(nvnTextureViewGetLayers) { *(int32_t *)AP(1) = TV->min_layer; *(int32_t *)AP(2) = TV->num_layers; RET(!!(TV->setmask & 2)); }
+NVN(nvnTextureViewGetFormat) { *(uint32_t *)AP(1) = TV->format; RET(!!(TV->setmask & 4)); }
+NVN(nvnTextureViewGetSwizzle) { for (int i = 0; i < 4; i++) *(uint32_t *)AP(1 + i) = TV->swizzle[i]; RET(!!(TV->setmask & 8)); }
+NVN(nvnTextureViewGetDepthStencilMode) { *(uint32_t *)AP(1) = TV->ds_mode; RET(!!(TV->setmask & 16)); }
+NVN(nvnTextureViewGetTarget) { *(uint32_t *)AP(1) = TV->target; RET(!!(TV->setmask & 32)); }
+NVN(nvnTextureViewCompare) { RET(memcmp(AP(0), AP(1), sizeof(NvnTextureView)) == 0); }
+// (From SavageWindRecomp, MIT; a smaller layout fits the older NVN versions too.)
 
 NVN(nvnTextureWriteTexels) {
     // (texture, view, region, data) -- linear data into block-linear storage
@@ -794,13 +828,23 @@ NVN(nvnTextureReadTexels) { LOG("[nvn] ReadTexels not implemented\n"); (void)c; 
 NVN(nvnTextureReadTexelsStrided) { LOG("[nvn] ReadTexelsStrided not implemented\n"); (void)c; }
 
 // ================================================================== samplers
-// SamplerBuilder: device@0 then an NvnSamplerDesc at 8
-#define SD ((NvnSamplerDesc *)(AP(0) + 8))
+// SamplerBuilder: the game's NVNsamplerBuilder is only 64 bytes in NVN 55 (BOTW 1.8.2 builds one on the stack
+// right below its saved frame pointer), so the builder state is packed to fit; an NvnSamplerDesc (72 bytes) after the
+// device pointer overwrote the caller's frame. (SavageWindRecomp, MIT; it fits the older versions' larger builder.)
+typedef struct {
+    uint64_t device;
+    uint8_t min_filter, mag_filter, wrap[3], compare_mode, compare_func, reduction;
+    float lod_min, lod_max, lod_bias, max_aniso;
+    float border[4];
+} NvnSamplerBuilderState;
+_Static_assert(sizeof(NvnSamplerBuilderState) <= 64, "NVNsamplerBuilder is 64 bytes");
+#define SD ((NvnSamplerBuilderState *)AP(0))
 NVN(nvnSamplerBuilderSetDevice) { G(uint64_t, A(0), 0) = A(1); }
 NVN(nvnSamplerBuilderSetDefaults) {
-    NvnSamplerDesc *d = SD;
-    memset(d, 0, offsetof(NvnSamplerDesc, backend));
-    d->min_filter = 0; d->mag_filter = 0;
+    NvnSamplerBuilderState *d = SD;
+    uint64_t device = d->device;
+    memset(d, 0, sizeof *d);
+    d->device = device;
     d->wrap[0] = d->wrap[1] = d->wrap[2] = 1;  // REPEAT
     d->lod_min = 0; d->lod_max = 1000.0f; d->max_aniso = 1.0f;
     d->compare_func = 4;
@@ -847,21 +891,53 @@ NVN(nvnSamplerBuilderGetMaxAnisotropy) { RETF(SD->max_aniso); }
 NVN(nvnSamplerBuilderGetReductionFilter) { RET(SD->reduction); }
 NVN(nvnSamplerBuilderGetLodSnap) { RETF(0); }
 
+static NvnSamplerDesc sampler_desc_from_builder(const NvnSamplerBuilderState *b) {
+    NvnSamplerDesc d = {0};
+    d.min_filter = b->min_filter; d.mag_filter = b->mag_filter;
+    for (int i = 0; i < 3; i++) d.wrap[i] = b->wrap[i];
+    d.compare_mode = b->compare_mode; d.compare_func = b->compare_func; d.reduction = b->reduction;
+    d.lod_min = b->lod_min; d.lod_max = b->lod_max; d.lod_bias = b->lod_bias; d.max_aniso = b->max_aniso;
+    memcpy(d.border, b->border, sizeof d.border);
+    return d;
+}
+
+// An NVNsampler holds a pointer to its description, and the game copies sampler objects by value (registering the
+// copy later): descriptions are shared per distinct setting and never freed, so a copy made before the original was
+// finalized still names its own settings (a malloc'd description per object left the copy a dangling pointer: the
+// Shrine of Resurrection's walkway was clamped instead of repeated in some runs - SavageWindRecomp, MIT).
+static pthread_mutex_t sampler_lock = PTHREAD_MUTEX_INITIALIZER;
+static NvnSamplerDesc *sampler_intern(const NvnSamplerDesc *want) {
+    static NvnSamplerDesc **tab;
+    static size_t n, cap;
+    pthread_mutex_lock(&sampler_lock);
+    NvnSamplerDesc *d = NULL;
+    for (size_t i = 0; i < n && !d; i++)
+        if (!memcmp(tab[i], want, offsetof(NvnSamplerDesc, backend))) d = tab[i];
+    if (!d) {
+        if (n == cap) { cap = cap ? cap * 2 : 64; tab = realloc(tab, cap * sizeof *tab); }
+        d = malloc(sizeof *d);
+        *d = *want;
+        tab[n++] = d;
+    }
+    pthread_mutex_unlock(&sampler_lock);
+    return d;
+}
+
 NVN(nvnSamplerInitialize) {
-    NvnSamplerDesc *d = malloc(sizeof *d);
-    *d = *(NvnSamplerDesc *)(AP(1) + 8);
-    d->backend = NULL;
+    NvnSamplerDesc want = sampler_desc_from_builder(AP(1));
+    NvnSamplerDesc *d = sampler_intern(&want);
     if (getenv("LARECOMP_LOG_SMPREG"))
         LOG("[nvn] SamplerInitialize object %llx wrap %u %u %u min %u (old host %p, lr %llx, thread %d)\n", (unsigned long long)A(0), d->wrap[0], d->wrap[1],
             d->wrap[2], d->min_filter, (void *)HOST(NvnSamplerDesc, A(0)), (unsigned long long)c->x[30], (int)gettid());
     SET_HOST(A(0), d);
-    // The guest object (96 bytes in NVN) holds the descriptor too, after our pointer: games compare sampler objects -
-    // BOTW's agl reuses the pool slot of an equal one it already registered; with only stale bytes there, the eft's
-    // mirrored lens-streak sampler matched the clamped default and took its slot (the hard-edged streaks and haze).
-    memcpy(AP(0) + 8, d, offsetof(NvnSamplerDesc, backend));
+    // The guest object holds the settings too, after our pointer: games compare sampler objects - BOTW's agl reuses
+    // the pool slot of an equal one it already registered; with only stale bytes there, the eft's mirrored lens-streak
+    // sampler matched the clamped default and took its slot (the hard-edged streaks and haze). The packed builder state
+    // (56 bytes after its device pointer): 64 in all, NVN 55's sampler object (96 in older NVN).
+    memcpy(AP(0) + 8, (const uint8_t *)AP(1) + 8, sizeof(NvnSamplerBuilderState) - 8);
     RET(1);
 }
-NVN(nvnSamplerFinalize) { free(HOST(NvnSamplerDesc, A(0))); SET_HOST(A(0), 0); }
+NVN(nvnSamplerFinalize) { SET_HOST(A(0), 0); }  // (the description is shared: never freed)
 NVN(nvnSamplerSetDebugLabel) { (void)c; }
 #define SMP HOST(NvnSamplerDesc, A(0))
 NVN(nvnSamplerGetMinMagFilter) { *(uint32_t *)AP(1) = SMP->min_filter; *(uint32_t *)AP(2) = SMP->mag_filter; }
@@ -1013,7 +1089,10 @@ NVN(nvnSamplerPoolRegisterSampler) {
 NVN(nvnSamplerPoolRegisterSamplerBuilder) {
     NvnDescPool *d = HOST(NvnDescPool, A(0));
     int id = (int)A(1);
-    if (id >= 0 && id < d->count) register_sampler(&((NvnSamplerDesc *)d->entries)[id], (const NvnSamplerDesc *)(AP(2) + 8));
+    if (id >= 0 && id < d->count) {
+        NvnSamplerDesc from = sampler_desc_from_builder(AP(2));  // (the packed builder state)
+        register_sampler(&((NvnSamplerDesc *)d->entries)[id], &from);
+    }
     if (getenv("LARECOMP_LOG_SMPREG") && id >= 0 && id < d->count)
         LOG("[nvn] RegisterSamplerBuilder %d (lr %llx)\n", id, (unsigned long long)c->x[30]);
 }
@@ -1116,6 +1195,12 @@ NVN(nvnWindowSetPresentInterval) {
     static int force = -1;  // (LARECOMP_FORCE_INTERVAL=<n>, diagnosis: the game's choice replaced - slow motion if it doesn't fit)
     if (force < 0) force = getenv("LARECOMP_FORCE_INTERVAL") ? atoi(getenv("LARECOMP_FORCE_INTERVAL")) : 0;
     if (force > 0) c->x[1] = (uint64_t)force;
+    // BOTW 1.8.2's frame loop (lr 0x7001012a34, x19 = the framework; [fw+0x234] the highest interval it may pick):
+    // never 3 while the runtime sets the game's clock (runtime/hle/framepace.c), as SavageWindRecomp does
+    if (framepace_on() && c->x[30] == GUEST_LO + 0x1012a34ull) {
+        uint32_t *max_iv = (uint32_t *)(uintptr_t)(c->x[19] + 0x234);
+        if (*max_iv > 2) *max_iv = 2;
+    }
     if ((int)A(1) != g_present_interval)
         LOG("[pace] the game sets its present interval to %d (lr %llx, x19 %llx [+0x240] %lld)\n", (int)A(1),
             (unsigned long long)c->x[30], (unsigned long long)c->x[19],
@@ -1154,7 +1239,17 @@ NVN(nvnQueuePresentTexture) {
         extern __thread uint64_t g_blocked_ns;  // (kernel.c: the pacer counts this as idle, not frame work)
         int cap = g_settings.fps_mode == 2 ? 1 : 2;
         int n = w->interval > cap ? w->interval : cap;
-        if (on) {
+        if (on && framepace_on()) {
+            // BOTW 1.8.2 (runtime/hle/framepace.c): a steady grid at the chosen frame rate, whatever the interval;
+            // after a long frame the grid starts again. framepace.c sets the game's clock from when it went out.
+            static uint64_t last;
+            uint64_t period = framepace_period_ns(), target = last + period, t0 = plat_now_ns();
+            if (last && t0 < target) plat_sleep_until_ns(target);
+            uint64_t t1 = plat_now_ns();
+            g_blocked_ns += t1 - t0;
+            last = last && t1 < target + period ? target : t1;
+            framepace_presented(last, last == target);
+        } else if (on) {
             uint64_t want = last_vs + (uint64_t)n, t0 = plat_now_ns();
             while (__atomic_load_n(&g_vsync_count, __ATOMIC_RELAXED) < want) usleep(500);
             g_blocked_ns += plat_now_ns() - t0;

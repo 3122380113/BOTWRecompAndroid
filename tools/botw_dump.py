@@ -16,9 +16,10 @@ TITLE_ID = '01007EF00011E000'
 VERSIONS = {
     '2094f152836683a3632c6153fd84ab80': '1.0.0',
     '8e9978d50bdd20b4c8395a106c27ffde': '1.6.0',  # (the update 01007EF00011E800 v786432, on its own SDK: MODULES_160)
+    'de0b6ac4efc1dda7f80f6d7598ec7a7d': '1.8.2',  # (the update v1048576: SDK 20.5.6, NVN 55.15, Brazilian Portuguese)
 }
 TARGET = '1.0.0'
-OTHER_SUPPORTED = {'1.6.0'}  # (being brought up: checked, not refused)
+OTHER_SUPPORTED = {'1.6.0', '1.8.2'}  # (being brought up: checked, not refused)
 
 # what each module is (from its own build paths and the NEEDED list of main), and how the recompilation treats it
 MODULES = [
@@ -63,8 +64,8 @@ def main():
     ok = True
 
     modules = MODULES
-    if os.path.isfile(os.path.join(exefs, 'main')) and VERSIONS.get(Nso(os.path.join(exefs, 'main')).build_id[:32]) == '1.6.0':
-        modules = MODULES_160
+    if os.path.isfile(os.path.join(exefs, 'main')) and             VERSIONS.get(Nso(os.path.join(exefs, 'main')).build_id[:32]) in ('1.6.0', '1.8.2'):
+        modules = MODULES_160  # (1.8.2: the same layout, on SDK 20)
     for name, what, how in modules:
         path = os.path.join(exefs, name)
         if not os.path.isfile(path):

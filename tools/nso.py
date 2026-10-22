@@ -4,8 +4,18 @@ import sys
 import lz4.block
 
 DT_NULL, DT_NEEDED, DT_PLTRELSZ, DT_HASH, DT_STRTAB, DT_SYMTAB, DT_RELA, DT_RELASZ = 0, 1, 2, 4, 5, 6, 7, 8
-DT_STRSZ, DT_JMPREL, DT_RELACOUNT = 10, 23, 0x6FFFFFF9
+DT_STRSZ, DT_JMPREL, DT_RELRSZ, DT_RELR, DT_RELACOUNT, DT_GNU_HASH = 10, 23, 35, 36, 0x6FFFFFF9, 0x6FFFFEF5
 R_AARCH64_ABS64, R_AARCH64_GLOB_DAT, R_AARCH64_JUMP_SLOT, R_AARCH64_RELATIVE = 257, 1025, 1026, 1027
+
+
+def header(path):
+    """Segment placement from the NSO header alone (nothing decompressed): what tools/layout.py needs."""
+    with open(path, 'rb') as f:
+        raw = f.read(0x100)
+    assert raw[:4] == b'NSO0', path
+    seg = [struct.unpack_from('<II', raw, 0x14 + i * 0x10) for i in range(3)]  # (mem_off, size)
+    return {'text': seg[0], 'rodata': seg[1], 'data': seg[2], 'bss': struct.unpack_from('<I', raw, 0x3C)[0],
+            'build_id': raw[0x40:0x60].hex()}
 
 
 class Nso:
@@ -58,12 +68,10 @@ class Nso:
         strtab = dyn.get(DT_STRTAB, 0)
         self.strtab = strtab
         self.needed = [self.cstr(strtab + n) for n in needed]
-        # dynsym count from DT_HASH nchain
         self.syms = []
-        if DT_HASH in dyn and DT_SYMTAB in dyn:
-            nchain = self.u32(dyn[DT_HASH] + 4)
+        if DT_SYMTAB in dyn:
             st = dyn[DT_SYMTAB]
-            for i in range(nchain):
+            for i in range(self._nsyms()):
                 o = st + i * 24
                 name, info, other, shndx = struct.unpack_from('<IBBH', self.image, o)
                 value, size = struct.unpack_from('<QQ', self.image, o + 8)
@@ -75,6 +83,38 @@ class Nso:
                 for i in range(n):
                     r_off, r_info, r_add = struct.unpack_from('<QQq', self.image, b + i * 24)
                     self.relocs.append((r_off, r_info & 0xFFFFFFFF, r_info >> 32, r_add))
+        # DT_RELR (packed relative relocations, newer SDKs): an even entry is the offset of a word to relocate, an
+        # odd one a bitmap of the 63 words after the last one; the addend is the word itself (runtime/loader.c)
+        if DT_RELR in dyn:
+            where = None
+            for i in range(dyn.get(DT_RELRSZ, 0) // 8):
+                e = self.u64(dyn[DT_RELR] + 8 * i)
+                if not e & 1:
+                    self.relocs.append((e, R_AARCH64_RELATIVE, 0, self.u64(e)))
+                    where = e + 8
+                    continue
+                for b in range(63):
+                    if (e >> (b + 1)) & 1:
+                        self.relocs.append((where + 8 * b, R_AARCH64_RELATIVE, 0, self.u64(where + 8 * b)))
+                where += 63 * 8
+
+    def _nsyms(self):
+        """Number of dynsym entries: DT_HASH's nchain, else the end of DT_GNU_HASH's last chain (newer SDK modules,
+        e.g. sdk and subsdk0 of BOTW 1.8.2, have only the GNU table)."""
+        if DT_HASH in self.dyn:
+            return self.u32(self.dyn[DT_HASH] + 4)
+        if DT_GNU_HASH not in self.dyn:
+            return 0
+        h = self.dyn[DT_GNU_HASH]
+        nbuckets, symoffset, bloom_size = self.u32(h), self.u32(h + 4), self.u32(h + 8)
+        buckets = h + 16 + 8 * bloom_size
+        last = max((self.u32(buckets + 4 * i) for i in range(nbuckets)), default=0)
+        if last < symoffset:  # (no hashed symbols)
+            return symoffset
+        chain = buckets + 4 * nbuckets
+        while not self.u32(chain + 4 * (last - symoffset)) & 1:
+            last += 1
+        return last + 1
 
     def cstr(self, off):
         end = self.image.index(b'\0', off)

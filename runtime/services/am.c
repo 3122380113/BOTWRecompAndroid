@@ -38,6 +38,17 @@ static uint32_t new_event(void) {
     return r;
 }
 
+// An event already signaled (BOTW 1.8.2 waits on GetHealthWarningDisappearedSystemEvent before its first frame;
+// without a handle it polled handle 0 forever - SavageWindRecomp)
+static uint32_t new_signaled_event(void) {
+    uint32_t w, r;
+    KEvent *ev = kernel_create_event_pair(&w, &r);
+    pthread_mutex_lock(&g_klock);
+    kernel_signal(ev);
+    pthread_mutex_unlock(&g_klock);
+    return r;
+}
+
 #define UNHANDLED(iface) LOG("[am] %s cmd %u (unhandled, ok)\n", iface, req->cmd)
 
 static int am_handheld(void) {
@@ -68,6 +79,7 @@ static void common_state_getter(Service *s, IpcReq *req, IpcResp *resp) {
     case 8: OUT(uint8_t, 0) = 0; resp_size(resp, 1); break;   // GetBootMode
     case 9: OUT(uint8_t, 0) = 1; resp_size(resp, 1); break;   // GetCurrentFocusState: in focus
     case 13: case 61: resp->copy_handles[resp->ncopy++] = new_event(); break;
+    case 50: OUT(uint8_t, 0) = 0; resp_size(resp, 1); break;  // IsVrModeEnabled (BOTW 1.8.2 asks every frame)
     case 60: {  // GetDefaultDisplayResolution
         int w = getenv("LARECOMP_DISPLAY_W") ? atoi(getenv("LARECOMP_DISPLAY_W")) : 1920;
         LOG("[am] GetDefaultDisplayResolution -> %dx1080\n", w);
@@ -164,11 +176,16 @@ static void application_functions(Service *s, IpcReq *req, IpcResp *resp) {
         snprintf(lang, sizeof lang, "%s", settings_language());
         memcpy(resp->data, lang, 8);
         resp_size(resp, 8);
+        LOG("[am] GetDesiredLanguage -> %s\n", lang);
         break;
     }
-    case 23: memcpy(resp->data, g_game_version == 160 ? "1.6.0" : "1.0.0", 6); resp_size(resp, 0x10); break;  // GetDisplayVersion
+    case 23:  // GetDisplayVersion
+        memcpy(resp->data, g_game_version == 182 ? "1.8.2" : g_game_version == 160 ? "1.6.0" : "1.0.0", 6);
+        resp_size(resp, 0x10);
+        break;
     case 40: OUT(uint8_t, 0) = 0; resp_size(resp, 1); break;  // NotifyRunning
     case 130: case 140: resp->copy_handles[resp->ncopy++] = new_event(); break;
+    case 210: resp->copy_handles[resp->ncopy++] = new_signaled_event(); break;  // GetHealthWarningDisappearedSystemEvent
     default: UNHANDLED("IApplicationFunctions");
     }
 }

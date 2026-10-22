@@ -24,8 +24,10 @@ import struct
 
 PATCHES = {}      # v1.0.0 (main build 2094f152...)
 PATCHES_160 = {}  # v1.6.0 (main build 8e9978d5...): the same fixes at that build's addresses
+PATCHES_182 = {}  # v1.8.2 (main build de0b6ac4...)
 BUILD_1_0_0 = '2094f152836683a3632c6153fd84ab80'
 BUILD_1_6_0 = '8e9978d50bdd20b4c8395a106c27ffde'
+BUILD_1_8_2 = 'de0b6ac4efc1dda7f80f6d7598ec7a7d'
 
 
 def _clustered_dl_heap_null(gen, a):
@@ -79,6 +81,30 @@ def _frame_ticks_160(gen, a):
 PATCHES_160[0x700161495c] = _frame_ticks_160
 
 
+# v1.8.2, frame rate (runtime/hle/framepace.c; SavageWindRecomp's patches, MIT): the runtime paces the frames at the
+# present and sets the game's clock. The frame loop's vsync wait (sead framework, 0x7000d811fc; only the first frames
+# after start-up come here) is skipped (the game's own runs with LARECOMP_FRAMEPACE=0). ksys::VFR::updateInterval
+# (x19 = VFR) has just set the interval ratio the game's time step comes from: the runtime puts the frame's real length
+# there, before the time multipliers and the deltas are worked out from it.
+def _frame_wait_182(gen, a):
+    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    assert w == 0xa9bd7bfd, hex(w)  # stp x29, x30, [sp, #-0x30]!
+    return ('{ extern int rt_frame_wait(void); if (rt_frame_wait()) return; '
+            'uint64_t ea = c->sp - 0x30; ST64(ea, c->x[29]); ST64(ea + 8, c->x[30]); c->sp = ea; }'
+            f'  /* {a:#x}: stp x29, x30, [sp, #-0x30]! (frame wait; tools/patches.py) */')
+
+
+def _vfr_ratio_182(gen, a):
+    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    assert w == 0xb9407a68, hex(w)  # ldr w8, [x19, #0x78]
+    return ('{ extern void rt_vfr_update(uint64_t); rt_vfr_update(c->x[19]); c->x[8] = LD32(c->x[19] + 0x78); }'
+            f'  /* {a:#x}: ldr w8, [x19, #0x78] (VFR: interval ratio; tools/patches.py) */')
+
+
+PATCHES_182[0x7000d811fc] = _frame_wait_182
+PATCHES_182[0x70014092f4] = _vfr_ratio_182
+
+
 def patches_for(build_id):
     """The patches for a module, by its build id (sdk and anything unknown: none)."""
-    return {BUILD_1_0_0: PATCHES, BUILD_1_6_0: PATCHES_160}.get(build_id[:32], {})
+    return {BUILD_1_0_0: PATCHES, BUILD_1_6_0: PATCHES_160, BUILD_1_8_2: PATCHES_182}.get(build_id[:32], {})

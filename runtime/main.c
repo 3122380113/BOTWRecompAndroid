@@ -36,6 +36,18 @@ static void module_init(Cpu *c, Module *m) {
 static void rtld_init_sdk(Cpu *c) { module_init(c, &g_modules[1]); }
 static void rtld_init_main(Cpu *c) { module_init(c, &g_modules[0]); }
 
+// Newer SDKs (BOTW 1.8.2's) also take x4, called if nnMain returns, before nninitFinalizeSdkModule and nnosQuickExit:
+// the finalizers of what x3 set up - DT_FINI, else the fini_array backwards (SavageWindRecomp, MIT)
+static void rtld_fini_main(Cpu *c) {
+    Module *m = &g_modules[0];
+    LOG("nnMain returned: fini %s\n", m->name);
+    if (m->fini) { guest_call(c, m->fini); return; }
+    for (uint64_t i = m->fini_array_sz / 8; i-- > 0;) {
+        uint64_t fn = ((uint64_t *)m->fini_array)[i];
+        if (fn) guest_call(c, fn);
+    }
+}
+
 static void call_sym(Cpu *c, const char *name, bool required) {
     uint64_t a = loader_find_symbol(name);
     if (!a) {
@@ -182,17 +194,22 @@ static void boot(const char *root) {
     }
     LOG("main thread: prio %d, stack 0x%x\n", prio, stack_size);
 
-    uint64_t start = loader_find_symbol("_ZN2nn4init5StartEmmPFvvES2_");
+    // nn::init::Start(thread_handle, args_region, init_sdk, init_main[, fini_main]): with x4 in newer SDKs (1.8.2)
+    uint64_t start = loader_find_symbol("_ZN2nn4init5StartEmmPFvvES2_S2_");
+    bool has_fini = start != 0;
+    if (!start) start = loader_find_symbol("_ZN2nn4init5StartEmmPFvvES2_");
     if (!start) {  // an older SDK: rtld's own startup sequence
         LOG("no nn::init::Start: the older SDK's startup (rtld_start_legacy)\n");
         KThread *t = kernel_create_main_thread(hle_register("<rtld_start_legacy>", rtld_start_legacy), stack_size, prio);
-        kernel_run_main(t, 0, t->handle, 0, 0);
+        kernel_run_main(t, 0, t->handle, 0, 0, 0);
         return;
     }
     uint64_t init_fn = hle_register("<rtld_init_sdk>", rtld_init_sdk);
     uint64_t fini_fn = hle_register("<rtld_init_main>", rtld_init_main);
     KThread *t = kernel_create_main_thread(start, stack_size, prio);
-    kernel_run_main(t, t->handle, 0, init_fn, fini_fn);  // nn::init::Start(thread_handle, args_region, init, fini)
+    uint64_t fini_main = has_fini ? hle_register("<rtld_fini_main>", rtld_fini_main) : 0;
+    LOG("nn::init::Start at %llx (%s)\n", (unsigned long long)start, has_fini ? "init, init, fini" : "init, init");
+    kernel_run_main(t, t->handle, 0, init_fn, fini_fn, fini_main);
 }
 
 int main(int argc, char **argv) {

@@ -1,6 +1,6 @@
 """Generate C for a whole NSO module.
 
-Usage: gen.py <name> <nso> <base> <outdir> [--hle hle_symbols.txt] [--chunk N] [--simd asm|c]
+Usage: gen.py <name> <nso> <base> <outdir> [--hle hle_symbols.txt] [--chunk N] [--simd asm|c] [--dyn-base]
 
 --simd: FP/SIMD/CRC32 as AArch64 inline asm (default on arm64 hosts) or portable C (default elsewhere).
 """
@@ -9,6 +9,7 @@ import bisect
 import os
 import platform
 import re
+import shutil
 import struct
 import sys
 import time
@@ -17,10 +18,10 @@ from collections import Counter
 import unicorn as uc
 from unicorn import arm64_const as A
 
-from analyze import eh_frame_functions
+from analyze import eh_frame_extents, eh_frame_functions
 import lifter
 from lifter import CANON, Insn, Lifter, Unsupported, bits, emit_asm_batch, gaddr, hx, sext
-from nso import Nso, R_AARCH64_RELATIVE
+from nso import Nso, R_AARCH64_JUMP_SLOT, R_AARCH64_RELATIVE
 
 SCRATCH_MEM = 0x7300000000
 
@@ -32,6 +33,17 @@ def sext26(w):
 
 def fname(a):
     return f'f_{a:x}'
+
+
+SETJMP_SYMS = ('setjmp', '_setjmp', '__setjmp')
+
+
+def setjmp_call(t, ret):
+    """A call to the guest setjmp. The recompiled code can't resume in the middle of a function, where the guest
+    longjmp returns to, so the call gets a host setjmp in the C function of the caller (runtime/hle/setjmp.c):
+    the guest longjmp (HLE) restores the registers the guest setjmp saved and jumps back here with x0 set."""
+    return (f'{{ jmp_buf *hb_ = rt_setjmp_slot(c, c->x[0]); '
+            f'if (!setjmp(*hb_)) {{ c->x[30] = {gaddr(ret)}; {fname(t)}(c); }} }}')
 
 
 def sanitize(sym):
@@ -52,12 +64,45 @@ class Module:
         self.cache = {}
         self.stats = Counter()
         self.mu = None
+        # the functions as compiled: discovery may split one into several C functions, a jump table spans all of it
+        self.fdes = sorted((base + a, base + b) for a, b in eh_frame_extents(n) if b > a)
+        self.fde_starts = [a for a, _ in self.fdes]
+        self.jt_cache = {}
+        self.setjmps = self.setjmp_targets()
 
     def in_text(self, a):
         return self.lo <= a < self.hi and a % 4 == 0
 
+    def fde(self, a):
+        """(start, end) of the eh_frame function holding a, or None (code without unwind info)."""
+        i = bisect.bisect_right(self.fde_starts, a) - 1
+        if i >= 0 and a < self.fdes[i][1]:
+            return self.fdes[i]
+        return None
+
     def word(self, a):
         return self.words[(a - self.lo) // 4]
+
+    def setjmp_targets(self):
+        """Addresses whose call is a call to setjmp: the function itself (a module defining it) and the PLT stubs
+        bound to it (adrp x16; ldr x17, [x16, #o]; add x16, x16, #o; br x17 through a JUMP_SLOT slot of it)."""
+        n, b = self.nso, self.base
+        out = {b + v for s, info, shndx, v, size in n.syms if shndx and s in SETJMP_SYMS}
+        slots = {b + off for off, typ, si, add in n.relocs
+                 if typ == R_AARCH64_JUMP_SLOT and si < len(n.syms) and n.syms[si][0] in SETJMP_SYMS}
+        if not slots:
+            return out
+        for a in range(self.lo, self.hi - 12, 4):
+            w = self.word(a)
+            if (w & 0x9F00001F) != 0x90000010 or self.word(a + 12) != 0xD61F0220:  # adrp x16 ... br x17
+                continue
+            ld = self.word(a + 4)
+            if (ld & 0xFFC003FF) != 0xF9400211:  # ldr x17, [x16, #imm]
+                continue
+            page = sext(((w >> 29) & 3) | ((w >> 5) & 0x7FFFF) << 2, 21) << 12
+            if (a & ~0xFFF) + page + ((ld >> 10) & 0xFFF) * 8 in slots:
+                out.add(a)
+        return out
 
     def lift(self, a):
         ins = self.cache.get(a)
@@ -94,15 +139,31 @@ class Module:
             mu.mem_write(self.base, bytes(n.image))
             mu.mem_map(SCRATCH_MEM, 0x100000)
             mu.reg_write(A.UC_ARM64_REG_CPACR_EL1, 0x300000)
+
+            # a load before the index is set (often the one that fetches the index) can go through a register
+            # nothing set: it reads zeros instead of stopping the emulation
+            def zero_page(mu, access, addr, size, value, data):
+                try:
+                    mu.mem_map(addr & ~0xFFF, 0x1000)
+                except uc.UcError:
+                    return False
+                return True
+            mu.hook_add(uc.UC_HOOK_MEM_READ_UNMAPPED | uc.UC_HOOK_MEM_WRITE_UNMAPPED, zero_page)
             self.mu = mu
         return self.mu
 
     def jump_table(self, br_pc, entry, end):
-        """Resolve `br xN` targets from a bounds-checked jump table, or None."""
-        r = self._jump_table_fallthrough(br_pc, entry, end)
-        if r is None:
-            r = self._jump_table_taken(br_pc, entry, end)
-        return r
+        """Resolve `br xN` targets from a bounds-checked jump table, or None. The table's base, its index
+        math and its targets can be anywhere in the function the br belongs to (its eh_frame range), also
+        outside the piece entry..end that discovery made of it; code without an FDE is just entry..end."""
+        lo, hi = self.fde(br_pc) or (entry, end)
+        key = (br_pc, lo, hi)
+        if key not in self.jt_cache:  # (discovery scans a piece again each time it is split)
+            r = self._jump_table_fallthrough(br_pc, lo, hi)
+            if r is None:
+                r = self._jump_table_taken(br_pc, lo, hi)
+            self.jt_cache[key] = r
+        return self.jt_cache[key]
 
     def _index_regs(self, start, at, idx):
         """The index register plus registers holding the same value in start..at: sources it was
@@ -135,148 +196,115 @@ class Module:
         for r in regs:
             mu.reg_write(A.UC_ARM64_REG_X0 + r if r < 29 else A.UC_ARM64_REG_X29, i)
 
-    def _emulate_table(self, br_pc, entry, end, start, idx, count, set_at):
-        """Run start..br for each index value (set at address set_at), collect targets."""
+    def _sets_flags(self, a):
+        ins = self.lift(a)
+        if ins.kind == 'asm':
+            return ins.asm.flags
+        return ins.kind == 'op' and re.search(r'\b(adds|subs|adcs|sbcs|logic)\d+\(|nzcv', ins.code) is not None
+
+    def _guard_cmp(self, guard, lo):
+        """The `cmp idx, #imm` that sets the flags a bounds check at guard tests, or None. Only straight-line
+        code without other flag writes may come in between (cbz/tbz included: the compiler interleaves them)."""
+        a = guard - 4
+        while a >= lo and guard - a <= 4 * 12:
+            w = self.word(a)
+            if (w & 0x7F80001F) == 0x7100001F:  # SUBS (imm) with Rd = zr, i.e. CMP #imm
+                return None if bits(w, 22, 1) else a
+            if self.lift(a).kind not in ('op', 'asm', 'bcond') or self._sets_flags(a):
+                return None
+            a -= 4
+        return None
+
+    def _emulate_table(self, br_pc, lo, hi, start, set_at, idx_regs, count):
+        """Run start..br once per index value (set in idx_regs on reaching set_at) and collect the br
+        targets, which must lie in lo..hi. The window is straight-line code where a conditional branch falls
+        through (the in-bounds path). First replays the address materialization (ADRP/ADR/ADD-imm) from the
+        function entry lo, so table bases computed before loops or branches are known."""
         mu = self.emu()
         rn = bits(self.word(br_pc), 5, 5)
-
-        def step_to(frm, to):
-            pc = frm
-            for _ in range(64):
-                if pc == to:
-                    return True
-                mu.emu_start(pc, 0, count=1)
-                pc = mu.reg_read(A.UC_ARM64_REG_PC)
-            return False
-
         targets = []
         try:
+            for r in range(29):
+                mu.reg_write(A.UC_ARM64_REG_X0 + r, SCRATCH_MEM + 0x80000)
+            mu.reg_write(A.UC_ARM64_REG_SP, SCRATCH_MEM + 0x80000)
+            for a in range(lo, start, 4):
+                w = self.word(a)
+                if (w & 0x1F000000) == 0x10000000 or (w & 0xFF800000) == 0x91000000:
+                    mu.emu_start(a, 0, count=1)
+            ctx = mu.context_save()  # (the replay doesn't depend on the index: once per table)
             for i in range(count):
-                for r in range(29):
-                    mu.reg_write(A.UC_ARM64_REG_X0 + r, SCRATCH_MEM + 0x80000)
-                mu.reg_write(A.UC_ARM64_REG_SP, SCRATCH_MEM + 0x80000)
-                a2 = entry
-                while a2 < start:
-                    w2 = self.word(a2)
-                    if (w2 & 0x1F000000) == 0x10000000 or (w2 & 0xFF800000) == 0x91000000:
-                        mu.emu_start(a2, 0, count=1)
-                    a2 += 4
-                if set_at != start and not step_to(start, set_at):
-                    return None
-                self._set_index(mu, [idx], i)
-                if not step_to(set_at, br_pc):
-                    return None
+                mu.context_restore(ctx)
+                for a in range(start, br_pc, 4):
+                    if a == set_at:
+                        self._set_index(mu, idx_regs, i)
+                    k = self.lift(a).kind
+                    if k == 'bcond':
+                        continue
+                    if k not in ('op', 'asm'):
+                        return None
+                    mu.emu_start(a, 0, count=1)  # (single steps: Unicorn's `until` is unreliable mid translation block)
                 t = mu.reg_read(A.UC_ARM64_REG_X0 + rn if rn < 29 else
                                 (A.UC_ARM64_REG_X29 if rn == 29 else A.UC_ARM64_REG_X30))
-                if not (entry <= t < end) or t % 4:
+                if not (lo <= t < hi) or t % 4:
                     return None
                 targets.append(t)
         except uc.UcError:
             return None
+        if count > 1 and len(set(targets)) == 1:  # (the index set wasn't the one the table is read with)
+            return None
         return sorted(set(targets))
 
-    def _jump_table_taken(self, br_pc, entry, end):
+    def _jump_table_taken(self, br_pc, lo, hi):
         """Form: cmp idx, #N ; b.ls/b.lo table ... table: <address math> ; br"""
         # start of the block holding the br
         s = br_pc
-        while s - 4 >= entry and br_pc - (s - 4) <= 4 * 12 and self.lift(s - 4).kind in ('op', 'asm'):
+        while s - 4 >= lo and br_pc - (s - 4) <= 4 * 12 and self.lift(s - 4).kind in ('op', 'asm'):
             s -= 4
-        for g in range(entry, end, 4):
+        for g in range(lo, hi, 4):
             w = self.word(g)
             if (w & 0xFF000010) != 0x54000000 or bits(w, 0, 4) not in (9, 3):
                 continue
             t = g + sext(bits(w, 5, 19), 19) * 4
             if t != s:
                 continue
-            cw = self.word(g - 4) if g - 4 >= entry else 0
-            if (cw & 0x7F80001F) != 0x7100001F or bits(cw, 22, 1):
+            cmp = self._guard_cmp(g, lo)
+            if cmp is None:
                 continue
-            limit = bits(cw, 10, 12)
+            limit = bits(self.word(cmp), 10, 12)
             count = limit + 1 if bits(w, 0, 4) == 9 else limit
             if count <= 0 or count > 4096:
                 continue
-            return self._emulate_table(br_pc, entry, end, s, bits(cw, 5, 5), count, s)
+            return self._emulate_table(br_pc, lo, hi, s, s, [bits(self.word(cmp), 5, 5)], count)
         return None
 
-    def _jump_table_fallthrough(self, br_pc, entry, end):
-        rn = bits(self.word(br_pc), 5, 5)
-        # find the guarding b.hi / b.hs and its cmp, scanning backwards
+    def _jump_table_fallthrough(self, br_pc, lo, hi):
+        """Form: cmp idx, #N ; b.hi/b.hs default ; <address math> ; br"""
+        # find the guarding b.hi / b.hs, scanning backwards
         a = br_pc - 4
-        guard = cmp = None
-        while a >= entry and br_pc - a <= 4 * 16:
+        guard = None
+        while a >= lo and br_pc - a <= 4 * 32:
             w = self.word(a)
             if (w & 0xFF000010) == 0x54000000 and bits(w, 0, 4) in (8, 2):
                 guard = a
                 break
-            if self.lift(a).kind in ('b', 'bl', 'blr', 'br', 'ret', 'trap'):
+            if self.lift(a).kind not in ('op', 'asm', 'bcond'):
                 return None
             a -= 4
         if guard is None:
             return None
-        a = guard - 4
-        while a >= entry and guard - a <= 4 * 8:
-            w = self.word(a)
-            # SUBS (imm) with Rd = zr, i.e. CMP #imm
-            if (w & 0x7F80001F) == 0x7100001F:
-                cmp = a
-                break
-            if self.lift(a).kind != 'op':
-                return None
-            a -= 4
+        cmp = self._guard_cmp(guard, lo)
         if cmp is None:
             return None
         w = self.word(cmp)
-        if bits(w, 22, 1):
-            return None
         limit = bits(w, 10, 12)
         count = limit + 1 if bits(self.word(guard), 0, 4) == 8 else limit
         if count <= 0 or count > 4096:
             return None
-        idx = bits(w, 5, 5)
         # window start: back from cmp to the first control-flow instruction
         start = cmp
-        while start - 4 >= entry and cmp - (start - 4) <= 4 * 12 and self.lift(start - 4).kind in ('op', 'asm'):
+        while start - 4 >= lo and cmp - (start - 4) <= 4 * 12 and self.lift(start - 4).kind in ('op', 'asm'):
             start -= 4
-        idx_regs = self._index_regs(start, cmp, idx)
-        mu = self.emu()
-        targets = []
-
-        def step_to(frm, to):
-            # single-step: Unicorn's `until` is unreliable mid translation-block
-            pc = frm
-            for _ in range(64):
-                if pc == to:
-                    return True
-                mu.emu_start(pc, 0, count=1)
-                pc = mu.reg_read(A.UC_ARM64_REG_PC)
-            return False
-
-        try:
-            for i in range(count):
-                for r in range(29):
-                    mu.reg_write(A.UC_ARM64_REG_X0 + r, SCRATCH_MEM + 0x80000)
-                mu.reg_write(A.UC_ARM64_REG_SP, SCRATCH_MEM + 0x80000)
-                # replay address materialization (ADRP/ADR/ADD-imm) from the function entry, so table
-                # bases computed before loops or branches are known
-                a2 = entry
-                while a2 < start:
-                    w2 = self.word(a2)
-                    if (w2 & 0x1F000000) == 0x10000000 or (w2 & 0xFF800000) == 0x91000000:
-                        mu.emu_start(a2, 0, count=1)
-                    a2 += 4
-                if not step_to(start, cmp):
-                    return None
-                self._set_index(mu, idx_regs, i)
-                if not step_to(cmp, br_pc):
-                    return None
-                t = mu.reg_read(A.UC_ARM64_REG_X0 + rn if rn < 29 else
-                                (A.UC_ARM64_REG_X29 if rn == 29 else A.UC_ARM64_REG_X30))
-                if not (entry <= t < end) or t % 4:
-                    return None
-                targets.append(t)
-        except uc.UcError:
-            return None
-        return sorted(set(targets))
+        return self._emulate_table(br_pc, lo, hi, start, cmp, self._index_regs(start, cmp, bits(w, 5, 5)), count)
 
     # ------------------------------------------------------------ functions
 
@@ -316,18 +344,44 @@ class Module:
                 jt = self.jump_table(a, entry, end)
                 if jt:
                     tables[a] = jt
-                    labels.update(jt)
-                    self.stats['jumptables'] += 1
-                elif self.computed_target(a, entry):
+                    # (a target outside this piece of a split function is a boundary, reached by a tail call)
+                    for t in jt:
+                        (labels if entry <= t < end else ext).add(t)
+                elif self.computed_target(a, (self.fde(a) or (entry,))[0]):
                     # unresolved table jump: allow jumping to any instruction of the function
                     tables[a] = 'all'
-                    self.stats['br_all_labels'] += 1
-                else:
-                    self.stats['br_dispatch'] += 1
             terminated = ins.kind in ('b', 'br', 'ret', 'trap')
         if not terminated and end < self.hi:
             ext.add(end)
         return labels, ext, tables
+
+    def render_single(self, ins, a, jump, refs):
+        """C for one lifted instruction (no batching); used for patch variants."""
+        k = ins.kind
+        if k == 'asm':
+            return [emit_asm_batch([ins.asm])]
+        if k in ('op', 'trap'):
+            return [ins.code]
+        if k == 'b':
+            return [jump(ins.target)]
+        if k == 'bcond':
+            return [f'if ({ins.cond}) {{ {jump(ins.target)} }}']
+        if k == 'bl':
+            t = ins.target
+            if t in self.setjmps:
+                refs.add(t)
+                return [setjmp_call(t, a + 4)]
+            if self.in_text(t):
+                refs.add(t)
+                return [f'c->x[30] = {gaddr(a + 4)}; {fname(t)}(c);']
+            return [f'c->x[30] = {gaddr(a + 4)}; c->pc = {gaddr(t)}; rt_dispatch(c);']
+        if k == 'blr':
+            return [f'c->pc = {ins.target}; c->x[30] = {gaddr(a + 4)}; rt_dispatch(c);']
+        if k == 'br':
+            return [f'c->pc = {ins.target}; __attribute__((musttail)) return rt_dispatch(c);']
+        if k == 'ret':
+            return ['return;']
+        raise Unsupported(k)
 
     def emit_function(self, entry, end, labels, tables, hle):
         out = [f'void {fname(entry)}(Cpu *c) {{']
@@ -390,7 +444,10 @@ class Module:
                 out.append(f'    if ({ins.cond}) {{ {jump(ins.target)} }}')
             elif k == 'bl':
                 t = ins.target
-                if self.in_text(t):
+                if t in self.setjmps:
+                    refs.add(t)
+                    out.append('    ' + setjmp_call(t, a + 4))
+                elif self.in_text(t):
                     refs.add(t)
                     out.append(f'    c->x[30] = {gaddr(a + 4)}; {fname(t)}(c);')
                 else:
@@ -403,7 +460,7 @@ class Module:
                     out.append(f'    c->pc = {ins.target}; goto L_dispatch;')
                     continue
                 if jt:
-                    cases = ' '.join(f'case {case_key(t)}: goto L_{t:x};' for t in jt)
+                    cases = ' '.join(f'case {case_key(t)}: {jump(t)}' for t in jt)
                     out.append(f'    switch ({switch_on(ins.target)}) {{ {cases} default: break; }}')
                     out.append(f'    c->pc = {ins.target}; goto L_dispatch;')
                     continue
@@ -445,6 +502,8 @@ def switch_on(expr):
 def rebase_patch(code):
     return PATCH_ADDR.sub(lambda m: gaddr(int(m.group(1), 16)), code) if lifter.DYN_BASE else code
 
+
+
 def write_if_changed(path, text):
     """Leaves unchanged chunks untouched so make only recompiles what a patch affected."""
     try:
@@ -457,34 +516,8 @@ def write_if_changed(path, text):
         f.write(text)
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument('name')
-    ap.add_argument('nso')
-    ap.add_argument('base', type=lambda s: int(s, 0))
-    ap.add_argument('outdir')
-    ap.add_argument('--hle')
-    ap.add_argument('--chunk', type=int, default=1500)  # functions per file at most
-    ap.add_argument('--chunk-bytes', type=int, default=1500000)  # and about this much C (even compile times)
-    ap.add_argument('--big-fn', type=int, default=100000)  # bytes of C from which a function gets its own file
-    ap.add_argument('--limit', type=int, default=0)
-    ap.add_argument('--simd', choices=('asm', 'c'),
-                    default='asm' if platform.machine().lower() in ('arm64', 'aarch64') else 'c')
-    ap.add_argument('--dyn-base', action='store_true',
-                    help='Android: guest addresses relative to the window the runtime picks (lifter.gaddr)')
-    args = ap.parse_args()
-    lifter.DYN_BASE = args.dyn_base
-
-    t0 = time.time()
-    m = Module(args.name, args.nso, args.base, args.simd)
-    starts = m.boundaries()
-    hle = {}
-    if args.hle and os.path.exists(args.hle):
-        want = {l.strip() for l in open(args.hle) if l.strip() and not l.startswith('#')}
-        for name, info, shndx, value, size in m.nso.syms:
-            if shndx and name in want:
-                hle[args.base + value] = name
-
+def discover(m, starts):
+    """Partition text into functions: address -> (end, labels, jump tables). Returns (entries, rounds)."""
     # Partition text into functions; any branch/call target outside its function becomes a new
     # boundary (splitting the containing function) until a fixpoint is reached.
     start_set = set(starts)
@@ -494,7 +527,12 @@ def main():
             if m.in_text(t):
                 start_set.add(t)
     # Code addresses materialized in registers (callbacks, vtables built at runtime): ADR, or
-    # ADRP followed shortly by ADD on the same register.
+    # ADRP followed shortly by ADD on the same register. One inside the function that takes it is a label
+    # there instead, a jump table's base: as a boundary it would split the function away from its table.
+    def own_label(pc, t):
+        f = m.fde(pc)
+        return f is not None and f[0] < t < f[1]
+
     adrp_regs = {}
     for i, w in enumerate(m.words):
         pc = m.lo + i * 4
@@ -502,7 +540,7 @@ def main():
             imm = ((w >> 5) & 0x7FFFF) << 2 | ((w >> 29) & 3)
             if imm & (1 << 20):
                 imm -= 1 << 21
-            if m.in_text(pc + imm):
+            if m.in_text(pc + imm) and not own_label(pc, pc + imm):
                 start_set.add(pc + imm)
         elif (w & 0x9F000000) == 0x90000000:  # ADRP
             imm = ((w >> 5) & 0x7FFFF) << 2 | ((w >> 29) & 3)
@@ -513,7 +551,7 @@ def main():
             rn, rd = (w >> 5) & 31, w & 31
             if rn in adrp_regs and i - adrp_regs[rn][1] <= 8:
                 t = adrp_regs[rn][0] + ((w >> 10) & 0xFFF)
-                if m.in_text(t):
+                if m.in_text(t) and not own_label(pc, t):
                     start_set.add(t)
     scanned = {}
     rounds = 0
@@ -535,19 +573,38 @@ def main():
         end = order[i + 1] if i + 1 < len(order) else m.hi
         labels, ext, tables = scanned[(a, end)]
         entries[a] = (end, labels, tables)
-    print(f'{args.name}: {len(starts)} boundaries, {len(entries)} functions, {rounds} rounds, {dict(m.stats)}, '
+        # indirect branches of the final functions: jump tables resolved, all-labels fallback, plain dispatch
+        for t in tables.values():
+            m.stats['br_all_labels' if t == 'all' else 'jumptables'] += 1
+        m.stats['br_dispatch'] += sum(m.lift(x).kind == 'br' for x in range(a, end, 4)) - len(tables)
+    return entries, rounds
+
+
+def generate(name, nso, base, outdir, opts):
+    t0 = time.time()
+    m = Module(name, nso, base, opts.simd)
+    starts = m.boundaries()
+    hle = {}
+    if opts.hle and os.path.exists(opts.hle):
+        want = {l.strip() for l in open(opts.hle) if l.strip() and not l.startswith('#')}
+        for sym, info, shndx, value, size in m.nso.syms:
+            if shndx and sym in want:
+                hle[base + value] = sym
+
+    entries, rounds = discover(m, starts)
+    print(f'{name}: {len(starts)} boundaries, {len(entries)} functions, {rounds} rounds, {dict(m.stats)}, '
           f'{time.time() - t0:.0f}s', file=sys.stderr)
 
-    os.makedirs(args.outdir, exist_ok=True)
+    os.makedirs(outdir, exist_ok=True)
     order = sorted(entries)
-    if args.limit:
-        order = order[:args.limit]
+    if opts.limit:
+        order = order[:opts.limit]
     nchunks = 0
     ci = 0
     pending = None  # (address, lines, refs) of a big function that starts the next file
     while ci < len(order) or pending:
         body, refs, size, fns = [], set(), 0, []
-        while (pending or ci < len(order)) and len(fns) < args.chunk and size < args.chunk_bytes:
+        while (pending or ci < len(order)) and len(fns) < opts.chunk and size < opts.chunk_bytes:
             if pending:
                 a, lines, r = pending
                 pending = None
@@ -559,49 +616,72 @@ def main():
                 r = getattr(m, '_refs', set())
                 m._refs = set()
             n = sum(len(l) + 1 for l in lines)
-            if n > args.big_fn and fns:  # (a big function gets a file of its own: they compile in parallel)
+            if n > opts.big_fn and fns:  # (a big function gets a file of its own: they compile in parallel)
                 pending = (a, lines, r)
                 break
             body += lines
             size += n
             fns.append(a)
             refs |= r
-            if n > args.big_fn:
+            if n > opts.big_fn:
                 break
-        path = os.path.join(args.outdir, f'{args.name}_{nchunks:03d}.c')
+        path = os.path.join(outdir, f'{name}_{nchunks:03d}.c')
         text = ['#include "cpu.h"\n' + ('#include "simd.h"\n' if m.lifter.sc else '')]
-        if args.dyn_base:
+        if opts.dyn_base:
             text += ['extern __attribute__((visibility("hidden"))) uint64_t botwgame_gb;\n']
+        if any('rt_setjmp_slot(' in l for l in body):
+            text += ['#include <setjmp.h>\njmp_buf *rt_setjmp_slot(Cpu *c, uint64_t gbuf);\n']
         text += [f'void {fname(r)}(Cpu *c);\n' for r in sorted(refs)]
         text += [f'void {sanitize(hle[a])}(Cpu *c);\n' for a in sorted(set(hle) & set(fns))]
         text += ['\n'.join(body), '\n']
         write_if_changed(path, ''.join(text))
         nchunks += 1
         # (the start screen's setup reads these for its progress bar: runtime/gamebuild.c)
-        print(f'{args.name}: progress {ci}/{len(order)} files {nchunks}', file=sys.stderr, flush=True)
-    for fn in os.listdir(args.outdir):  # an earlier run's extra chunks
-        mm = re.fullmatch(re.escape(args.name) + r'_(\d{3})\.c', fn)
+        print(f'{name}: progress {ci}/{len(order)} files {nchunks}', file=sys.stderr, flush=True)
+    for fn in os.listdir(outdir):  # an earlier run's extra chunks
+        mm = re.fullmatch(re.escape(name) + r'_(\d{3})\.c', fn)
         if mm and int(mm.group(1)) >= nchunks:
-            os.remove(os.path.join(args.outdir, fn))
+            os.remove(os.path.join(outdir, fn))
     import io
     with io.StringIO() as f:
         f.write('#include "cpu.h"\n')
         for a in order:
             f.write(f'void {fname(a)}(Cpu *c);\n')
-        f.write(f'const uint64_t {args.name}_fn_addrs[] = {{\n')
-        f.write(',\n'.join(hx(a) for a in order))
+        # (a module without functions still gets its arrays: C has no empty initializer)
+        f.write(f'const uint64_t {name}_fn_addrs[] = {{\n')
+        f.write(',\n'.join(hx(a) for a in order) or '0')
         f.write('};\n')
-        f.write(f'const GuestFn {args.name}_fn_ptrs[] = {{\n')
-        f.write(',\n'.join(fname(a) for a in order))
+        f.write(f'const GuestFn {name}_fn_ptrs[] = {{\n')
+        f.write(',\n'.join(fname(a) for a in order) or '0')
         f.write('};\n')
-        f.write(f'const uint64_t {args.name}_fn_count = {len(order)};\n')
-        if args.dyn_base:  # (in each module's table, weak: main and sdk share one)
+        f.write(f'const uint64_t {name}_fn_count = {len(order)};\n')
+        if opts.dyn_base:  # (in each module's table, weak: main and sdk share one)
             f.write("// the guest window's start (--dyn-base): the runtime sets it before any game code runs\n")
             f.write(f'__attribute__((weak, visibility("hidden"))) uint64_t botwgame_gb = {hx(CANON)};\n')
             f.write('__attribute__((weak, visibility("default"))) void botwgame_set_guest_base(uint64_t gb) '
                     '{ botwgame_gb = gb; }\n')
-        write_if_changed(os.path.join(args.outdir, f'{args.name}_table.c'), f.getvalue())
-    print(f'{args.name}: wrote {nchunks} chunks, {time.time() - t0:.0f}s total', file=sys.stderr)
+        write_if_changed(os.path.join(outdir, f'{name}_table.c'), f.getvalue())
+    print(f'{name}: wrote {nchunks} chunks, {time.time() - t0:.0f}s total', file=sys.stderr)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('name')
+    ap.add_argument('nso')
+    ap.add_argument('base', type=lambda s: int(s, 0))
+    ap.add_argument('outdir')
+    ap.add_argument('--hle')
+    ap.add_argument('--chunk', type=int, default=1500)  # functions per file at most
+    ap.add_argument('--chunk-bytes', type=int, default=1500000)  # and about this much C (even compile times)
+    ap.add_argument('--big-fn', type=int, default=100000)  # bytes of C from which a function gets its own file
+    ap.add_argument('--limit', type=int, default=0)
+    ap.add_argument('--simd', choices=('asm', 'c'),
+                    default='asm' if platform.machine().lower() in ('arm64', 'aarch64') else 'c')
+    ap.add_argument('--dyn-base', action='store_true',
+                    help='Android: guest addresses relative to the window the runtime picks (lifter.gaddr)')
+    args = ap.parse_args()
+    lifter.DYN_BASE = args.dyn_base
+    generate(args.name, args.nso, args.base, args.outdir, args)
 
 
 if __name__ == '__main__':

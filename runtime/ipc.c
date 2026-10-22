@@ -83,6 +83,27 @@ static uint64_t buf_addr(const uint32_t *w) {
     return w[1] | ((uint64_t)(w[2] >> 28) << 32) | ((uint64_t)((w[2] >> 2) & 7) << 36);
 }
 
+// TIPC (sm: and a few other system services since 12.0.0) replies with the same HIPC header type as
+// the request, the handles in the special header, and raw words holding the result followed by the
+// outputs: no SFCO header, no 16-byte alignment and no domains. (From SavageWindRecomp, MIT: BOTW 1.8.2's SDK.)
+static int tipc_write_response(uint32_t *msg, uint32_t type, IpcResp *resp) {
+    for (int i = 0; i < resp->nobjects; i++) resp->move_handles[resp->nmove++] = session_new(resp->objects[i]);
+    memset(msg, 0, 0x100);
+    int has_handles = resp->ncopy || resp->nmove;
+    uint32_t words = 1 + (resp->data_size + 3) / 4;
+    msg[0] = type;
+    msg[1] = words | (has_handles ? 0x80000000u : 0);
+    uint32_t *q = msg + 2;
+    if (has_handles) {
+        *q++ = (resp->ncopy << 1) | (resp->nmove << 5);
+        for (int i = 0; i < resp->ncopy; i++) *q++ = resp->copy_handles[i];
+        for (int i = 0; i < resp->nmove; i++) *q++ = resp->move_handles[i];
+    }
+    *q++ = resp->result;
+    memcpy(q, resp->data, resp->data_size);
+    return 0;
+}
+
 int ipc_handle_request(Cpu *c, uint32_t handle) {
     KObject *o = handle_get(handle);
     if (!o || o->type != KOBJ_SESSION) {
@@ -144,10 +165,17 @@ int ipc_handle_request(Cpu *c, uint32_t handle) {
         for (int i = 0; i < 16; i++) LOG("[ipc]   sp[%d]=%llx\n", i, (unsigned long long)sp[i]);
     }
 
-    if (req.type == 2) {  // close
+    if (req.type == 2 || req.type == 15) {  // close (CMIF / TIPC)
         LOG("[ipc] close session %s (handle %x)\n", sess->svc->name, handle);
         if (!sess->domain) service_release(sess->svc);  // (a domain's objects stay: closed one by one)
         return 0;
+    }
+    if (req.type >= 16) {  // TIPC: the command is in the type, the raw words are the arguments
+        req.cmd = req.type - 16;
+        req.data = (const uint8_t *)raw;
+        req.data_size = raw_words * 4;
+        sess->svc->handler(sess->svc, &req, &resp);
+        return tipc_write_response(msg, req.type, &resp);
     }
     uint8_t *payload = (uint8_t *)aligned;
     bool dom = false;  // response is domain-wrapped

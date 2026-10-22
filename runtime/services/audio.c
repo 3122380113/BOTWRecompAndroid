@@ -871,8 +871,10 @@ static void request_update(Renderer *r, IpcReq *req, IpcResp *resp) {
     }
     // effects (not processed): report them as enabled/disabled per request
     const uint8_t *ein = vin + voices_sz;
-    oh[5] = neffects * 0x10;
-    for (uint32_t i = 0; i < neffects && o + 0x10 <= out->size; i++, o += 0x10) {
+    // (REV9 on, BOTW 1.8.2's SDK 20 is REV13: an effect's status is 0x90 bytes, its result state after the first 0x10)
+    uint32_t rev = (r->revision >> 24) - '0', estat = rev >= 9 ? 0x90 : 0x10;
+    oh[5] = neffects * estat;
+    for (uint32_t i = 0; i < neffects && o + estat <= out->size; i++, o += estat) {
         const uint8_t *e = ein + i * 0xC0;
         op[o] = e[2] ? 3 : 4;  // EffectState Enabled / Disabled
         if (i < r->effects) effect_update(&r->fx[i], e);
@@ -925,11 +927,11 @@ static void request_update(Renderer *r, IpcReq *req, IpcResp *resp) {
     }
     uint64_t elapsed = r->elapsed_frames;
     pthread_mutex_unlock(&r->lock);
-    oh[8] = perf_sz ? 0x10 : 0;
+    oh[8] = perf_sz || rev >= 9 ? 0x10 : 0;  // (the REV9+ SDK always reads a 0x10-byte performance status)
     o += oh[8];
     oh[1] = 0xB0;  // behavior / error info
     o += 0xB0;
-    if ((r->revision >> 24) - '0' >= 5) {  // render info: elapsed frame count (REV5 on; BOTW 1.0.0 is REV1)
+    if (rev >= 5) {  // render info: elapsed frame count (REV5 on; BOTW 1.0.0 is REV1)
         oh[10] = 0x10;
         if (o + 0x10 <= out->size) *(uint64_t *)(op + o) = elapsed;
         o += 0x10;

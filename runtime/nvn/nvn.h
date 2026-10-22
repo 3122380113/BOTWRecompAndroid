@@ -45,12 +45,16 @@ typedef struct {
     void *backend;
 } NvnSamplerDesc;
 
+// Our layout inside the guest NVNtextureView. NVN 55's struct is 16 bytes (its driver's SetDefaults clears exactly
+// that; BOTW 1.8.2 keeps views at the end of heap blocks), so ours must fit in it: NVN 53's 0x28 bytes overran the
+// next block's heap header. (SavageWindRecomp, MIT; it fits the older versions' larger struct too.)
 typedef struct {
-    uint32_t setmask;  // which fields are overridden
-    uint16_t base_level, num_levels, min_layer, num_layers;
-    uint32_t format, target, ds_mode;
+    uint16_t min_layer, num_layers, format;
+    uint8_t setmask;  // which fields are overridden: 1 levels, 2 layers, 4 format, 8 swizzle, 16 ds mode, 32 target
+    uint8_t target, ds_mode, base_level, num_levels;
     uint8_t swizzle[4];
-} NvnTextureView;  // our layout of the guest NVNtextureView (0x28 bytes)
+} NvnTextureView;
+_Static_assert(sizeof(NvnTextureView) <= 16, "NVNtextureView is 16 bytes in NVN 55");
 
 typedef struct {
     NvnTexture *tex;

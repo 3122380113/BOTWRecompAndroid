@@ -432,8 +432,8 @@ KThread *kernel_create_main_thread(uint64_t entry, uint64_t stack_size, int prio
     return t;
 }
 
-void kernel_run_main(KThread *t, uint64_t x0, uint64_t x1, uint64_t x2, uint64_t x3) {
-    t->cpu.x[0] = x0; t->cpu.x[1] = x1; t->cpu.x[2] = x2; t->cpu.x[3] = x3;
+void kernel_run_main(KThread *t, uint64_t x0, uint64_t x1, uint64_t x2, uint64_t x3, uint64_t x4) {
+    t->cpu.x[0] = x0; t->cpu.x[1] = x1; t->cpu.x[2] = x2; t->cpu.x[3] = x3; t->cpu.x[4] = x4;
     thread_start(t);  // the host main thread goes on to run the window event loop
 }
 
@@ -567,7 +567,10 @@ static uint32_t svc_wait_process_wide_key(uint64_t mutex, uint64_t key, uint32_t
     t->wait_tag = tag;
     __atomic_store_n(u32p(key), 1, __ATOMIC_SEQ_CST);
     uint32_t r = block_current(timeout);
-    if (r != R_OK) {
+    // A wait that timed out returns without the mutex in BOTW 1.8.2's SDK, as on the console: user mode takes it
+    // again (InternalConditionVariableImplByHorizon::TimedWait calls Enter on 0xea01). Taken here too, the thread then
+    // waited for the mutex it held, and every thread after it (SavageWindRecomp). The older SDKs run as before.
+    if (r != R_OK && !(r == R_TIMEOUT && g_game_version == 182)) {
         // timed out / cancelled: still must reacquire the mutex
         if (!mutex_acquire_or_mark(mutex, tag)) {
             t->wait_kind = WAIT_MUTEX;
@@ -1095,7 +1098,10 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         case 15: v = STACK_SIZE; break;
         case 16: case 17: v = 0; break;
         case 18: v = 0x01007EF00011E000ull; break;  // program id (BOTW)
-        case 20: v = 0; break;
+        // UserExceptionContextAddress: a zeroed page at the top of the TLS region (BOTW 1.8.2's SDK passes it to
+        // SetDyingMessageRegion, which needs it non-null - SavageWindRecomp); AliasRegionExtraSize (HOS 18+): none
+        case 20: v = TLS_BASE + TLS_SIZE - 0x1000; break;
+        case 28: v = 0; break;
         default: r = R_INVALID_ENUM; LOG("[kernel] GetInfo unknown id %u/%llu\n", id0, x[3]);
         }
         x[0] = r;
