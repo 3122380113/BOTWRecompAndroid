@@ -545,7 +545,7 @@ static NvnTexture *texture_from_builder(uint64_t b) {
 // storage address) and the list of all textures.
 enum { OWNER_SLOTS = 1 << 18, DESC_BUCKETS = 1 << 16 };
 #define OWNER_GONE 1ull
-typedef struct { uint64_t guest; NvnTexture *t; uint8_t swizzle[4]; } TexOwner;  // (its own swizzle: see texture_same_storage)
+typedef struct { uint64_t guest; NvnTexture *t; } TexOwner;
 static TexOwner g_owner[OWNER_SLOTS];
 static int g_owner_used, g_owner_gone;
 static NvnTexture *g_desc_hash[DESC_BUCKETS];
@@ -567,14 +567,7 @@ static NvnTexture *owner_take(uint64_t g) {  // removes and returns the texture 
         }
     return NULL;
 }
-// The swizzle guest object g was initialized with (NULL: g owns no texture)
-static const uint8_t *owner_swizzle(uint64_t g) {
-    uint32_t i = owner_hash(g);
-    for (int n = 0; n < OWNER_SLOTS && g_owner[i].guest; n++, i = (i + 1) & (OWNER_SLOTS - 1))
-        if (g_owner[i].guest == g) return g_owner[i].swizzle;
-    return NULL;
-}
-static void owner_put(uint64_t g, NvnTexture *t, const uint8_t swizzle[4]) {  // (g owns nothing: owner_take first)
+static void owner_put(uint64_t g, NvnTexture *t) {  // (g owns nothing: owner_take first)
     if ((g_owner_used + g_owner_gone + 1) * 4 > OWNER_SLOTS * 3) {  // tombstones: rebuild the table in place
         TexOwner *keep = malloc(sizeof(TexOwner) * (size_t)(g_owner_used ? g_owner_used : 1));
         if (!keep) FATAL("nvn: out of memory rebuilding the texture owners\n");
@@ -595,7 +588,6 @@ static void owner_put(uint64_t g, NvnTexture *t, const uint8_t swizzle[4]) {  //
     if (g_owner[i].guest == OWNER_GONE) g_owner_gone--;
     g_owner[i].guest = g;
     g_owner[i].t = t;
-    memcpy(g_owner[i].swizzle, swizzle, 4);
     g_owner_used++;
 }
 
@@ -610,10 +602,20 @@ static bool texture_same_desc(const NvnTexture *a, const NvnTexture *b) {
            a->layout.block_height_log2 == b->layout.block_height_log2 &&
            a->layout.block_depth_log2 == b->layout.block_depth_log2;
 }
+// A guest texture object (192 opaque bytes): our texture @0, OBJ_TAG @8, the object's own swizzle @12, debug ID @16
+#define OBJ_TAG 0x5a575331u
+static const uint8_t *obj_swizzle(uint64_t g) {
+    return G(uint32_t, g, 8) == OBJ_TAG ? (const uint8_t *)(uintptr_t)(g + 12) : NULL;
+}
+static uint64_t obj_debug_id(uint64_t g) { return G(uint32_t, g, 8) == OBJ_TAG ? G(uint64_t, g, 16) : HOST(NvnTexture, g)->debug_id; }
 // The same image: the description but its swizzle, which only says how it is read. BOTW 1.8.2 draws its minimap
 // into a 288x288 target and samples it through a second object over the same memory with alpha ONE: as two
 // textures, the second was an image of its own, never drawn (the map layer of the minimap was missing). Each guest
-// object keeps its swizzle (owner_swizzle); register_texture gives an entry a view with it.
+// object keeps its own swizzle and debug ID in itself (obj_swizzle, obj_debug_id), copies of it too: register_texture
+// gives an entry a view with that swizzle, and nvnTextureCompare tells such objects apart (the game's UI draws masks into
+// an R8 target and samples them through a second object, white with the mask as alpha; it registers a texture only
+// when no registered one compares equal: told they were the same, it sampled the mask through the first object,
+// opaque - black boxes around the stamina wheel, the button prompts and the place names).
 static bool texture_same_storage(const NvnTexture *a, const NvnTexture *b) {
     if (!a || !b) return false;
     NvnTexture x = *a;
@@ -741,7 +743,16 @@ NVN(nvnTextureInitialize) {
     NvnTexture *same = old && texture_same_storage(old, t) ? old : texture_find_same(t);
     uint8_t swizzle[4];
     memcpy(swizzle, t->swizzle, 4);
+    uint64_t debug_id = t->debug_id;
     if (same) {
+        if (ENV("LARECOMP_LOG_TEXALIAS") && memcmp(same->swizzle, swizzle, 4)) {  // shared with an object of another swizzle
+            static int n;
+            if (n++ < 60)
+                LOG("[alias] %llx shares %ux%u fmt %#x at %llx: swizzle %u%u%u%u, the image's %u%u%u%u (refs %u, lr %llx)\n",
+                    (unsigned long long)A(0), t->width, t->height, t->format, (unsigned long long)t->addr, swizzle[0],
+                    swizzle[1], swizzle[2], swizzle[3], same->swizzle[0], same->swizzle[1], same->swizzle[2],
+                    same->swizzle[3], (unsigned)same->refs, (unsigned long long)c->x[30]);
+        }
         free(t);
         t = same;
         g_tex_stat_reused++;
@@ -765,7 +776,7 @@ NVN(nvnTextureInitialize) {
     t->refs++;
     t->owners++;
     t->finalized = false;
-    owner_put(A(0), t, swizzle);
+    owner_put(A(0), t);
     pthread_mutex_unlock(&g_live_lock);
     if (old) {
         g_tex_stat_reinit++;
@@ -777,6 +788,9 @@ NVN(nvnTextureInitialize) {
         LOG("[nvn] video texture %p: %ux%u fmt %#x flags %#x target %u addr %llx stride %llu\n", t, t->width, t->height,
             t->format, t->flags, t->target, t->addr, t->stride);
     SET_HOST(A(0), t);
+    G(uint32_t, A(0), 8) = OBJ_TAG;
+    memcpy(AP(0) + 12, swizzle, 4);
+    G(uint64_t, A(0), 16) = debug_id;
     RET(1);
 }
 NVN(nvnTextureFinalize) {
@@ -808,20 +822,27 @@ NVN(nvnTextureGetDepth) { RET(TEX->depth); }
 NVN(nvnTextureGetLevels) { RET(TEX->levels); }
 NVN(nvnTextureGetFormat) { RET(TEX->format); }
 NVN(nvnTextureGetSamples) { RET(TEX->samples); }
-NVN(nvnTextureGetSwizzle) { for (int i = 0; i < 4; i++) *(uint32_t *)AP(1 + i) = TEX->swizzle[i]; }
+NVN(nvnTextureGetSwizzle) {
+    const uint8_t *sw = obj_swizzle(A(0));
+    for (int i = 0; i < 4; i++) *(uint32_t *)AP(1 + i) = sw ? sw[i] : TEX->swizzle[i];
+}
 NVN(nvnTextureGetDepthStencilMode) { RET(TEX->ds_mode); }
 NVN(nvnTextureGetStride) { RET(TEX->stride); }
 NVN(nvnTextureGetTextureAddress) { RET(TEX->addr); }
 NVN(nvnTextureGetMemoryPool) { RET(0); }
 NVN(nvnTextureGetMemoryOffset) { RET(TEX->pool_offset); }
 NVN(nvnTextureGetStorageSize) { RET(tegra_total_size(&TEX->layout)); }
-NVN(nvnTextureGetDebugID) { RET(TEX->debug_id); }
+NVN(nvnTextureGetDebugID) { RET(obj_debug_id(A(0))); }
 NVN(nvnTextureGetViewOffset) { RET(0); }
 NVN(nvnTextureGetStorageClass) { RET(0); }
 NVN(nvnTextureGetRawStorageClass) { RET(0); }
 NVN(nvnTextureGetSparseTileLayout) { RET(0); }
 NVN(nvnTextureGetZCullStorageSize) { RET(0); }
-NVN(nvnTextureCompare) { RET(texture_same_desc(HOST(NvnTexture, A(0)), HOST(NvnTexture, A(1)))); }
+NVN(nvnTextureCompare) {  // (each object's own description: two of another swizzle may share one texture)
+    const uint8_t *s0 = obj_swizzle(A(0)), *s1 = obj_swizzle(A(1));
+    NvnTexture *t0 = HOST(NvnTexture, A(0)), *t1 = HOST(NvnTexture, A(1));
+    RET(s0 && s1 ? texture_same_storage(t0, t1) && !memcmp(s0, s1, 4) : texture_same_desc(t0, t1));
+}
 NVN(nvnTextureFlushTexels) { (void)c; }
 NVN(nvnTextureInvalidateTexels) { (void)c; }
 
@@ -1073,15 +1094,13 @@ static void register_texture(Cpu *c) {
     e->has_view = A(3) != 0;
     if (e->has_view) memcpy(&e->view, AP(3), sizeof e->view);
     {   // the object's own swizzle, where it shares its texture with an object of another (texture_same_storage)
-        pthread_mutex_lock(&g_live_lock);
-        const uint8_t *sw = t ? owner_swizzle(A(2)) : NULL;
+        const uint8_t *sw = t ? obj_swizzle(A(2)) : NULL;
         if (sw && memcmp(sw, t->swizzle, 4) && !(e->has_view && (e->view.setmask & 8))) {
             if (!e->has_view) memset(&e->view, 0, sizeof e->view);
             e->has_view = true;
             e->view.setmask |= 8;
             memcpy(e->view.swizzle, sw, 4);
         }
-        pthread_mutex_unlock(&g_live_lock);
     }
     static int watch_id = -2;  // LARECOMP_WATCH_TEXID=<hex id>: its registrations (texture, view)
     if (watch_id == -2) watch_id = getenv("LARECOMP_WATCH_TEXID") ? (int)strtol(getenv("LARECOMP_WATCH_TEXID"), NULL, 16) : -1;
