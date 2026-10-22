@@ -697,21 +697,25 @@ def emit_asm_batch(batch):
     """Emit one inline-asm block for a run of FP/SIMD instructions."""
     vregs = set()
     gmap = {}
-    flags = False
+    # x16 carries the flags in and out (msr/mrs nzcv): then it is no guest register's scratch - a batch of 8 guest
+    # registers had its 8th in x16 overwritten by the flags (BOTW 1.8.2: [nzcv + 0xa8], a crash on entering the world)
+    flags = any(a.flags for a in batch)
+    scratch = [s for s in SCRATCH if not (flags and s == 16)]
     consts = []
     words = []
     for a in batch:
         vregs |= a.vregs
-        flags |= a.flags
         w = a.word
         for pos, g in a.gprs:
             if g not in gmap:
-                if len(gmap) + len(consts) >= len(SCRATCH):
+                if len(gmap) + len(consts) >= len(scratch):
                     raise Unsupported('scratch exhausted')
-                gmap[g] = SCRATCH[len(gmap) + len(consts)]
+                gmap[g] = scratch[len(gmap) + len(consts)]
             w = (w & ~(31 << pos)) | (gmap[g] << pos)
         for pos, val in a.consts:
-            s = SCRATCH[len(gmap) + len(consts)]
+            if len(gmap) + len(consts) >= len(scratch):
+                raise Unsupported('scratch exhausted')
+            s = scratch[len(gmap) + len(consts)]
             consts.append((s, val))
             w = (w & ~(31 << pos)) | (s << pos)
         words.append(w)
