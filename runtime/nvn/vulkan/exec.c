@@ -25,6 +25,7 @@ static uint64_t stat_pipe_binds, stat_set_binds;  // (graphics draws: pipelines 
 // LARECOMP_VK_PROF=1: render-thread time per category in the fps log (exec = whole command lists, draw = draw(),
 // sets = descriptor sets incl. cbuf copies, vtx = index scan + vertex copies, submit = vkQueueSubmit2)
 static int prof = -1;
+static uint64_t prof_dsw, prof_cbuf, prof_set_hits, prof_set_miss;  // (sets: driver writes, cbuf copies, set cache)
 static uint64_t prof_exec, prof_draw, prof_sets, prof_vtx, prof_submit, prof_pre, prof_key, prof_dyn, prof_tex, prof_up, prof_gpu;
 static VkQueryPool prof_qp;
 static uint64_t cum_exec, cum_wait, cum_draws, cum_submits;  // (profiling) never reset: hitch log
@@ -1066,6 +1067,10 @@ const char *renderer_stats(void) {
         snprintf(stats_text + n, sizeof stats_text - n, " | gpu %.0f cpu exec %.0f draw %.0f (pre %.0f key %.0f dyn %.0f sets %.0f tex %.0f (upload %.0f) vtx %.0f) submit %.0f ms",
                  prof_gpu / 1e6, prof_exec / 1e6, prof_draw / 1e6, prof_pre / 1e6, prof_key / 1e6, prof_dyn / 1e6, prof_sets / 1e6,
                  prof_tex / 1e6, prof_up / 1e6, prof_vtx / 1e6, prof_submit / 1e6);
+        n = strlen(stats_text);
+        snprintf(stats_text + n, sizeof stats_text - n, " | sets: driver %.0f cbuf %.0f ms, cache %llu hits %llu misses",
+                 prof_dsw / 1e6, prof_cbuf / 1e6, (unsigned long long)prof_set_hits, (unsigned long long)prof_set_miss);
+        prof_dsw = prof_cbuf = prof_set_hits = prof_set_miss = 0;
         extern uint64_t prof_tex_checks, prof_tex_samples, prof_tex_full, prof_tex_full_bytes, prof_tex_dyn;
         n = strlen(stats_text);
         snprintf(stats_text + n, sizeof stats_text - n, " | tex checks %llu samples %llu full %llu (%.1f MB, dynamic %llu)",
@@ -2767,6 +2772,37 @@ static VkDescriptorBufferInfo ubo_span(VkSpan s, uint64_t size) {
     return (VkDescriptorBufferInfo){s.buf, s.off, size > max ? max : size};
 }
 
+#ifdef __ANDROID__
+// Constant buffers read in place (LARECOMP_UBO_DIRECT=1): with the guest heap placed in GPU memory (vk_heap_place) a
+// constant buffer there can be bound as it is, at its offset in the heap buffer, instead of copied for every draw
+// (~3 ms of a 60 fps frame in BOTW 1.8.2's world, ~8000 copies). Not the ones the game rewrites inside a command list
+// (nvnCommandBufferUpdateUniformBuffer, about one per draw: a draw before the update must not see it, which only a
+// copy keeps): their 256-byte blocks are marked when the update is recorded (cmdbuf.c), before the render thread
+// translates that list, and stay copied.
+enum { UBO_INLINE_SLOTS = 1 << 16 };
+static _Atomic uint64_t ubo_inline[UBO_INLINE_SLOTS];  // block index + 1 (open addressing, never removed)
+static bool ubo_inline_has(uint64_t blk) {
+    for (uint32_t i = (uint32_t)(blk * 0x9E3779B97F4A7C15ull >> 48), n = 0; n < UBO_INLINE_SLOTS; i = (i + 1) & (UBO_INLINE_SLOTS - 1), n++) {
+        uint64_t v = atomic_load_explicit(&ubo_inline[i], memory_order_acquire);
+        if (!v) return false;
+        if (v == blk + 1) return true;
+    }
+    return true;  // (full: copy everything)
+}
+void vk_ubo_inline_mark(uint64_t addr, uint64_t size) {
+    for (uint64_t blk = addr >> 8; size && blk <= (addr + size - 1) >> 8; blk++) {
+        for (uint32_t i = (uint32_t)(blk * 0x9E3779B97F4A7C15ull >> 48), n = 0; n < UBO_INLINE_SLOTS; i = (i + 1) & (UBO_INLINE_SLOTS - 1), n++) {
+            uint64_t v = atomic_load_explicit(&ubo_inline[i], memory_order_acquire);
+            if (v == blk + 1) break;
+            uint64_t z = 0;
+            if (!v && atomic_compare_exchange_strong(&ubo_inline[i], &z, blk + 1)) break;
+            if (z == blk + 1) break;
+        }
+    }
+}
+static bool ubo_direct(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out);  // (below gmem_buf)
+#endif
+
 // Constant buffer k of a stage (renderer.m bind_cbufs), copied into transient memory.
 static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32_t gx, uint32_t gy, uint32_t gz) {
     static const uint8_t zeros[0x10000];
@@ -2816,6 +2852,12 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                 f[3], f[4], f[5], f[6], f[7]);
         }
     }
+#ifdef __ANDROID__
+    {
+        VkDescriptorBufferInfo d;
+        if (ubo_direct(r.addr, size, &d)) return d;
+    }
+#endif
     // snapshot: later CPU writes must not leak in. Shared by the draws of one submission binding the same range:
     // within a command list nothing writes guest memory (no inline UpdateUniformBuffer: that writes through below
     // and drops the shared copies).
@@ -2829,6 +2871,22 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
 static VkBuffer gmem_buf;
 static VkDeviceMemory gmem_mem;
 static uint64_t gmem_size;
+#ifdef __ANDROID__
+static bool gmem_placed;  // (gmem_buf is the guest heap itself, usable as a uniform buffer: vk_heap_place)
+
+static bool ubo_direct(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out) {
+    static int on = -1;
+    if (on < 0) on = getenv("LARECOMP_UBO_DIRECT") && atoi(getenv("LARECOMP_UBO_DIRECT"));
+    if (!on || !gmem_placed || addr < HEAP_BASE || addr + size > HEAP_BASE + gmem_size) return false;
+    uint64_t off = addr - HEAP_BASE;
+    if ((off & (g_vk.props.limits.minUniformBufferOffsetAlignment - 1)) || size > g_vk.props.limits.maxUniformBufferRange)
+        return false;
+    for (uint64_t blk = addr >> 8; blk <= (addr + size - 1) >> 8; blk++)
+        if (ubo_inline_has(blk)) return false;
+    *out = (VkDescriptorBufferInfo){gmem_buf, off, size};
+    return true;
+}
+#endif
 
 static bool gmem_import(uint64_t size) {
     PFN_vkGetMemoryHostPointerPropertiesEXT props =
@@ -2891,7 +2949,8 @@ bool vk_heap_place(uint64_t size) {
     }
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size,
                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT};
+                                      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                                      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT};  // (ubo_direct)
     VkBuffer buf;
     if (vkCreateBuffer(g_vk.dev, &bi, NULL, &buf) != VK_SUCCESS) return false;
     VkMemoryRequirements mr;
@@ -2928,6 +2987,7 @@ bool vk_heap_place(uint64_t size) {
     gmem_buf = buf;
     gmem_mem = mem;
     gmem_size = size;
+    gmem_placed = true;
     gcopy_mode = false;
     gwin_mode = size > g_vk.props.limits.maxStorageBufferRange && !getenv("LARECOMP_VK_NO_GWIN");
     LOG("[vk] guest heap %llu MB is GPU memory (placed at %llx, memory type %d)%s\n", (unsigned long long)(size >> 20),
@@ -3929,7 +3989,9 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
             }
             w[n].pImageInfo = &ii[n];
         } else if (is_ubo(b->type) && b->binding < 17) {
+            uint64_t tc_ = prof > 0 ? plat_now_ns() : 0;
             bi[n] = cbuf_info(stage, si, (int)b->binding, gx, gy, gz);
+            if (prof > 0) prof_cbuf += plat_now_ns() - tc_;
             w[n].pBufferInfo = &bi[n];
         } else if (b->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
 #ifdef __ANDROID__
@@ -4016,10 +4078,16 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
         static struct { uint64_t seq, h1, h2; VkDescriptorSet ds; } cache[4096];
         uint64_t seq = vk_pending_seq();
         uint32_t slot = (uint32_t)(h1 ^ (h1 >> 32)) & 4095;
-        if (!off && cache[slot].seq == seq && cache[slot].h1 == h1 && cache[slot].h2 == h2) return cache[slot].ds;
+        if (!off && cache[slot].seq == seq && cache[slot].h1 == h1 && cache[slot].h2 == h2) {
+            prof_set_hits++;
+            return cache[slot].ds;
+        }
+        prof_set_miss++;
+        uint64_t tw_ = prof > 0 ? plat_now_ns() : 0;
         ds = vk_alloc_set(layout);
         for (int i = 0; i < n; i++) w[i].dstSet = ds;
         if (n) vkUpdateDescriptorSets(g_vk.dev, (uint32_t)n, w, 0, NULL);
+        if (prof > 0) prof_dsw += plat_now_ns() - tw_;
         cache[slot].seq = seq, cache[slot].h1 = h1, cache[slot].h2 = h2, cache[slot].ds = ds;
         return ds;
     }

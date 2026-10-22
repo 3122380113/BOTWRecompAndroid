@@ -595,6 +595,10 @@ NVN(nvnCommandBufferUpdateUniformBuffer) {
                 f[0], f[1], f[2], f[3]);
         }
     }
+#ifdef __ANDROID__
+    extern void vk_ubo_inline_mark(uint64_t addr, uint64_t size);
+    vk_ubo_inline_mark(A(1) + A(3), A(4));  // (that range stays copied per draw: vulkan/exec.c ubo_direct)
+#endif
     record_copy(c, CMD_UPDATE_UNIFORM_BUFFER, 5, (uint32_t)A(4));
 }
 
