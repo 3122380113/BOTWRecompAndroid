@@ -47,6 +47,8 @@ int plat_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, int max, u
     (void)addr; (void)size; (void)pages; (void)max; (void)page;
     return -1;
 }
+void plat_write_tracking_enable(uint64_t lo, uint64_t hi) { (void)lo; (void)hi; }
+void plat_write_prepare(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
 
 int plat_protect(uint64_t addr, uint64_t size, int prot) {
     int p = prot == PLAT_PROT_NONE ? PROT_NONE : prot == PLAT_PROT_READ ? PROT_READ : PROT_READ | PROT_WRITE;

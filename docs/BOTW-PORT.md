@@ -642,6 +642,9 @@ Medição no planalto (2026-10-21, save do usuário perto da igreja, POCO F7 Ult
   (conteúdo antigo). `begin_pass` agora deixa ligado só o slot escrito. Também: leituras sem comparação usam um
   sampler sem comparação (`vk_sampler_plain`). Os 2 compute pipelines (`-13`) foram corrigidos pelo Astra (busca
   linear no GMap). Detalhes em [ANALISE-DRIVER-PADRAO-2026-10-21.md](ANALISE-DRIVER-PADRAO-2026-10-21.md).
+- **Driver da Qualcomm, desempenho (2026-10-21):** rastreio de escrita de páginas no Android (mprotect + SIGSEGV) liga o
+  cache de vértices no modo de cópia: ~90 MB de vértices/índices copiados por quadro viram ~30 KB; thread de render
+  ~37 -> ~18,5 ms. O fps fica em ~15-17: tradução e GPU em série (o jogo espera a fence do quadro recém-enviado).
 - Folga hoje: render ~16 ms livres, GPU ~10 ms. Para 60 fps seria preciso GPU <= ~14 ms (~40% menos) e um patch
   no jogo (o sead nunca escolhe menos de 2 vsyncs, e a lógica do jogo conta com 30).
 

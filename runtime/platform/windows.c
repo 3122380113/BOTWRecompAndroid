@@ -61,6 +61,8 @@ int plat_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, int max, u
     if (n >= (ULONG_PTR)max) ResetWriteWatch((void *)(uintptr_t)addr, (SIZE_T)size);  // (more than fit: caller takes all)
     return (int)n;
 }
+void plat_write_tracking_enable(uint64_t lo, uint64_t hi) { (void)lo; (void)hi; }
+void plat_write_prepare(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
 
 // Decommit everything: the range stays reserved, and pages come back zeroed when committed again (lazily).
 bool plat_reset_guest(uint64_t lo, uint64_t hi) {

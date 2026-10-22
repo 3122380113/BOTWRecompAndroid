@@ -197,3 +197,22 @@ Continuação da análise acima, mesma data. O passo 3 da sequência sugerida (r
 **Validação no celular:** com o driver da Qualcomm, a cena do platô fica com albedo, luz e Link normais, a ~13–15 fps (o modo de cópia continua lento). O Turnip continua igual, a 30 fps. Nenhum reinício do sistema registrado no `dropbox` durante os testes.
 
 **Próximo passo no driver da Qualcomm:** desempenho. Render ~34 ms por quadro, dominado pelas cópias do modo de cópia (item 7 acima). Também vale conferir outras cenas (interiores, santuários, água) com esse driver.
+
+## Atualização: desempenho no modo de cópia (rastreio de escrita e cache de vértices)
+
+Perfil da thread de render no driver da Qualcomm (simpleperf, platô): ~37 ms por quadro, 22% em `memcpy` vindo de `guest_copy`. Medição das cópias: ~120 MB por quadro, ~90 MB disso em **vértices e índices** copiados a cada quadro. No Turnip eles são lidos direto do heap (`guest_direct`); o cache de vértices (`vc_*`) existia, mas exige rastreio de escrita de páginas, que o Android não tinha.
+
+- **Rastreio de escrita no Android** (`runtime/platform/android.c`, só no modo de cópia sem memória placed):
+  - `plat_written_pages` deixa as páginas consultadas somente leitura. A primeira escrita do jogo gera SIGSEGV; o tratador marca a página como escrita e a libera.
+  - Cobre também uma escrita que cruza a fronteira entre duas páginas.
+  - Os `pread` do `fs` liberam antes as páginas de destino (`plat_write_prepare`), porque uma escrita do kernel não gera falta, devolve EFAULT.
+  - `LARECOMP_NO_WRITE_TRACKING=1` desliga.
+- **Cache de vértices no modo de cópia:** preenchido pela CPU, só as páginas escritas, pelo buffer de upload (`vc_flush`).
+- **Resultado:**
+  - ~12.500 acertos de cache por quadro, ~30 KB atualizados por quadro e ~23 faltas de página por quadro.
+  - Cópias de UBO: ~15 MB por quadro, igual ao Turnip.
+  - **Thread de render: ~37 → ~18,5 ms.** Imagem correta.
+- **Também:** cada slot de submissão tem seu próprio command pool, reiniciado inteiro com `vkResetCommandPool`. Antes, o reset implícito no `vkBeginCommandBuffer` devolvia e realocava memória do driver.
+- **Por que o fps quase não subiu (~15–17):** o quadro é serial. O jogo espera a fence do quadro que acabou de enviar; a thread de render traduz (~18 ms); só então a GPU trabalha (~17–26 ms). Tudo somado passa de 33 ms e arredonda para 3–4 vsyncs.
+  - O envio em pedaços (`LARECOMP_VK_CHUNK_US`), que no Turnip sobrepõe tradução e GPU, aqui dobra o tempo ocupado da GPU (~38 ms) e não muda o período, provavelmente porque o clock da GPU cai nos intervalos.
+  - Próximos candidatos: o custo do próprio driver por draw (`vkUpdateDescriptorSets` e `vkAllocateDescriptorSets` ~18%, `vkCmdBeginRendering` ~9%, `vkCmdDrawIndexed` ~10%) e entender a queda de clock com envio em pedaços.

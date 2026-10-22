@@ -12,6 +12,7 @@
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -97,18 +98,114 @@ bool plat_reserve_guest(uint64_t lo, uint64_t hi) {
     return true;
 }
 
+static uint64_t wt_lo, wt_hi;  // (page write tracking, below)
+static uint8_t *wt_state;
+static void wt_lock(void);
+static void wt_unlock(void);
+
 // Fresh zero pages over the whole window (the old ones are released at once).
 bool plat_reset_guest(uint64_t lo, uint64_t hi) {
+    if (wt_state && lo < wt_hi && hi > wt_lo) {  // (fresh pages are writable: nothing tracked there any more)
+        uint64_t a = lo < wt_lo ? wt_lo : lo, e = hi > wt_hi ? wt_hi : hi;
+        wt_lock();
+        memset(wt_state + ((a - wt_lo) >> 12), 0, (size_t)((e - a) >> 12));
+        wt_unlock();
+    }
     return mmap((void *)(uintptr_t)lo, hi - lo, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED,
                 -1, 0) == (void *)(uintptr_t)lo;
 }
 
 void plat_commit(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
 
-int plat_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, int max, uint64_t *page) {  // (no write tracking)
-    (void)addr; (void)size; (void)pages; (void)max; (void)page;
-    return -1;
+// ---- page write tracking (plat_written_pages), for the copy mode of Qualcomm's driver: there the heap isn't GPU
+// memory, so the vertex cache and the texture checks need to know what the CPU wrote (else every vertex and index
+// buffer was copied each frame: ~90 MB, ~7 ms of the render thread). Linux has no GetWriteWatch: a page asked about
+// is made read-only; the first write to it faults (crash_handler -> wt_fault), marks it written and makes it
+// writable again. A page not asked about before counts as written. The OS's own writes into guest memory (pread)
+// can't fault - they fail with EFAULT - so those make their pages writable first (plat_write_prepare).
+// LARECOMP_NO_WRITE_TRACKING=1: off.
+static uint64_t wt_lo, wt_hi;
+static uint8_t *wt_state;  // per 4 KB page: 0 not tracked (counts as written), 1 read-only since asked, 2 written since
+                           // (all three: tentative definitions, declared above plat_reset_guest)
+static atomic_flag wt_spin = ATOMIC_FLAG_INIT;  // (taken in the signal handler too: no mutex)
+static bool wt_broken;  // (an mprotect failed - out of memory mappings: no new pages tracked)
+static void wt_lock(void) { while (atomic_flag_test_and_set_explicit(&wt_spin, memory_order_acquire)) {} }
+static void wt_unlock(void) { atomic_flag_clear_explicit(&wt_spin, memory_order_release); }
+
+void plat_write_tracking_enable(uint64_t lo, uint64_t hi) {
+    if (wt_state || getenv("LARECOMP_NO_WRITE_TRACKING")) return;
+    lo &= ~0xFFFull;
+    hi = (hi + 0xFFF) & ~0xFFFull;
+    uint8_t *s = calloc((size_t)((hi - lo) >> 12), 1);
+    if (!s) return;
+    wt_lo = lo; wt_hi = hi;
+    wt_state = s;
+    fprintf(stderr, "[android] page write tracking on %#llx-%#llx\n", (unsigned long long)lo, (unsigned long long)hi);
 }
+
+// (signal handler) a write to a page made read-only here: true when handled
+static bool wt_fault(uint64_t a) {
+    if (!wt_state || a < wt_lo || a >= wt_hi) return false;
+    uint64_t p = (a - wt_lo) >> 12, np = (wt_hi - wt_lo) >> 12;
+    bool ours = false;
+    wt_lock();
+    // (2: another thread's fault on it got there first - writable already. The next page too: a store across the
+    // boundary may report its first byte, in the page before the protected one)
+    // (the next page only while still read-only: a real fault on this one must not retry forever)
+    for (uint64_t k = p; k < p + 2 && k < np; k++) {
+        if (k == p ? !wt_state[k] : wt_state[k] != 1) continue;
+        wt_state[k] = 2;
+        mprotect((void *)(uintptr_t)(wt_lo + (k << 12)), 4096, PROT_READ | PROT_WRITE);
+        ours = true;
+    }
+    wt_unlock();
+    return ours;
+}
+
+void plat_write_prepare(uint64_t addr, uint64_t size) {
+    if (!wt_state || !size || addr + size <= wt_lo || addr >= wt_hi) return;
+    uint64_t a = addr < wt_lo ? wt_lo : addr, e = addr + size > wt_hi ? wt_hi : addr + size;
+    uint64_t p0 = (a - wt_lo) >> 12, p1 = (e - wt_lo + 0xFFF) >> 12;
+    wt_lock();
+    for (uint64_t p = p0; p < p1;) {
+        if (wt_state[p] != 1) { p++; continue; }
+        uint64_t q = p;
+        while (q < p1 && wt_state[q] == 1) wt_state[q++] = 2;
+        mprotect((void *)(uintptr_t)(wt_lo + (p << 12)), (q - p) << 12, PROT_READ | PROT_WRITE);
+        p = q;
+    }
+    wt_unlock();
+}
+
+int plat_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, int max, uint64_t *page) {
+    if (!wt_state || addr < wt_lo || addr + size > wt_hi) return -1;
+    *page = 4096;
+    uint64_t p0 = (addr - wt_lo) >> 12, p1 = (addr + size - wt_lo + 0xFFF) >> 12;
+    int n = 0;
+    wt_lock();
+    for (uint64_t p = p0; p < p1;) {
+        if (wt_state[p] == 1) { p++; continue; }
+        uint64_t q = p;
+        for (; q < p1 && wt_state[q] != 1; q++) {
+            if (n < max) pages[n] = wt_lo + (q << 12);
+            n++;
+        }
+        if (!wt_broken) {
+            // (state first, then the protection: a write in between lands before the caller copies the page)
+            for (uint64_t k = p; k < q; k++) wt_state[k] = 1;
+            if (mprotect((void *)(uintptr_t)(wt_lo + (p << 12)), (q - p) << 12, PROT_READ)) {
+                for (uint64_t k = p; k < q; k++) wt_state[k] = 0;
+                mprotect((void *)(uintptr_t)(wt_lo + (p << 12)), (q - p) << 12, PROT_READ | PROT_WRITE);
+                wt_broken = true;
+                fprintf(stderr, "[android] page write tracking: mprotect failed (%d), no new pages tracked\n", errno);
+            }
+        }
+        p = q;
+    }
+    wt_unlock();
+    return n > max ? max : n;
+}
+
 
 int plat_protect(uint64_t addr, uint64_t size, int prot) {
     int p = prot == PLAT_PROT_NONE ? PROT_NONE : prot == PLAT_PROT_READ ? PROT_READ : PROT_READ | PROT_WRITE;
@@ -194,6 +291,7 @@ void plat_print_backtrace(void) {
 
 // (installed through ART's signal chain: ART still handles its own faults first)
 static void crash_handler(int sig, siginfo_t *si, void *ctx) {
+    if (sig == SIGSEGV && si->si_code == SEGV_ACCERR && wt_fault((uint64_t)(uintptr_t)si->si_addr)) return;  // (write tracking)
     ucontext_t *uc = ctx;
     static volatile int depth;
     if (sig == SIGABRT && depth++ > 0) { signal(SIGABRT, SIG_DFL); abort(); }  // (nested: just die)

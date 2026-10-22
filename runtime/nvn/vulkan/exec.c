@@ -51,6 +51,7 @@ void vk_collect_dead(void);
 #endif
 typedef struct {
     VkCommandBuffer main, upload;
+    VkCommandPool cpool;  // (their own pool, reset whole when the slot is reused - begin_cb)
     bool main_begun, upload_begun, ts;  // ts: GPU timestamps written (profiling)
     uint64_t seq;
     VkDescriptorPool pools[16];
@@ -443,6 +444,7 @@ static Sub *sub(void) {
             s->ts = false;
         }
         for (int i = 0; i < s->npools; i++) vkResetDescriptorPool(g_vk.dev, s->pools[i], 0);
+        if (s->cpool) vkResetCommandPool(g_vk.dev, s->cpool, 0);
         s->cur_pool = 0;
         s->seq = submit_seq + 1;
         s->main_begun = s->upload_begun = false;
@@ -450,10 +452,17 @@ static Sub *sub(void) {
     return s;
 }
 
-static void begin_cb(VkCommandBuffer *cb, bool *begun) {
+// A submission slot's command buffers come from its own pool, reset whole (keeping its memory) when the slot is reused
+// (sub). Begun again instead, each buffer reset itself implicitly: Qualcomm's driver then gave its memory back and
+// allocated it again while recording (vkBeginCommandBuffer ~6% of the render thread, plus malloc / munmap).
+static void begin_cb(Sub *s, VkCommandBuffer *cb, bool *begun) {
     if (*begun) return;
+    if (!s->cpool) {
+        VkCommandPoolCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, .queueFamilyIndex = g_vk.qfam};
+        VK_CHECK(vkCreateCommandPool(g_vk.dev, &pi, NULL, &s->cpool));
+    }
     if (!*cb) {
-        VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = g_vk.pool,
+        VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = s->cpool,
                                           .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
         VK_CHECK(vkAllocateCommandBuffers(g_vk.dev, &ai, cb));
     }
@@ -466,7 +475,7 @@ static void gp_mark(VkCommandBuffer cb, const char *fmt, ...);
 VkCommandBuffer vk_cmd(void) {
     Sub *s = sub();
     if (!s->main_begun) {
-        begin_cb(&s->main, &s->main_begun);
+        begin_cb(s, &s->main, &s->main_begun);
         ss_forget();  // (a new command buffer starts with no state)
         if (vk_counter_mode() == 2) {  // this slot's timing counter queries (reset outside any render pass)
             CounterQ *q = &cq[cur_sub];
@@ -497,7 +506,7 @@ VkCommandBuffer vk_cmd(void) {
 VkCommandBuffer vk_upload_cmd(void) {
     Sub *s = sub();
     if (!s->upload_begun) {
-        begin_cb(&s->upload, &s->upload_begun);
+        begin_cb(s, &s->upload, &s->upload_begun);
         // after everything submitted before it: a submission's commands may start while the previous one's still run,
         // and these copies overwrite what those may read (textures being replaced, vertex cache pages)
         vk_full_barrier(s->upload);
@@ -1116,6 +1125,8 @@ void vk_exec_init(void) {
 #ifdef __ANDROID__
     gcopy_mode = !g_vk.host_import && !getenv("LARECOMP_VK_NO_GCOPY");
     if (gcopy_mode) LOG("[vk] no heap import: shader global memory through CPU copies\n");
+    // (for good, without placed memory: the vertex cache and the texture checks fed by write tracking - vc_flush)
+    if (gcopy_mode && !g_vk.map_placed) plat_write_tracking_enable(HEAP_BASE, HEAP_BASE + HEAP_MAX);
 #endif
     if (prof) {
         prof_up_ns = 0;
@@ -3607,9 +3618,14 @@ static bool vcache_lookup(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceS
             vc_on = 0;
         }
     }
-    if (!vc_on || !gmem_buf || size > VC_MAX_RANGE) return false;
+#ifdef __ANDROID__
+    bool cpu_fill = !gmem_buf && gcopy_mode;  // (Qualcomm's driver: filled from the CPU - vc_flush)
+#else
+    bool cpu_fill = false;
+#endif
+    if (!vc_on || (!gmem_buf && !cpu_fill) || size > VC_MAX_RANGE) return false;
     uint64_t lo = (addr - HEAP_BASE) & ~(VC_PAGE - 1), hi = (addr - HEAP_BASE + size + VC_PAGE - 1) & ~(VC_PAGE - 1);
-    if (hi > gmem_size) return false;
+    if (hi > (gmem_buf ? gmem_size : HEAP_MAX)) return false;
     uint64_t pend = vk_pending_seq();
     uint64_t h = (lo * 0x9E3779B97F4A7C15ull) ^ (hi * 0xC2B2AE3D27D4EB4Full);
     uint32_t slot = (uint32_t)(h ^ (h >> 32)) & (VC_TAB - 1), free_slot = ~0u, old_slot = ~0u;
@@ -3697,10 +3713,19 @@ void vc_flush(void) {
             if (nc == 64) { nc = 1; cp[0] = (VkBufferCopy){e->lo, 0, e->hi - e->lo}; break; }  // (scattered: the whole range)
             cp[nc++] = (VkBufferCopy){o, o - e->lo, VC_PAGE};
         }
-        if (nc) {
-            vkCmdCopyBuffer(cb, gmem_buf, e->buf, (uint32_t)nc, cp);
-            for (int k = 0; k < nc; k++) prof_vc_copied += cp[k].size;
+        if (nc && gmem_buf) vkCmdCopyBuffer(cb, gmem_buf, e->buf, (uint32_t)nc, cp);
+        else if (nc) {  // (copy mode: no heap buffer - the written pages go through the upload ring)
+            uint64_t tot = 0, o = 0;
+            for (int k = 0; k < nc; k++) tot += cp[k].size;
+            VkSpan sp = vk_transient(tot, 256);
+            for (int k = 0; k < nc; k++) {
+                memcpy((uint8_t *)sp.ptr + o, (const void *)(uintptr_t)(HEAP_BASE + cp[k].srcOffset), cp[k].size);
+                cp[k].srcOffset = sp.off + o;
+                o += cp[k].size;
+            }
+            vkCmdCopyBuffer(cb, sp.buf, e->buf, (uint32_t)nc, cp);
         }
+        for (int k = 0; k < nc; k++) prof_vc_copied += cp[k].size;
         e->gen = g;
     }
     vc_npend = 0;
@@ -3714,6 +3739,9 @@ static bool guest_direct(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSi
     static int copy = -1;
     if (copy < 0) copy = getenv("LARECOMP_VK_COPY_VERTICES") != NULL;
     if (copy || addr < HEAP_BASE) return false;
+#ifdef __ANDROID__
+    if (gcopy_mode && !gmem_buf) return addr + size <= HEAP_BASE + HEAP_MAX && vcache_lookup(addr, size, buf, off);  // (else copied)
+#endif
     if (addr + size > HEAP_BASE + gmem_size && kernel_heap_size() != gmem_tried) { gmem_tried = kernel_heap_size(); gmem_info(); }
     if (!gmem_buf || addr + size > HEAP_BASE + gmem_size) return false;
     if (vcache_lookup(addr, size, buf, off)) return true;
