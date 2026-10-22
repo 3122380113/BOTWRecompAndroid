@@ -42,6 +42,7 @@ class Module:
     def __init__(self, name, path, base, simd='asm'):
         self.name = name
         self.nso = Nso(path)
+        self.patches = patches_for(self.nso.build_id)  # (tools/patches.py: this build's, by its build id)
         self.base = base
         n = self.nso
         self.lo = base + n.text[0]
@@ -362,9 +363,9 @@ class Module:
             if a in labels:
                 flush()
                 out.append(f'L_{a:x}:;')
-            if a in PATCHES:  # hand-written replacement for one instruction (tools/patches.py)
+            if a in self.patches:  # hand-written replacement for one instruction (tools/patches.py)
                 flush()
-                out.append('    ' + rebase_patch(PATCHES[a](self, a)))
+                out.append('    ' + rebase_patch(self.patches[a](self, a)))
                 last = 'op'
                 continue
             k = ins.kind
@@ -425,7 +426,7 @@ class Module:
         return out
 
 
-from patches import PATCHES
+from patches import patches_for
 
 # --dyn-base (lifter.gaddr): jump table and dispatch switches compare window offsets, so their case labels stay
 # constants; the hand-written patches' code addresses move with the window like the lifted ones.

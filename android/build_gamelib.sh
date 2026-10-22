@@ -7,9 +7,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 R=$PWD
 EXEFS=${1:?usage: android/build_gamelib.sh <exefs folder (main, sdk, ...)>}
-GEN=$R/generated-android-dyn
-OUT=$R/android/out
-W=$R/android/out/gamelib-build
+# (GAMELIB_GEN / GAMELIB_OUT: another game version beside the usual one, e.g. 1.6.0 in generated-android-dyn-160)
+GEN=${GAMELIB_GEN:-$R/generated-android-dyn}
+OUT=${GAMELIB_OUT:-$R/android/out}
+W=$OUT/gamelib-build
 
 SDK=${ANDROID_HOME:-${LOCALAPPDATA:-$HOME}/Android/Sdk}
 SDK=${SDK//\\//}
@@ -24,6 +25,13 @@ if [ ! -f "$GEN/main/main_table.c" ] || [ ! -f "$GEN/sdk/sdk_table.c" ]; then
     (cd tools && "../$PY" gen.py sdk "$EXEFS/sdk" 0x7004000000 "$GEN/sdk" --hle ../runtime/hle/hle_symbols.txt --simd asm --dyn-base)
     (cd tools && "../$PY" gen.py main "$EXEFS/main" 0x7000000000 "$GEN/main" --simd asm --dyn-base)
 fi
+
+# the files whose largest function has over 15000 labels: compiled at -O0 (android/gamelib/CMakeLists.txt, heavy.txt).
+# v1.6.0: 4 files, 15k-34k labels - each took clang hours at -O1/-O2; the largest under it (14.5k) compiles normally
+(cd "$GEN" && for f in main/*.c sdk/*.c; do
+    awk -v f="$f" '/^[a-zA-Z].* f_[0-9a-f]+\(.*\) \{$/ {n = 0} /^L_[0-9a-f]+:/ {if (++n > 15000) {print f; exit}}' "$f"
+done) > "$GEN/heavy.txt"
+echo "heavy (at -O0): $(tr '\n' ' ' < "$GEN/heavy.txt")"
 
 "$CMAKE_DIR/cmake$EXE" -S "$R/android/gamelib" -B "$W" -G Ninja -DCMAKE_MAKE_PROGRAM="$CMAKE_DIR/ninja$EXE" \
     -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-30 \

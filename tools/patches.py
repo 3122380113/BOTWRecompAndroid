@@ -22,7 +22,10 @@ BOTW v1.0.0 (the code addresses are that build's; docs/BOTW-PORT.md):
 """
 import struct
 
-PATCHES = {}
+PATCHES = {}      # v1.0.0 (main build 2094f152...)
+PATCHES_160 = {}  # v1.6.0 (main build 8e9978d5...): the same fixes at that build's addresses
+BUILD_1_0_0 = '2094f152836683a3632c6153fd84ab80'
+BUILD_1_6_0 = '8e9978d50bdd20b4c8395a106c27ffde'
 
 
 def _clustered_dl_heap_null(gen, a):
@@ -48,3 +51,34 @@ def _frame_ticks(gen, a):
 
 
 PATCHES[0x7000c4f4d4] = _frame_ticks
+
+
+# v1.6.0 (found by the same code: the instructions around each 1.0.0 site; its structs moved by a few bytes)
+# - 0x7001861440: act::ClusteredRenderer's teardown - here without the "created" check of 1.0.0: it reads the
+#   display-list heap at this+0xbf0 and calls its virtual destroy unconditionally; a null heap now goes on to the
+#   flags' update (w8 = this+0xc9c, as the destroy's two paths load it) and the field's clearing at 0x7001861470.
+def _clustered_dl_heap_null_160(gen, a):
+    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    assert w == 0xf9400008, hex(w)  # ldr x8, [x0]
+    return ('if (c->x[0] == 0) { uint64_t ea = c->x[20] + 0xc9cull; c->x[8] = (uint64_t)(uint32_t)LD32(ea); '
+            'goto L_7001861470; }  /* (tools/patches.py) */ '
+            '{ uint64_t ea = c->x[0] + 0x0ull; uint64_t v = LD64(ea); c->x[8] = (uint64_t)(v); }')
+
+
+PATCHES_160[0x7001861440] = _clustered_dl_heap_null_160
+
+
+# - 0x700161495c: sead's frame loop, the last frame's duration at this+0x248 (1.0.0: +0x240, into x9)
+def _frame_ticks_160(gen, a):
+    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    assert w == 0xf9412668, hex(w)  # ldr x8, [x19, #0x248]
+    return ('{ extern int64_t rt_frame_ticks(int64_t); uint64_t ea = c->x[19] + 0x248ull; '
+            'c->x[8] = (uint64_t)rt_frame_ticks((int64_t)LD64(ea)); }  /* (tools/patches.py) */')
+
+
+PATCHES_160[0x700161495c] = _frame_ticks_160
+
+
+def patches_for(build_id):
+    """The patches for a module, by its build id (sdk and anything unknown: none)."""
+    return {BUILD_1_0_0: PATCHES, BUILD_1_6_0: PATCHES_160}.get(build_id[:32], {})

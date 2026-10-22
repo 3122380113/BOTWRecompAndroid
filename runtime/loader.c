@@ -14,6 +14,8 @@ enum { R_ABS64 = 257, R_GLOB_DAT = 1025, R_JUMP_SLOT = 1026, R_RELATIVE = 1027 }
 typedef struct { uint32_t name; uint8_t info, other; uint16_t shndx; uint64_t value, size; } Elf64Sym;
 typedef struct { uint64_t off, info; int64_t addend; } Elf64Rela;
 
+int g_game_version;
+
 static size_t lz4_decompress(const uint8_t *src, size_t srclen, uint8_t *dst, size_t dstlen) {
     const uint8_t *s = src, *se = src + srclen;
     uint8_t *d = dst, *de = dst + dstlen;
@@ -53,6 +55,16 @@ static void load_nso(Module *m, const char *path, uint64_t base) {
     size_t len;
     uint8_t *raw = read_file(path, &len);
     if (!raw || memcmp(raw, "NSO0", 4)) FATAL("cannot load %s\n", path);
+    if (base == MAIN_BASE) {  // (the game's version: g_game_version)
+        static const struct { uint8_t id[8]; int version; } builds[] = {
+            {{0x20, 0x94, 0xf1, 0x52, 0x83, 0x66, 0x83, 0xa3}, 100},
+            {{0x8e, 0x99, 0x78, 0xd5, 0x0b, 0xdd, 0x20, 0xb4}, 160},
+        };
+        for (unsigned i = 0; i < sizeof builds / sizeof *builds; i++)
+            if (!memcmp(raw + 0x40, builds[i].id, 8)) g_game_version = builds[i].version;
+        LOG("[loader] main build %02x%02x%02x%02x...: game version %d\n", raw[0x40], raw[0x41], raw[0x42], raw[0x43],
+            g_game_version);
+    }
     uint32_t flags = *(uint32_t *)(raw + 0xC);
     uint32_t seg[3][3];  // file_off, mem_off, size
     for (int i = 0; i < 3; i++) memcpy(seg[i], raw + 0x10 + i * 0x10, 12);

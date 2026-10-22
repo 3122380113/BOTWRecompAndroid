@@ -50,6 +50,9 @@ extern uint64_t g_guest_lo;
 #endif
 
 // ---- loader.c
+// The game's version, from main's build id (loader_load): 100 for v1.0.0, 160 for v1.6.0, 0 unknown. What differs
+// between them in the runtime keys on this (1.6.0 is on SDK 7.3.2 with NVN 53, 1.0.0 on SDK 0.12.14 with NVN 52).
+extern int g_game_version;
 typedef struct Module {
     const char *name;
     uint64_t base, size;

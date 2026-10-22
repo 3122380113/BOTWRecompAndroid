@@ -75,7 +75,12 @@ NVN(nvnDeviceWaitForError) {
     RET(0);
 }
 NVN(nvnDeviceSetDebugLabel) { (void)c; }
-NVN(nvnDeviceGetInteger) { *(int32_t *)AP(2) = (int32_t)device_integer((uint32_t)A(1)); }
+NVN(nvnDeviceGetInteger) {
+    uint32_t which = (uint32_t)A(1);
+    uint32_t v = device_integer(which);
+    if (g_game_version == 160 && which <= 1) v = which ? 311 : 53;  // (v1.6.0 needs NVN 53.x, minor >= 311: its SDK 7.3.2)
+    *(int32_t *)AP(2) = (int32_t)v;
+}
 NVN(nvnDeviceGetCurrentTimestampInNanoseconds) {
     RET(plat_now_ns());
 }

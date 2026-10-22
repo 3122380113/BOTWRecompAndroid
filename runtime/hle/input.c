@@ -474,6 +474,27 @@ HLE_FUNC("_ZN2nn3hid12GetNpadStateEPNS0_16NpadJoyLeftStateERKj", hid_state_left)
 HLE_FUNC("_ZN2nn3hid12GetNpadStateEPNS0_17NpadHandheldStateERKj", hid_state_handheld) { fill_state(c); }
 HLE_FUNC("_ZN2nn3hid12GetNpadStateEPNS0_17NpadJoyRightStateERKj", hid_state_right) { fill_state(c); }
 
+// v1.6.0 (SDK 7.3.2) reads the newest `count` states instead: int GetNpadStates(State *out, int count, const NpadIdType &).
+// The current state first, then copies with older sampling numbers (the game skips those it has seen by that number).
+static void fill_states(Cpu *c) {
+    uint8_t *out = (uint8_t *)(uintptr_t)c->x[0];
+    int n = (int)(int32_t)c->x[1];
+    if (n < 1) { c->x[0] = 0; return; }
+    if (n > 16) n = 16;  // (the hid ring's depth)
+    c->x[1] = c->x[2];   // (fill_state's arguments: state, id)
+    fill_state(c);
+    for (int i = 1; i < n; i++) {
+        memcpy(out + i * 0x28, out, 0x28);
+        *(int64_t *)(out + i * 0x28) -= i;
+    }
+    c->x[0] = (uint64_t)n;
+}
+HLE_FUNC("_ZN2nn3hid13GetNpadStatesEPNS0_16NpadFullKeyStateEiRKj", hid_states_fullkey) { fill_states(c); }
+HLE_FUNC("_ZN2nn3hid13GetNpadStatesEPNS0_16NpadJoyDualStateEiRKj", hid_states_dual) { fill_states(c); }
+HLE_FUNC("_ZN2nn3hid13GetNpadStatesEPNS0_16NpadJoyLeftStateEiRKj", hid_states_left) { fill_states(c); }
+HLE_FUNC("_ZN2nn3hid13GetNpadStatesEPNS0_17NpadHandheldStateEiRKj", hid_states_handheld) { fill_states(c); }
+HLE_FUNC("_ZN2nn3hid13GetNpadStatesEPNS0_17NpadJoyRightStateEiRKj", hid_states_right) { fill_states(c); }
+
 // FullKey for player 1 only (we report docked mode, where Handheld is unavailable)
 HLE_FUNC("_ZN2nn3hid15GetNpadStyleSetERKj", hid_style_set) {
     uint32_t id = *(uint32_t *)(uintptr_t)c->x[0];

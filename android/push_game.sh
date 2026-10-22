@@ -8,7 +8,9 @@ export MSYS_NO_PATHCONV=1  # (Git Bash: leave the device paths alone)
 cd "$(dirname "$0")/.."
 R=$PWD
 SRC=${1:?usage: android/push_game.sh <folder with exefs/ and romfs/>}
-D=/sdcard/Android/data/com.botwrecomp.android/files/extracted
+# (GAME_DEST / GAMELIB_OUT: another game version in its own data root, e.g. 1.6.0 in files/v160 - android/run_v160.sh)
+D=${GAME_DEST:-/sdcard/Android/data/com.botwrecomp.android/files/extracted}
+LIB=${GAMELIB_OUT:-android/out}
 DEV_TMP=/data/local/tmp/botwrecomp
 
 SDK=${ANDROID_HOME:-${LOCALAPPDATA:-$HOME}/Android/Sdk}
@@ -34,10 +36,10 @@ if ! adb shell test -s "$D/romfs.bin"; then
     adb shell "$DEV_TMP/romfs_tool" "$D/romfs" "$D/romfs.bin"
 fi
 
-if [ -f android/out/botwgame.so ]; then
-    adb push android/out/botwgame.so android/out/botwgame.so.id "$D/"
+if [ -f "$LIB/botwgame.so" ]; then
+    adb push "$LIB/botwgame.so" "$LIB/botwgame.so.id" "$D/"
 else
-    echo "no android/out/botwgame.so yet (android/build_gamelib.sh)"
+    echo "no $LIB/botwgame.so yet (android/build_gamelib.sh)"
 fi
 # what adb pushes belongs to the shell user (rwxrws---): readable by the app only once others may read it (the app's
 # own setup makes these files as the app)

@@ -576,12 +576,51 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
     case 14: memset(resp->data, 0, 0x20); resp_size(resp, 0x20); break;
     default: LOG("[fs] IFileSystem cmd %u (ok)\n", req->cmd);
     }
+    // (failures logged: newer SDKs abort on a result they don't expect - v1.6.0's SDK 7.3.2 in its save thread)
+    if (resp->result) LOG("[fs] IFileSystem cmd %u %s: result %#x\n", req->cmd, p, resp->result);
+}
+
+// A copy of folder src at dst (made by this process, so its files are this app's: on Android, files adb copied belong
+// to the shell user, and the game couldn't open them for writing - result 2/4000)
+static void copy_tree(const char *src, const char *dst) {
+    DIR *d = opendir(src);
+    if (!d) return;
+    mkdir(dst, 0755);
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        char a[2048], b[2048];
+        snprintf(a, sizeof a, "%s/%s", src, e->d_name);
+        snprintf(b, sizeof b, "%s/%s", dst, e->d_name);
+        struct stat sb;
+        if (stat(a, &sb)) continue;
+        if (S_ISDIR(sb.st_mode)) { copy_tree(a, b); continue; }
+        int in = open(a, O_RDONLY), out = in < 0 ? -1 : open(b, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+        char buf[65536];
+        ssize_t n;
+        while (out >= 0 && (n = read(in, buf, sizeof buf)) > 0) if (write(out, buf, (size_t)n) != n) break;
+        if (in >= 0) close(in);
+        if (out >= 0) close(out);
+    }
+    closedir(d);
 }
 
 static Service *open_host_fs(const char *sub) {
     HostFs *fs = calloc(1, sizeof *fs);
     if (getenv("LARECOMP_SAVE_DIR")) g_save_dir = getenv("LARECOMP_SAVE_DIR");  // test runs use a scratch copy
     snprintf(fs->root, sizeof fs->root, "%s/%s", g_save_dir, sub);
+    {   // LARECOMP_SAVE_SEED=<save folder>: a save that doesn't exist yet starts as a copy of that one's (another game
+        // version's data root starting from the player's saves - android/run_v160.sh)
+        const char *seed = getenv("LARECOMP_SAVE_SEED");
+        struct stat sb;
+        if (seed && *seed && stat(fs->root, &sb)) {
+            char from[1200];
+            snprintf(from, sizeof from, "%s/%s", seed, sub);
+            mkdir(g_save_dir, 0755);
+            copy_tree(from, fs->root);
+            LOG("[fs] save %s started as a copy of %s\n", fs->root, from);
+        }
+    }
     char cmd[1200];
     snprintf(cmd, sizeof cmd, "%s", fs->root);
     for (char *q = cmd + 1; *q; q++)
