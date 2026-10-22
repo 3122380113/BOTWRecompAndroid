@@ -237,3 +237,19 @@ Perfil da thread de render no driver da Qualcomm (simpleperf, platô): ~37 ms po
   - **O que foi feito:** os buffers de constantes do jogo foram para os sets 2 e 3, separados das texturas (sets 0 e 1), e os sets de texturas só eram religados quando mudavam.
   - **Turnip, platô:** binds de set de texturas de ~4.050 → ~910 por quadro, com os UBOs religados a cada draw. A GPU ficou igual: 22,8 ms contra 22,1 ms sem a separação, dentro do ruído.
   - **Conclusão:** o custo de GPU por draw não está no bind de descriptor sets. O próximo suspeito é o próprio trabalho por draw no shader (por exemplo, as leituras de constantes via `cbr` com `min` por acesso) ou o custo fixo de draw do Turnip.
+- **De onde vem o custo de GPU por draw (Turnip, G-buffer, quadro 2400, `[gpuprof]`).** Chaves de teste temporárias, removidas depois:
+
+| Condição | G-buffer |
+|---|---|
+| Normal | 8,4–8,8 ms, ~3.600 draws |
+| `TU_DEBUG=sysmem` | 8,9 ms |
+| `TU_DEBUG=gmem` | 22,9 ms |
+| Scissor de 1 pixel em todos os draws | 10,4 ms |
+| Só 3 vértices por draw | **5,7 ms** |
+| Sem rebind de sets dentro do mesmo layout | ~2,2 µs por draw, igual ao normal (o jogo passa a desenhar ~2.650 objetos, porque a imagem errada muda o culling) |
+
+  - O Turnip já renderiza o G-buffer direto na memória; forçar tiles (GMEM) piora muito.
+  - Quase nada é trabalho de pixel. O scissor de 1 pixel até piora, pela troca de scissor a cada draw.
+  - O custo se divide em ~1,6 µs fixos por draw (~5,7 ms) mais ~3 ms de trabalho de vértice.
+  - Os binds de set não explicam o custo fixo.
+  - **Conclusão:** o custo fixo é do próprio Turnip por draw (estado, busca de vértices), e só cai com menos draws (LOD/distância do jogo) ou com shaders de vértice mais leves.
