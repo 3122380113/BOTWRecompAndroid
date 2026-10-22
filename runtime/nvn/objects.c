@@ -545,7 +545,7 @@ static NvnTexture *texture_from_builder(uint64_t b) {
 // storage address) and the list of all textures.
 enum { OWNER_SLOTS = 1 << 18, DESC_BUCKETS = 1 << 16 };
 #define OWNER_GONE 1ull
-typedef struct { uint64_t guest; NvnTexture *t; } TexOwner;
+typedef struct { uint64_t guest; NvnTexture *t; uint8_t swizzle[4]; } TexOwner;  // (its own swizzle: see texture_same_storage)
 static TexOwner g_owner[OWNER_SLOTS];
 static int g_owner_used, g_owner_gone;
 static NvnTexture *g_desc_hash[DESC_BUCKETS];
@@ -567,7 +567,14 @@ static NvnTexture *owner_take(uint64_t g) {  // removes and returns the texture 
         }
     return NULL;
 }
-static void owner_put(uint64_t g, NvnTexture *t) {  // (g owns nothing: owner_take first)
+// The swizzle guest object g was initialized with (NULL: g owns no texture)
+static const uint8_t *owner_swizzle(uint64_t g) {
+    uint32_t i = owner_hash(g);
+    for (int n = 0; n < OWNER_SLOTS && g_owner[i].guest; n++, i = (i + 1) & (OWNER_SLOTS - 1))
+        if (g_owner[i].guest == g) return g_owner[i].swizzle;
+    return NULL;
+}
+static void owner_put(uint64_t g, NvnTexture *t, const uint8_t swizzle[4]) {  // (g owns nothing: owner_take first)
     if ((g_owner_used + g_owner_gone + 1) * 4 > OWNER_SLOTS * 3) {  // tombstones: rebuild the table in place
         TexOwner *keep = malloc(sizeof(TexOwner) * (size_t)(g_owner_used ? g_owner_used : 1));
         if (!keep) FATAL("nvn: out of memory rebuilding the texture owners\n");
@@ -588,6 +595,7 @@ static void owner_put(uint64_t g, NvnTexture *t) {  // (g owns nothing: owner_ta
     if (g_owner[i].guest == OWNER_GONE) g_owner_gone--;
     g_owner[i].guest = g;
     g_owner[i].t = t;
+    memcpy(g_owner[i].swizzle, swizzle, 4);
     g_owner_used++;
 }
 
@@ -602,10 +610,20 @@ static bool texture_same_desc(const NvnTexture *a, const NvnTexture *b) {
            a->layout.block_height_log2 == b->layout.block_height_log2 &&
            a->layout.block_depth_log2 == b->layout.block_depth_log2;
 }
+// The same image: the description but its swizzle, which only says how it is read. BOTW 1.8.2 draws its minimap
+// into a 288x288 target and samples it through a second object over the same memory with alpha ONE: as two
+// textures, the second was an image of its own, never drawn (the map layer of the minimap was missing). Each guest
+// object keeps its swizzle (owner_swizzle); register_texture gives an entry a view with it.
+static bool texture_same_storage(const NvnTexture *a, const NvnTexture *b) {
+    if (!a || !b) return false;
+    NvnTexture x = *a;
+    memcpy(x.swizzle, b->swizzle, 4);
+    return texture_same_desc(&x, b);
+}
 static NvnTexture *texture_find_same(const NvnTexture *t) {
     if (!t->addr) return NULL;
     for (NvnTexture *e = g_desc_hash[desc_hash(t->addr)]; e; e = e->hnext)
-        if (texture_same_desc(e, t)) return e;
+        if (texture_same_storage(e, t)) return e;
     return NULL;
 }
 static void texture_track(NvnTexture *t) {  // a new host texture: no references yet
@@ -696,8 +714,11 @@ NVN(nvnTextureInitialize) {
     g_tex_stat_init++;
     NvnTexture *t = texture_from_builder(A(1));
     if (nvn_watch_texaddr() && t->addr <= nvn_watch_texaddr() && nvn_watch_texaddr() < t->addr + tegra_total_size(&t->layout))
-        LOG("[watch] init %llx: %ux%ux%u fmt %#x flags %#x target %u levels %u at %llx (lr %llx)\n", (unsigned long long)A(0),
+        LOG("[watch] init %llx: %ux%ux%u fmt %#x flags %#x target %u levels %u at %llx (pool offset %llx, samples %u, "
+            "ds %u, stride %llu, swizzle %u %u %u %u, block %u/%u) (lr %llx)\n", (unsigned long long)A(0),
             t->width, t->height, t->depth, t->format, t->flags, t->target, t->levels, (unsigned long long)t->addr,
+            (unsigned long long)t->pool_offset, t->samples, t->ds_mode, (unsigned long long)t->stride, t->swizzle[0],
+            t->swizzle[1], t->swizzle[2], t->swizzle[3], t->layout.block_height_log2, t->layout.block_depth_log2,
             (unsigned long long)c->x[30]);
     {  // LARECOMP_WATCH_READ_TEX=<w>x<h>x<d>: who reads the storage of the first texture of that shape (dispatch.c)
         static int ww = -1, wh, wd, wf = -1;
@@ -717,18 +738,34 @@ NVN(nvnTextureInitialize) {
     }
     pthread_mutex_lock(&g_live_lock);
     NvnTexture *old = owner_take(A(0));
-    NvnTexture *same = old && texture_same_desc(old, t) ? old : texture_find_same(t);
+    NvnTexture *same = old && texture_same_storage(old, t) ? old : texture_find_same(t);
+    uint8_t swizzle[4];
+    memcpy(swizzle, t->swizzle, 4);
     if (same) {
         free(t);
         t = same;
         g_tex_stat_reused++;
     } else {
+        if (ENV("LARECOMP_LOG_TEXALIAS"))  // the same memory and size as a live texture, yet another image: why
+            for (NvnTexture *e = g_desc_hash[desc_hash(t->addr)]; e; e = e->hnext)
+                if (e->addr == t->addr && e->width == t->width && e->height == t->height) {
+                    static int n;
+                    if (n++ < 40)
+                        LOG("[alias] %ux%u at %llx: fmt %#x/%#x flags %#x/%#x target %u/%u levels %u/%u depth %u/%u "
+                            "samples %u/%u ds %u/%u stride %llu/%llu pool off %llx/%llx block %u/%u (lr %llx)\n",
+                            t->width, t->height, (unsigned long long)t->addr, e->format, t->format, e->flags, t->flags,
+                            e->target, t->target, e->levels, t->levels, e->depth, t->depth, e->samples, t->samples,
+                            e->ds_mode, t->ds_mode, (unsigned long long)e->stride, (unsigned long long)t->stride,
+                            (unsigned long long)e->pool_offset, (unsigned long long)t->pool_offset,
+                            e->layout.block_height_log2, t->layout.block_height_log2, (unsigned long long)c->x[30]);
+                    break;
+                }
         texture_track(t);
     }
     t->refs++;
     t->owners++;
     t->finalized = false;
-    owner_put(A(0), t);
+    owner_put(A(0), t, swizzle);
     pthread_mutex_unlock(&g_live_lock);
     if (old) {
         g_tex_stat_reinit++;
@@ -1035,6 +1072,17 @@ static void register_texture(Cpu *c) {
     }
     e->has_view = A(3) != 0;
     if (e->has_view) memcpy(&e->view, AP(3), sizeof e->view);
+    {   // the object's own swizzle, where it shares its texture with an object of another (texture_same_storage)
+        pthread_mutex_lock(&g_live_lock);
+        const uint8_t *sw = t ? owner_swizzle(A(2)) : NULL;
+        if (sw && memcmp(sw, t->swizzle, 4) && !(e->has_view && (e->view.setmask & 8))) {
+            if (!e->has_view) memset(&e->view, 0, sizeof e->view);
+            e->has_view = true;
+            e->view.setmask |= 8;
+            memcpy(e->view.swizzle, sw, 4);
+        }
+        pthread_mutex_unlock(&g_live_lock);
+    }
     static int watch_id = -2;  // LARECOMP_WATCH_TEXID=<hex id>: its registrations (texture, view)
     if (watch_id == -2) watch_id = getenv("LARECOMP_WATCH_TEXID") ? (int)strtol(getenv("LARECOMP_WATCH_TEXID"), NULL, 16) : -1;
     if (id == watch_id || (watch_id == 0x7fffffff && t && t->width == 320 && t->height == 180 && t->levels == 5))  // (7fffffff: the bloom chain)

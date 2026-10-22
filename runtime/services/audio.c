@@ -103,7 +103,7 @@ static int16_t adpcm_next(const uint8_t *data, uint64_t size, uint32_t s, const 
     int scale = ps & 15, ci = (ps >> 4) & 7;
     uint8_t b = data[hdr + 1 + n / 2];
     int nib = (n & 1) ? (int8_t)(b << 4) >> 4 : (int8_t)b >> 4;
-    int pred = coefs[ci * 2] * cs->h0 + coefs[ci * 2 + 1] * cs->h1;
+    int pred = coefs ? coefs[ci * 2] * cs->h0 + coefs[ci * 2 + 1] * cs->h1 : 0;  // (coefficients outside guest memory)
     int v = ((nib * (2048 << scale)) + pred + 1024) >> 11;
     if (v > 32767) v = 32767;
     if (v < -32768) v = -32768;
@@ -120,14 +120,26 @@ static void mark_end(ChanState *cs, WaveBuf *wb, uint32_t *idx) {
     if (wb->eos) cs->played = 0;
 }
 
+static bool in_guest(uint64_t addr, uint64_t size) { return addr >= GUEST_LO && addr < GUEST_HI && size <= GUEST_HI - addr; }
+
 // Decode up to `need` samples of channel `ch` into out; returns how many were produced.
 static int decode_voice(Voice *v, int ch, ChanState *cs, int16_t *out, int need) {
     int y = 0;
     uint32_t idx = cs->wb_index;
-    const int16_t *coefs = (const int16_t *)(uintptr_t)v->ds_addr;
+    const int16_t *coefs = in_guest(v->ds_addr, 32) ? (const int16_t *)(uintptr_t)v->ds_addr : NULL;
     while (y < need) {
         if (!cs->valid[idx]) break;  // starving
         WaveBuf *wb = &v->wb[idx];
+        // A buffer outside guest memory: play nothing rather than read it (BOTW 1.8.2's SDK 20 sends some the
+        // mixer misreads - a crash in adpcm_next; SavageWindRecomp, MIT)
+        if ((wb->addr && !in_guest(wb->addr, wb->size)) || (wb->ctx && !in_guest(wb->ctx, 6))) {
+            static int logged;
+            if (logged++ < 8)
+                LOG("[audren] wave buffer %llx+%llx (context %llx, fmt %u) is outside guest memory: skipped\n",
+                    (unsigned long long)wb->addr, (unsigned long long)wb->size, (unsigned long long)wb->ctx, v->fmt);
+            mark_end(cs, wb, &idx);
+            continue;
+        }
         if (cs->offset == 0 && v->fmt == 6 && wb->ctx) {
             const int16_t *c = (const int16_t *)(uintptr_t)wb->ctx;
             cs->pred_scale = c[0]; cs->h0 = c[1]; cs->h1 = c[2];

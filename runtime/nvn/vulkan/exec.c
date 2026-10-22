@@ -2341,6 +2341,11 @@ static void build_pipeline(void *arg) {
     }
 #endif
     atomic_fetch_add(&stat_compiles, 1);
+    if (r != VK_SUCCESS) {  // (each failing key once: its draws are dropped)
+        static int n;
+        if (n++ < 20) LOG("[vk] graphics pipeline failed (%d): vs %llx fs %llx\n", (int)r,
+                          (unsigned long long)k->prog->code[0], (unsigned long long)k->prog->code[1]);
+    }
     atomic_store(&pp->state, r == VK_SUCCESS ? 1 : 2);
 }
 
@@ -4448,7 +4453,11 @@ static void draw_(CmdRec *r, bool indexed) {
         run_job(build_pipeline, pp);
     }
     if (keep) wait_built(&pp->state);
-    if (atomic_load(&pp->state) != 1) { stat_skipped++; return; }
+    if (atomic_load(&pp->state) != 1) {
+        if (g_debug_frame) LOG("[draw]   skipped: pipeline %s\n", atomic_load(&pp->state) ? "failed" : "still building");
+        stat_skipped++;
+        return;
+    }
     ss_enabled();
     if (ss_need(SS_PIPE, ss.pipe == pp->pipe)) { ss.pipe = pp->pipe; stat_pipe_binds++; vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pp->pipe); }
     uint64_t prof_td_ = prof ? SDL_GetTicksNS() : 0;
