@@ -2,8 +2,7 @@
 
 **English** | [Português](README.pt-BR.md)
 
-A static recompilation of *The Legend of Zelda: Breath of the Wild* (Nintendo Switch, **v1.0.0**) for PC (Windows,
-Linux, macOS) and Android. This is **not emulation**: the game's ARM64 code becomes C compiled for your machine, and
+A static recompilation of *The Legend of Zelda: Breath of the Wild* (Nintendo Switch, **v1.0.0**) for Android. This is **not emulation**: the game's ARM64 code becomes C compiled for your machine, and
 its graphics (NVN) are translated to Vulkan.
 
 It is built on the engine of **[LAS Recomp](https://github.com/peiikai/LASRecomp)** by peiikai (a recompilation of
@@ -13,6 +12,11 @@ It is built on the engine of **[LAS Recomp](https://github.com/peiikai/LASRecomp
 > **Early work in progress: not playable.** The plan, what is known about the game files and the state of each phase
 > are in [docs/BOTW-PORT.md](docs/BOTW-PORT.md) (in Portuguese).
 
+## Supported platform
+
+Android is the only application target. Desktop ports and packaging were discontinued on 2026-10-22.
+Windows, Linux or macOS may still be used as development hosts with the Android SDK/NDK.
+
 ## Status
 
 - **Recompilation:** the whole game code (main: 104,671 functions; sdk: 17,689) is lifted to C with no unsupported
@@ -21,7 +25,7 @@ It is built on the engine of **[LAS Recomp](https://github.com/peiikai/LASRecomp
   up graphics (NVN 52 to Vulkan), audio, input and saves, loads its data and **presents its first frames**. It still
   crashes after a few seconds: the order between threads that share the Switch's core 0 is the current work.
 - **Not done yet:** a picture on screen to look at, shaders using Maxwell instructions the translator doesn't know,
-  the desktop build (Windows / Linux / macOS), movies.
+  movies.
 
 > [!IMPORTANT]
 > Like LAS Recomp, this project is made almost entirely with AI (Claude, by Anthropic, through Claude Code), directed,

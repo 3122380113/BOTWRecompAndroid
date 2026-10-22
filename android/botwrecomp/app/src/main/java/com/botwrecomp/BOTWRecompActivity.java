@@ -70,6 +70,7 @@ public class BOTWRecompActivity extends SDLActivity {
 
     private static final int REQ_GAME = 0x4c41, REQ_DRIVER = 0x4c42;
     private static BOTWRecompActivity self;
+    private WatchMapServer watchMap;
 
     @Override
     protected String[] getLibraries() {
@@ -124,17 +125,22 @@ public class BOTWRecompActivity extends SDLActivity {
         // SDL's own immersive full screen (no status / navigation bar, the camera cutout used): SDL's onCreate asks
         // for the windowed style, and keeps the bars hidden once its full screen mode is on
         setWindowStyle(true);
+        watchMap = new WatchMapServer(this);
+        if (getIntent() != null && WatchMapServer.ACTION.equals(getIntent().getAction()))
+            stats.post(() -> watchMap.showSettings());
     }
 
     @Override
     protected void onResume() {
         super.onResume();
         stats.post(report);
+        if (watchMap != null) watchMap.resume();
     }
 
     @Override
     protected void onPause() {
         stats.removeCallbacks(report);
+        if (watchMap != null) watchMap.pause();
         super.onPause();
     }
 
@@ -244,6 +250,8 @@ public class BOTWRecompActivity extends SDLActivity {
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
+        if (intent != null && WatchMapServer.ACTION.equals(intent.getAction()) && watchMap != null)
+            watchMap.showSettings();
         if (intent != null && SYSTEM_DRIVER.equals(intent.getAction())) {
             Log.i(TAG, "shortcut: back to the system driver");
             dropCustomDriver();

@@ -1,8 +1,8 @@
 // Start screen, shown before the game boots (from LAS Recomp's, styled after Dusklight's launcher): PLAY, SETTINGS,
 // QUIT, game-files status at the lower left. Nothing of the game ships with BOTW Recomp: on first launch the user picks
 // the folder with their own game files (v1.0.0), we check the main module's build id, copy the files and build the
-// game's data image; PLAY stays disabled until that worked. The background is a frame of one of the game's own movies
-// (from the user's files) once extracted.
+// game's data image; PLAY stays disabled until that worked. The background uses the bundled artwork, with a frame
+// from the user's game files as a fallback for packages without the artwork.
 //
 // Skipped with --play, LARECOMP_NO_LAUNCHER=1, or any scripted test run (LARECOMP_INPUT): tests boot straight in.
 // The in-game menu's "Title screen" comes back here without leaving the process (runtime/main.c reboots the game).
@@ -510,7 +510,7 @@ static void remove_fonts() {
     g_font_msg = "Imported fonts removed: the substitute font is used.";
 }
 
-// ------------------------------------------------------------------ background: a movie frame
+// ------------------------------------------------------------------ background: bundled artwork, then a movie frame
 #ifdef __APPLE__
 static id<MTLTexture> g_bg;
 #define BG_TEXID ((ImTextureID)(__bridge void *)g_bg)
@@ -523,8 +523,34 @@ typedef void *GpuDevice;
 static int g_bg_w, g_bg_h;
 
 static void load_background(GpuDevice dev) {
+    if (g_bg) return;
+    char artwork[1100];
+    if (rt_resource("launcher-background.png", "assets/artwork/great-plateau-background-v2.png", artwork, sizeof artwork)) {
+        SDL_Surface *src = SDL_LoadPNG(artwork);
+        SDL_Surface *rgba = src ? SDL_ConvertSurface(src, SDL_PIXELFORMAT_RGBA32) : NULL;
+        if (src) SDL_DestroySurface(src);
+        if (rgba) {
+#ifdef __APPLE__
+            MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                                                                      width:rgba->w height:rgba->h mipmapped:NO];
+            g_bg = [dev newTextureWithDescriptor:td];
+            [g_bg replaceRegion:MTLRegionMake2D(0, 0, rgba->w, rgba->h) mipmapLevel:0
+                     withBytes:rgba->pixels bytesPerRow:rgba->pitch];
+#else
+            // SDL surfaces may pad rows; the upload helper takes tightly packed RGBA pixels.
+            std::vector<uint8_t> pixels((size_t)rgba->w * rgba->h * 4);
+            for (int y = 0; y < rgba->h; y++)
+                memcpy(pixels.data() + (size_t)y * rgba->w * 4, (const uint8_t *)rgba->pixels + (size_t)y * rgba->pitch,
+                       (size_t)rgba->w * 4);
+            g_bg = vk_imgui_texture_rgba(pixels.data(), rgba->w, rgba->h);
+#endif
+            g_bg_w = rgba->w, g_bg_h = rgba->h;
+            SDL_DestroySurface(rgba);
+            if (g_bg) return;
+        }
+    }
 #ifdef LARECOMP_NO_FFMPEG
-    (void)dev;  // (no movie decoder yet: the start screen without its background frame)
+    (void)dev;
 #else
     std::string path = g_root + "/romfs/Movie/Demo101_0.webm";  // (to choose: which movie and frame look best)
     AVFormatContext *fmt = NULL;
@@ -1020,7 +1046,7 @@ extern "C" void launcher_run(const char *root) {
     io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
 
     std::string status = check_game_files(g_root);
-    if (status.empty()) load_background(dev);
+    load_background(dev);
     Page page = status.empty() ? MAIN : SETUP;
     bool play = false;
     // LARECOMP_LAUNCHER_SHOT=<frame>[:<page>] (test): save build/launcher.png at that frame and exit; page: settings[:<tab>] / askdelete / setup

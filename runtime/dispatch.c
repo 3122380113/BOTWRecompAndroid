@@ -11,9 +11,7 @@
 
 #include "gamelib.h"
 #include "hle.h"
-#ifdef __ANDROID__
 #include "kernel.h"
-#endif
 
 typedef struct { const uint64_t *addrs; const GuestFn *fns; uint64_t count, lo, hi; } FnTable;
 static FnTable tables[2];

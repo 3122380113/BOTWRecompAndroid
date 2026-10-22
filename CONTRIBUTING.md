@@ -21,16 +21,14 @@ fine.
 
 ## Reporting bugs
 
-Open a [GitHub issue](https://github.com/mamcjr/BOTWRecomp/issues). Please include your platform (Windows / Linux /
-macOS / Android), hardware (CPU, GPU, phone model and driver), what you did, what happened, and the log (run it from a
-terminal; on Android: logcat, tag `BOTWRecomp`).
+Open a [GitHub issue](https://github.com/mamcjr/BOTWRecomp/issues). Please include the Android device, OS version, GPU and driver, what you did, what happened, and logcat output (tag `BOTWRecomp`).
 
 ## Building
 
-The plan and the state of each phase are in [docs/BOTW-PORT.md](docs/BOTW-PORT.md) (Portuguese). Windows:
-[docs/BUILD-windows.md](docs/BUILD-windows.md); Linux: [docs/linux.md](docs/linux.md); Android: `android/`. Check
-your dump with `cd tools && python botw_dump.py`; `make gen EXEFS=Dump/01007EF00011E000/exefs` recompiles the game
-code from it.
+Android is the only application target. The plan and phase notes are in [docs/BOTW-PORT.md](docs/BOTW-PORT.md) (Portuguese).
+Build the APK with `cd android/botwrecomp && ./gradlew assembleDebug` (Windows: `gradlew.bat assembleDebug`).
+Check your dump with `cd tools && python botw_dump.py`. Build its game library with
+`android/build_gamelib.sh Dump/01007EF00011E000/exefs`.
 
 ## Project layout
 
@@ -40,15 +38,13 @@ code from it.
 - `runtime/` - the host side:
   - `kernel.c`, `loader.c`, `services/` - the Switch OS replacement
   - `hle/` - host implementations of SDK functions (input, movies, display, fonts) and the game hooks (`game.c`)
-  - `nvn/` - the graphics layer: command recording (`cmdbuf.c`), Metal (`renderer.m`, `metal.m`) and Vulkan
-    (`vulkan/`) backends, the shader translator (`maxwell/translate.c`)
+  - `nvn/` - the graphics layer: command recording (`cmdbuf.c`), the Vulkan (`vulkan/`) backend, the shader translator (`maxwell/translate.c`)
   - `ui/` - the ImGui overlay menu and the start screen
 - `android/` - the Android app (Gradle), its dependencies and the game code build for the phone.
 
 ## Testing your change
 
-- Build cleanly on your platform. If you touch shared rendering code, say which backend you tested - a Metal change
-  usually needs a Vulkan counterpart and the other way round.
+- Build the Android APK. For rendering changes, report the device, Vulkan driver and scene used for testing.
 - Test in game, and look at the result: a fix isn't verified until you've seen it work.
 - Many debug hooks are documented where they're defined - grep for `getenv("LARECOMP_` (the engine's prefix, kept
   from LAS Recomp). Give test runs a scratch save folder (`LARECOMP_SAVE_DIR`) so your own saves stay untouched.

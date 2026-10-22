@@ -9,6 +9,8 @@
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
 
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Loopback HTTP bridge to the Zepp app on this phone (enabled by the player). -->
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <application
         android:label="BOTW Recomp"

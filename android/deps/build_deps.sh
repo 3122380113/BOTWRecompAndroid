@@ -1,6 +1,6 @@
 #!/bin/bash
-# android/deps/build_deps.sh: what the Android app links against, from pinned sources (the versions of
-# tools/linux/build_deps.sh where both have them) into android/deps/out for arm64-v8a:
+# android/deps/build_deps.sh: what the Android app links against, from pinned sources
+# into android/deps/out for arm64-v8a:
 #   SDL3 (shared, plus its Java glue), shaderc (one shared library, glslang and SPIRV-Tools inside), and the headers
 #   Vulkan-Headers, Vulkan Memory Allocator and volk (the Vulkan functions come from the driver adrenotools loads),
 #   and the DejaVu Sans font.
@@ -77,7 +77,7 @@ if [ ! -f "$P/lib/libSDL3.so" ]; then
     cp -r "$W/sdl/android-project/app/src/main/java/org/libsdl/app" "$P/java/org/libsdl/"
 fi
 
-# shaderc as one shared library (glslang, SPIRV-Tools inside), like the Linux / Windows builds; its DEPS file pins the
+# shaderc as one shared library (glslang, SPIRV-Tools inside), for the Android Vulkan backend; its DEPS file pins the
 # glslang / SPIRV-Tools / SPIRV-Headers commits (utils/git-sync-deps clones them)
 if [ ! -f "$P/lib/libshaderc_shared.so" ]; then
     unpack shaderc-2026.3.tar.gz shaderc

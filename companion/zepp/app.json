@@ -1,0 +1,27 @@
+{
+  "configVersion": "v3",
+  "app": {
+    "appId": 1202601,
+    "appName": "Recomp Map",
+    "appType": "app",
+    "icon": "icon.png",
+    "version": { "code": 7, "name": "0.2.1" },
+    "vender": "BOTW Recomp",
+    "description": "Mapa local com posição e objetivos do Recomp"
+  },
+  "permissions": [],
+  "runtime": { "apiVersion": { "compatible": "1.0.0", "target": "1.0.0", "minVersion": "1.0.0" } },
+  "targets": {
+    "gtr-4-new": {
+      "module": {
+        "page": { "pages": ["page/world-map", "page/index"] },
+        "app-side": { "path": "app-side/index" },
+        "setting": { "path": "setting/index" }
+      },
+      "platforms": [{ "name": "GTR 4 New", "deviceSource": 9437441 }],
+      "designWidth": 480
+    }
+  },
+  "i18n": { "pt-BR": { "appName": "Recomp Mapa" }, "en-US": { "appName": "Recomp Map" } },
+  "defaultLanguage": "pt-BR"
+}

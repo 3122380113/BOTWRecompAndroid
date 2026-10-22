@@ -14,12 +14,16 @@
 #include <math.h>
 #include <pthread.h>
 #include <stdatomic.h>
+#include <stdio.h>
 #include <string.h>
+#include <vector>
 
 #include "imgui.h"
 
 extern "C" {
 #include "settings.h"
+#include "paths.h"
+uint64_t vk_imgui_texture_rgba(const void *rgba, int w, int h);
 bool menu_input_captured(void);  // ui/menu.mm
 void menu_test_open(void);       // ui/menu.mm: opens the in-game menu
 void menu_request_close(void);   // ui/menu.mm
@@ -273,11 +277,64 @@ extern "C" bool touch_controls_event(const SDL_Event *e) {
     return true;
 }
 
+// One persistent atlas in the menu's ImGui context (the context survives game reboots).
+// Transparent frame holes let the existing fill and opacity settings show through.
+static ImTextureID touch_skin;
+static void load_touch_skin(void) {
+    static bool attempted;
+    if (attempted) return;
+    attempted = true;
+    char path[1100];
+    if (!rt_resource("sheikah-touch-atlas.png", "assets/artwork/sheikah-touch-atlas-v1.png", path, sizeof path)) return;
+    SDL_Surface *source = SDL_LoadPNG(path);
+    SDL_Surface *rgba = source ? SDL_ConvertSurface(source, SDL_PIXELFORMAT_RGBA32) : NULL;
+    if (source) SDL_DestroySurface(source);
+    if (!rgba) return;
+    std::vector<uint8_t> pixels((size_t)rgba->w * rgba->h * 4);
+    for (int y = 0; y < rgba->h; y++)
+        memcpy(pixels.data() + (size_t)y * rgba->w * 4,
+               (const uint8_t *)rgba->pixels + (size_t)y * rgba->pitch, (size_t)rgba->w * 4);
+    touch_skin = (ImTextureID)vk_imgui_texture_rgba(pixels.data(), rgba->w, rgba->h);
+    if (touch_skin) fprintf(stderr, "[touch] Sheikah skin loaded (%dx%d)\n", rgba->w, rgba->h);
+    SDL_DestroySurface(rgba);
+}
+
+enum { SKIN_BUTTON, SKIN_SHOULDER, SKIN_STICK, SKIN_KNOB };
+static bool skin_image(ImDrawList *dl, int sprite, ImVec2 a, ImVec2 b, ImU32 tint) {
+    if (!touch_skin) return false;
+    // Pixel bounds of the four independent drawings in the original 1254-square atlas.
+    static const float bounds[4][4] = {{24, 26, 602, 562}, {633, 185, 1247, 412},
+                                      {22, 617, 606, 1187}, {706, 677, 1175, 1138}};
+    const float *uv = bounds[sprite];
+    dl->AddImage(touch_skin, a, b, ImVec2(uv[0] / 1254, uv[1] / 1254),
+                 ImVec2(uv[2] / 1254, uv[3] / 1254), tint);
+    return true;
+}
+
+static void sheikah_eye(ImDrawList *dl, ImVec2 p, float r, ImU32 color) {
+    float w = r * 0.55f, h = r * 0.22f, stroke = fmaxf(1, r * 0.06f);
+    dl->PathLineTo(ImVec2(p.x - w, p.y));
+    dl->PathBezierCubicCurveTo(ImVec2(p.x - w * 0.35f, p.y - h * 1.8f),
+                              ImVec2(p.x + w * 0.35f, p.y - h * 1.8f), ImVec2(p.x + w, p.y));
+    dl->PathBezierCubicCurveTo(ImVec2(p.x + w * 0.35f, p.y + h * 1.8f),
+                              ImVec2(p.x - w * 0.35f, p.y + h * 1.8f), ImVec2(p.x - w, p.y));
+    dl->PathStroke(color, ImDrawFlags_Closed, stroke);
+    dl->AddCircle(p, r * 0.15f, color, 16, stroke);
+    for (int i = -1; i <= 1; i++) {
+        float x = p.x + i * r * 0.28f, y = p.y - r * 0.38f;
+        dl->AddTriangleFilled(ImVec2(x - r * 0.08f, y), ImVec2(x + r * 0.08f, y),
+                              ImVec2(x, y - r * 0.18f), color);
+    }
+    dl->AddTriangleFilled(ImVec2(p.x - r * 0.09f, p.y + h), ImVec2(p.x + r * 0.09f, p.y + h),
+                          ImVec2(p.x, p.y + r * 0.66f), color);
+}
+
 // Drawn with the in-game overlay (ui/menu.mm menu_render), between ImGui's NewFrame and Render.
 extern "C" void touch_controls_draw(ImVec2 display, ImFont *font) {
     disp_w = display.x, disp_h = display.y;
     last_draw_ms = SDL_GetTicks();
     if (!touch_controls_visible()) return;
+    load_touch_skin();
     ImDrawList *dl = ImGui::GetForegroundDrawList();
     Ctl c[32];
     int n = layout(c);
@@ -285,8 +342,9 @@ extern "C" void touch_controls_draw(ImVec2 display, ImFont *font) {
     float u = disp_h / 100.0f;
     float op = g_settings.touch_opacity > 0.05f ? g_settings.touch_opacity : 1.0f;
     float alpha = (used || editing ? 1.0f : 0.6f) * op;
-    ImU32 fill = IM_COL32(255, 255, 255, (int)(40 * alpha)), fill_on = IM_COL32(255, 255, 255, (int)(120 * op));
-    ImU32 line = IM_COL32(255, 255, 255, (int)(110 * alpha)), text = IM_COL32(255, 255, 255, (int)(200 * alpha));
+    // Alpha values and idle fading are unchanged from the original touch controls.
+    ImU32 fill = IM_COL32(20, 30, 33, (int)(40 * alpha)), fill_on = IM_COL32(45, 205, 235, (int)(120 * op));
+    ImU32 line = IM_COL32(255, 255, 255, (int)(110 * alpha)), text = IM_COL32(240, 235, 219, (int)(200 * alpha));
     if (editing) {
         dl->AddRectFilled(ImVec2(0, 0), display, IM_COL32(0, 0, 0, 90));
         const char *tip = "Drag the controls to move them";
@@ -297,21 +355,23 @@ extern "C" void touch_controls_draw(ImVec2 display, ImFont *font) {
     for (int i = 0; i < n; i++) {
         bool bar = c[i].bit >= C_DONE && c[i].bit <= C_CANCEL;
         bool on = c[i].bit >= 0 && c[i].bit < 16 && (held >> c[i].bit & 1);
-        float fs = (c[i].rect ? c[i].h * (bar ? 0.45f : 0.6f) : c[i].r * 0.9f);
+        float fs = (c[i].rect ? c[i].h * (bar ? 0.45f : 0.48f) : c[i].r * 0.9f);
         ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0, c[i].label);
         ImU32 f = bar ? IM_COL32(60, 90, 70, 230) : on ? fill_on : fill, l = bar ? IM_COL32(236, 194, 84, 255) : line;
         ImU32 tx = bar ? IM_COL32(255, 255, 255, 255) : text;
         if (c[i].rect) {
             ImVec2 a(c[i].x - c[i].w / 2, c[i].y - c[i].h / 2), b(c[i].x + c[i].w / 2, c[i].y + c[i].h / 2);
             dl->AddRectFilled(a, b, f, 1.5f * u);
-            dl->AddRect(a, b, l, 1.5f * u, 0, 0.3f * u);
+            if (bar || !skin_image(dl, SKIN_SHOULDER, a, b, l))
+                dl->AddRect(a, b, l, 1.5f * u, 0, 0.3f * u);
         } else {
             dl->AddCircleFilled(ImVec2(c[i].x, c[i].y), c[i].r, f, 32);
-            dl->AddCircle(ImVec2(c[i].x, c[i].y), c[i].r, l, 32, 0.3f * u);
+            ImVec2 a(c[i].x - c[i].r, c[i].y - c[i].r), b(c[i].x + c[i].r, c[i].y + c[i].r);
+            if (!skin_image(dl, SKIN_BUTTON, a, b, l))
+                dl->AddCircle(ImVec2(c[i].x, c[i].y), c[i].r, l, 32, 0.3f * u);
         }
-        if (c[i].bit == C_MENU) {  // three bars
-            for (int k = -1; k <= 1; k++)
-                dl->AddLine(ImVec2(c[i].x - 2 * u, c[i].y + k * 1.3f * u), ImVec2(c[i].x + 2 * u, c[i].y + k * 1.3f * u), tx, 0.4f * u);
+        if (c[i].bit == C_MENU) {
+            sheikah_eye(dl, ImVec2(c[i].x, c[i].y), c[i].r, IM_COL32(66, 215, 245, (int)(200 * alpha)));
         } else if (c[i].bit >= TB_LEFT && c[i].bit <= TB_DOWN) {  // d-pad: a triangle pointing its way
             static const float dir[4][2] = {{-1, 0}, {0, -1}, {1, 0}, {0, 1}};  // LEFT, UP, RIGHT, DOWN
             const float *d = dir[c[i].bit - TB_LEFT];
@@ -334,8 +394,12 @@ extern "C" void touch_controls_draw(ImVec2 display, ImFont *font) {
         float cx = on ? stick[s].cx : rx, cy = on ? stick[s].cy : ry, kx = on ? stick[s].kx : cx, ky = on ? stick[s].ky : cy;
         pthread_mutex_unlock(&t_lock);
         dl->AddCircleFilled(ImVec2(cx, cy), R, fill, 48);
-        dl->AddCircle(ImVec2(cx, cy), R, line, 48, 0.3f * u);
-        dl->AddCircleFilled(ImVec2(kx, ky), R * 0.45f, on ? fill_on : IM_COL32(255, 255, 255, (int)(70 * alpha)), 32);
+        if (!skin_image(dl, SKIN_STICK, ImVec2(cx - R, cy - R), ImVec2(cx + R, cy + R), line))
+            dl->AddCircle(ImVec2(cx, cy), R, line, 48, 0.3f * u);
+        float kr = R * 0.45f;
+        ImU32 knob = IM_COL32(255, 255, 255, (int)(on ? 120 * op : 70 * alpha));
+        if (!skin_image(dl, SKIN_KNOB, ImVec2(kx - kr, ky - kr), ImVec2(kx + kr, ky + kr), knob))
+            dl->AddCircleFilled(ImVec2(kx, ky), kr, on ? fill_on : IM_COL32(20, 30, 33, (int)(70 * alpha)), 32);
     }
 }
 #endif

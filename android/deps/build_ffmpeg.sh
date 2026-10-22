@@ -1,6 +1,6 @@
 #!/bin/bash
 # android/deps/build_ffmpeg.sh: FFmpeg for Android arm64 into android/deps/out (the movie player, runtime/hle/movie.c,
-# and the start screen's background frame) - the LGPL-only configuration of tools/linux/build_deps.sh: only what the
+# and the start screen's background frame) - an LGPL-only configuration: only what the
 # game's movies need. FFmpeg's configure wants a Unix shell: on Windows run it in WSL
 #   wsl -d Ubuntu-26.04 -- bash android/deps/build_ffmpeg.sh
 # It uses the Linux NDK (the same version as the app; downloaded to ~/android-ndk-r30 when missing) and builds in

@@ -2,8 +2,7 @@
 
 [English](README.md) | **Português**
 
-Uma recompilação estática de *The Legend of Zelda: Breath of the Wild* (Nintendo Switch, **v1.0.0**) para PC
-(Windows, Linux, macOS) e Android. **Não é emulação**: o código ARM64 do jogo vira C compilado para a sua máquina, e
+Uma recompilação estática de *The Legend of Zelda: Breath of the Wild* (Nintendo Switch, **v1.0.0**) para Android. **Não é emulação**: o código ARM64 do jogo vira C compilado para a sua máquina, e
 os gráficos (NVN) são traduzidos para Vulkan.
 
 O projeto parte do motor do **[LAS Recomp](https://github.com/peiikai/LASRecomp)**, de peiikai (uma recompilação de
@@ -13,6 +12,11 @@ O projeto parte do motor do **[LAS Recomp](https://github.com/peiikai/LASRecomp)
 > **Em estágio inicial: ainda não é jogável.** O plano, o que se sabe dos arquivos do jogo e o estado de cada fase
 > estão em [docs/BOTW-PORT.md](docs/BOTW-PORT.md).
 
+## Plataforma suportada
+
+Android é o único alvo do aplicativo. Os ports e pacotes desktop foram descontinuados em 2026-10-22.
+Windows, Linux e macOS podem continuar sendo usados como ambientes de desenvolvimento com o Android SDK/NDK.
+
 ## Estado
 
 - **Recompilação:** todo o código do jogo (main: 104.671 funções; sdk: 17.689) vira C sem nenhuma instrução não
@@ -21,8 +25,7 @@ O projeto parte do motor do **[LAS Recomp](https://github.com/peiikai/LASRecomp)
   inicializa os gráficos (NVN 52 para Vulkan), o áudio, a entrada e os saves, carrega seus dados e **apresenta os
   primeiros quadros**. Ainda cai depois de alguns segundos: a ordem entre as threads que dividem o núcleo 0 do Switch é
   o trabalho atual.
-- **Ainda não:** uma imagem na tela para ver, shaders com instruções Maxwell que o tradutor não conhece, o build
-  desktop (Windows / Linux / macOS), os vídeos.
+- **Ainda não:** uma imagem na tela para ver, shaders com instruções Maxwell que o tradutor não conhece, os vídeos.
 
 > [!IMPORTANT]
 > Como o LAS Recomp, este projeto é feito quase todo com IA (Claude, da Anthropic, pelo Claude Code), dirigido,

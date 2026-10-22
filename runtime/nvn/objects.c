@@ -1000,7 +1000,7 @@ NVN(nvnSamplerPoolRegisterSampler) {
     if (id >= 0 && id < d->count) register_sampler(&((NvnSamplerDesc *)d->entries)[id], HOST(NvnSamplerDesc, A(2)));
     if (getenv("LARECOMP_LOG_SMPREG") && id >= 0 && id < d->count) {  // every registration (diagnosis)
         const NvnSamplerDesc *sd = &((NvnSamplerDesc *)d->entries)[id];
-        LOG("[nvn] RegisterSampler %d <- object %llx wrap %u %u %u min %u lod %.1f..%.1f (lr %llx)\n", id, (unsigned long long)A(2), sd->wrap[0], sd->wrap[1],
+        LOG("[nvn] RegisterSampler %d <- object %llx wrap %u %u %u min %u lod %.1f..%.1f (lr %llx, thread %d)\n", id, (unsigned long long)A(2), sd->wrap[0], sd->wrap[1],
             sd->wrap[2], sd->min_filter, sd->lod_min, sd->lod_max, (unsigned long long)c->x[30], (int)gettid());
     }
     static int watch_id = -2;  // LARECOMP_WATCH_SMPID=<dec id>

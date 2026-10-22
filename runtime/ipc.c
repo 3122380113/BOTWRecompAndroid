@@ -134,6 +134,16 @@ int ipc_handle_request(Cpu *c, uint32_t handle) {
         req.nc = ncd;
     }
 
+    if (sess->svc && !strcmp(sess->svc->name, "lm:ILogger")) {
+        LOG("[ipc] lm:ILogger msg[0]=%08x msg[1]=%08x nx=%d na=%d nb=%d nc=%d cflags=%x raw_words=%u\n",
+            msg[0], msg[1], nx, na, nb, req.nc, cflags, raw_words);
+        for (int i = 0; i < 12; i++) LOG("[ipc]   msg[%d]=%08x\n", i, msg[i]);
+        for (int i = 0; i < nx; i++) LOG("[ipc]   x[%d]: addr=%llx size=%llu\n", i, (unsigned long long)req.x[i].addr, (unsigned long long)req.x[i].size);
+        for (int i = 0; i < na; i++) LOG("[ipc]   a[%d]: addr=%llx size=%llu\n", i, (unsigned long long)req.a[i].addr, (unsigned long long)req.a[i].size);
+        uint64_t *sp = (uint64_t *)(uintptr_t)c->sp;
+        for (int i = 0; i < 16; i++) LOG("[ipc]   sp[%d]=%llx\n", i, (unsigned long long)sp[i]);
+    }
+
     if (req.type == 2) {  // close
         LOG("[ipc] close session %s (handle %x)\n", sess->svc->name, handle);
         if (!sess->domain) service_release(sess->svc);  // (a domain's objects stay: closed one by one)

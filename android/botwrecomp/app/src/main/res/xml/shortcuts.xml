@@ -3,6 +3,17 @@
      draws garbage, or never draws, leaves Settings out of reach). BOTWRecompActivity.SYSTEM_DRIVER. -->
 <shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
     <shortcut
+        android:shortcutId="watch_map"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_watch_map"
+        android:shortcutLongLabel="@string/shortcut_watch_map_long">
+        <intent
+            android:action="com.botwrecomp.action.WATCH_MAP"
+            android:targetPackage="com.botwrecomp.android"
+            android:targetClass="com.botwrecomp.BOTWRecompActivity" />
+    </shortcut>
+    <shortcut
         android:shortcutId="system_driver"
         android:enabled="true"
         android:icon="@mipmap/ic_launcher"

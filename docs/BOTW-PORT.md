@@ -1,7 +1,6 @@
 # Plano: BOTW Recomp
 
-Recompilação estática de *The Legend of Zelda: Breath of the Wild* (Nintendo Switch, **v1.0.0**) para PC
-(Windows, Linux, macOS) e Android, a partir do motor do [LAS Recomp](https://github.com/peiikai/LASRecomp) e do seu
+Recompilação estática de *The Legend of Zelda: Breath of the Wild* (Nintendo Switch, **v1.0.0**) para Android, a partir do motor do [LAS Recomp](https://github.com/peiikai/LASRecomp) e do seu
 porte para Android ([LASRecompAndroid](https://github.com/mamcjr/LASRecompAndroid)). Como no LAS, não é emulação:
 o código ARM64 do jogo vira C, compilado para a máquina, e o NVN (a API gráfica do Switch) é traduzido para Vulkan.
 
@@ -54,25 +53,12 @@ do BOTW sem mudanças.
 | 6 | **Versão.** O dump é v1.0.0. A decompilação [zeldaret/botw](https://github.com/zeldaret/botw) (nomes de funções, structs) é da v1.5.0: os endereços não batem, mas os nomes podem ser achados por assinatura. A v1.6.0 é a última; vale avaliar mudar de alvo antes de escrever hooks. | `tools/sym.py`, hooks | Média |
 | 7 | **Vídeos e áudio.** `romfs/Movie` passa pelo `multimedia.nss`; o `movie.c` do LAS é ligado ao player do LAS (endereços no `main`). O caminho do áudio do jogo ainda não foi visto. | `hle/movie.c`, `services/audio.c` | Média |
 
-## Desktop primeiro ou Android direto?
+## Plataforma alvo: somente Android
 
-O runtime é um só: o mesmo código compila para Windows, Linux, macOS e Android. Não é preciso escolher um caminho,
-só a ordem.
-
-**Recomendação: Windows primeiro até o jogo chegar ao menu, Android logo em seguida.**
-
-- No PC o ciclo é muito mais curto: gerar, compilar e rodar sem copiar nada para o aparelho, com depurador,
-  RenderDoc, validação do Vulkan e logs direto no terminal.
-- Uma GPU NVIDIA tem `VK_EXT_external_memory_host`: os shaders leem a memória do jogo direto, sem a arena do
-  Android. Problemas do jogo e problemas do Android ficam separados.
-- O Android já tem toda a infraestrutura pronta do LAS. Depois do menu no PC, o porte para Android vira
-  "gerar com `--simd asm --dyn-base`, compilar com o NDK e rodar".
-- Diferença a lembrar: no x86-64 o FP/SIMD do jogo passa pelo C portável (`simd.h`); no Android, por asm nativo.
-  Um bug que só aparece num dos dois aponta para essa camada. Linux aarch64 seria o desktop mais parecido com o
-  Android.
-
-Esta máquina já tem o Android SDK/NDK (usados pelo LASRecompAndroid), mas **não tem o ambiente do desktop**
-(MSYS2 UCRT64 com clang, SDL3, FFmpeg, shaderc): ver `docs/BUILD-windows.md` e `tools/setup_windows.ps1`.
+Em 2026-10-22 foi decidido abandonar os ports desktop. Os builds, pacotes, scripts de distribuição e backends
+exclusivos de Windows, Linux e macOS foram removidos. O trabalho continua no APK Android e no companion ZeppOS.
+Os relatos anteriores de desktop neste documento são históricos; não representam alvos ou pendências atuais.
+O SDK/NDK Android e o Gradle são o caminho de compilação do aplicativo.
 
 ## Fases
 
@@ -81,7 +67,7 @@ Esta máquina já tem o Android SDK/NDK (usados pelo LASRecompAndroid), mas **n�
 - Fork do LASRecompAndroid com o histórico (129 commits; remotos `las` e `upstream` para trazer melhorias do motor).
 - `Dump/` fora do git; `tools/botw_dump.py` confere os módulos, a versão e o romfs.
 
-### Fase 1: tirar o LAS e compilar sem o jogo — **feita (2026-10-18), menos o build desktop**
+### Fase 1: tirar o LAS e compilar sem o jogo — **feita (2026-10-18)**
 
 - Saíram: o randomizer (`third_party/LAS-Randomizer`, `tools/rando`, `runtime/rando.c`), os 17 hooks de jogo do LAS
   em `runtime/hle/` (chamber, digs, doorjump, escape, flags_ext, framepace, hookshot, keysanity, miniboss, mirror,
@@ -102,8 +88,7 @@ Esta máquina já tem o Android SDK/NDK (usados pelo LASRecompAndroid), mas **n�
   identificadores internos também: o motor é o do LAS, e assim fica mais fácil trazer melhorias de lá.
 - Verificação: o app Android (`android/botwrecomp`, `gradlew assembleDebug`) compila e linka com `--no-undefined`.
   Os arquivos só do macOS (`renderer.m`, `metal.m`) foram editados do mesmo jeito, mas não compilados aqui.
-- **Falta:** o ambiente MSYS2 do Windows (`tools/setup_windows.ps1` instala MSYS2, pacotes e Python; não rodei sem
-  você) e o build desktop.
+- O build desktop citado no plano original foi descontinuado; o alvo atual é Android.
 
 ### Fase 2: gerar o código do jogo — **gerado (2026-10-18)**
 
@@ -653,7 +638,7 @@ Medição no planalto (2026-10-21, save do usuário perto da igreja, POCO F7 Ult
 
 ### Fase 8: distribuição
 
-- Release no GitHub (desktop e APK), sem nada do jogo.
+- Distribuição do APK Android, sem nada do jogo.
 
 ## Regras
 

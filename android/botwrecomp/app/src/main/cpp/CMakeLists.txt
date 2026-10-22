@@ -1,4 +1,4 @@
-# libmain.so: the BOTW Recomp runtime for Android (what the Makefile builds into the desktop executable), with the
+# libmain.so: the BOTW Recomp runtime for Android, with the
 # Vulkan backend and the ImGui UI. The game code is not in it: botwgame.so, generated with gen.py --dyn-base and built
 # from the player's own game files, is loaded at run time (docs/las/ANDROID-PORT.md).
 cmake_minimum_required(VERSION 3.22)
@@ -45,7 +45,7 @@ set(IMGUI_SRC ${IMGUI}/imgui.cpp ${IMGUI}/imgui_draw.cpp ${IMGUI}/imgui_tables.c
 
 add_library(main SHARED ${RT_SRC} ${R}/runtime/platform/android.c ${VK_SRC} ${UI_SRC} ${IMGUI_SRC}
             ${DEPS}/volk/volk.c ${R}/android/common/guest_window.c)
-# the UI sources are plain C++ apart from __APPLE__ blocks (as on Linux / Windows)
+# the UI sources are plain C++ apart from __APPLE__ blocks (compiled as C++ on Android)
 set_source_files_properties(${UI_SRC} PROPERTIES LANGUAGE CXX COMPILE_OPTIONS "-xc++")
 set_source_files_properties(${R}/runtime/gamelib.c PROPERTIES COMPILE_DEFINITIONS "GAMELIB_ID=\"${GAMELIB_ID}\"")
 set_source_files_properties(${R}/runtime/gamebuild.c PROPERTIES COMPILE_DEFINITIONS "GAMELIB_ID=\"${GAMELIB_ID}\"")
@@ -60,7 +60,7 @@ if(HAVE_FFMPEG)
 else()
     target_compile_definitions(main PRIVATE LARECOMP_NO_FFMPEG)
 endif()
-# -O2 -g whatever the Gradle build type (the Makefile's RTFLAGS): a debug build left the runtime at -O0, about half of the
+# -O2 -g whatever the Gradle build type (the Android runtime optimization flags): a debug build left the runtime at -O0, about half of the
 # game thread's time
 target_compile_options(main PRIVATE -O2 -g -fno-strict-aliasing -Wall -Wno-unused-function -Wno-format  # (as on Linux: %llx for uint64_t)
     $<$<COMPILE_LANGUAGE:CXX>:-std=c++17>)

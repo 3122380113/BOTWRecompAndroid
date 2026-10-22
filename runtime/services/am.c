@@ -4,6 +4,7 @@
 
 #include "../hle.h"
 #include "../ipc.h"
+#include "../rt.h"
 #include "../settings.h"
 
 #define AM_NO_MESSAGE MAKE_RESULT(128, 3)
@@ -218,6 +219,8 @@ static void lm_logger(Service *s, IpcReq *req, IpcResp *resp) {
     (void)s; (void)resp;
     if (req->cmd != 0) return;
     IpcBuf *b = in_buf(req, 0);
+    LOG("[lm] cmd %u, in_buf b=%p addr=%llx size=%llu (nx=%d, na=%d)\n",
+        req->cmd, (void*)b, (unsigned long long)(b ? b->addr : 0), (unsigned long long)(b ? b->size : 0), req->nx, req->na);
     if (!b || !b->size) return;
     // Log packets are TLV chunks after a 0x18-byte header; print the string chunks.
     const uint8_t *p = (const uint8_t *)(uintptr_t)b->addr, *end = p + b->size;

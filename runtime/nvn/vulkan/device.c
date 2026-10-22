@@ -20,6 +20,17 @@ static SDL_Window *window;
 static atomic_bool ui_ready;
 static VkDebugUtilsMessengerEXT messenger;
 
+// Diagnostic byte search helper used on request (e.g. LARECOMP_FIND_HEX).
+static const void *rt_memmem(const void *data, size_t size, const void *pattern, size_t length) {
+    const uint8_t *bytes = (const uint8_t *)data;
+    if (!length) return data;
+    if (length > size) return NULL;
+    for (size_t i = 0; i <= size - length; i++)
+        if (bytes[i] == *(const uint8_t *)pattern && !memcmp(bytes + i, pattern, length))
+            return bytes + i;
+    return NULL;
+}
+
 // ================================================================== instance / device
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb(VkDebugUtilsMessageSeverityFlagBitsEXT sev, VkDebugUtilsMessageTypeFlagsEXT type,
                                                const VkDebugUtilsMessengerCallbackDataEXT *d, void *user) {
@@ -773,7 +784,7 @@ void backend_present(NvnTexture *t) {
             const char *ff = getenv("LARECOMP_FIND_FROM");  // (=<hex address>: where to start, past earlier hits)
             const uint8_t *from = ff ? (const uint8_t *)(uintptr_t)strtoull(ff, NULL, 16) : (const uint8_t *)(uintptr_t)HEAP_BASE;
             for (const uint8_t *p = from, *end = (const uint8_t *)(uintptr_t)HEAP_BASE + HEAP_MAX - plen; p < end && n < 64;) {
-                const uint8_t *q = memmem(p, (size_t)(end - p), pat, (size_t)plen);
+                const uint8_t *q = (const uint8_t *)rt_memmem(p, (size_t)(end - p), pat, (size_t)plen);
                 if (!q) break;
                 uint64_t a = (uint64_t)(uintptr_t)q - (uint64_t)(back > 0 ? back : 0);
                 if (getenv("LARECOMP_FIND_PEEK")) {  // =<hex back>: 8 qwords from the hit minus that (an object's header)
