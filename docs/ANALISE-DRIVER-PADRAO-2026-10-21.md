@@ -216,3 +216,20 @@ Perfil da thread de render no driver da Qualcomm (simpleperf, platô): ~37 ms po
 - **Por que o fps quase não subiu (~15–17):** o quadro é serial. O jogo espera a fence do quadro que acabou de enviar; a thread de render traduz (~18 ms); só então a GPU trabalha (~17–26 ms). Tudo somado passa de 33 ms e arredonda para 3–4 vsyncs.
   - O envio em pedaços (`LARECOMP_VK_CHUNK_US`), que no Turnip sobrepõe tradução e GPU, aqui dobra o tempo ocupado da GPU (~38 ms) e não muda o período, provavelmente porque o clock da GPU cai nos intervalos.
   - Próximos candidatos: o custo do próprio driver por draw (`vkUpdateDescriptorSets` e `vkAllocateDescriptorSets` ~18%, `vkCmdBeginRendering` ~9%, `vkCmdDrawIndexed` ~10%) e entender a queda de clock com envio em pedaços.
+
+## Atualização: custo por draw (uniform buffers dinâmicos)
+
+- **Mudança:** os uniform buffers dos programas gráficos passaram a ser `UNIFORM_BUFFER_DYNAMIC` (Android, até o limite do dispositivo; primeiro os buffers do jogo, depois as tabelas do runtime).
+  - O offset de cada cópia sai do descriptor set e vai para o `vkCmdBindDescriptorSets`.
+  - Antes, cada draw copiava seus UBOs para um lugar novo e quase nenhum set coincidia com o anterior: um set alocado e escrito por estágio por draw.
+  - `LARECOMP_NO_DYN_UBO=1` desliga.
+- **Resultado (A/B no mesmo build, platô):**
+
+| Driver | Tempo em `sets` a cada 2 s | Render por quadro | GPU por quadro |
+|---|---|---|---|
+| Turnip | 307 → 234 ms | sem mudança mensurável (com o profiler ligado) | igual |
+| Qualcomm | 198 → 105 ms | 21,4 → 19,1 ms | igual |
+
+  Imagem correta nos dois.
+- **Contagem nova no log de estatísticas** (`binds N pipe N sets`), Turnip, por quadro: ~5.100 draws, ~850 trocas de pipeline e ~4.050 binds de descriptor set. Cada objeto tem constantes próprias, então os offsets mudam a cada draw.
+- **O custo de GPU por draw (~2 µs) não mudou.** Timestamps por draw (`LARECOMP_GPUPROF_DRAWS`) dão mediana ~8 µs e mínimo ~4 µs, mas serializam a GPU e não separam o custo do bind. Ficou aberto se vale separar os UBOs (que mudam a cada draw) das texturas em sets próprios.

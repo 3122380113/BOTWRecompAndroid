@@ -21,6 +21,7 @@
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
 static uint64_t stat_feedback_reads;  // (attachments sampled as they are: only read, resolve_feedback)
 static uint64_t stat_upload_bytes;
+static uint64_t stat_pipe_binds, stat_set_binds;  // (graphics draws: pipelines / descriptor sets bound)
 // LARECOMP_VK_PROF=1: render-thread time per category in the fps log (exec = whole command lists, draw = draw(),
 // sets = descriptor sets incl. cbuf copies, vtx = index scan + vertex copies, submit = vkQueueSubmit2)
 static int prof = -1;
@@ -705,9 +706,10 @@ VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout layout) {
             if (s->npools == 16) FATAL("descriptor pools exhausted\n");
             VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 32768}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4096},
                                             {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 32768},
-                                            {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1024}, {VK_DESCRIPTOR_TYPE_SAMPLER, 1024}};
+                                            {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1024}, {VK_DESCRIPTOR_TYPE_SAMPLER, 1024},
+                                            {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 32768}};
             VkDescriptorPoolCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 8192,
-                                             .poolSizeCount = 5, .pPoolSizes = sizes};
+                                             .poolSizeCount = 6, .pPoolSizes = sizes};
             VK_CHECK(vkCreateDescriptorPool(g_vk.dev, &ci, NULL, &s->pools[s->npools++]));
         }
         VkDescriptorSetAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -1036,11 +1038,12 @@ const char *renderer_stats(void) {
         LOG("\n");
     }
     snprintf(stats_text, sizeof stats_text,
-             "%llu draws, %llu skipped, %llu passes, %llu dispatches, %llu flushes, wait %.0fms, compile %d (waited %.0fms), fbcopy %llu (read %llu), upload %.1fMB",
+             "%llu draws, %llu skipped, %llu passes, %llu dispatches, %llu flushes, wait %.0fms, compile %d (waited %.0fms), fbcopy %llu (read %llu), upload %.1fMB, binds %llu pipe %llu sets",
              (unsigned long long)stat_draws, (unsigned long long)stat_skipped, (unsigned long long)stat_passes,
              (unsigned long long)stat_dispatches, (unsigned long long)stat_flushes, (double)stat_wait_ns / 1e6,
-             atomic_exchange(&stat_compiles, 0), (double)stat_build_wait_ns / 1e6, (unsigned long long)stat_feedback_copies, (unsigned long long)stat_feedback_reads, (double)stat_upload_bytes / 1048576.0);
-    stat_feedback_copies = stat_feedback_reads = stat_upload_bytes = stat_build_wait_ns = 0;
+             atomic_exchange(&stat_compiles, 0), (double)stat_build_wait_ns / 1e6, (unsigned long long)stat_feedback_copies, (unsigned long long)stat_feedback_reads, (double)stat_upload_bytes / 1048576.0,
+             (unsigned long long)stat_pipe_binds, (unsigned long long)stat_set_binds);
+    stat_feedback_copies = stat_feedback_reads = stat_upload_bytes = stat_build_wait_ns = stat_pipe_binds = stat_set_binds = 0;
     {   // (GPU memory in use, every heap, and the game's textures with an image)
         VmaBudget bud[VK_MAX_MEMORY_HEAPS];
         vmaGetHeapBudgets(g_vk.vma, bud);
@@ -1179,7 +1182,8 @@ static struct {
     VkRect2D sc;
     VkBuffer ib; VkDeviceSize io; VkIndexType it;
     VkBuffer vb[17]; VkDeviceSize vo[17];
-    VkPipelineLayout layout; VkDescriptorSet sets[2];  // (SS_SETS: the graphics sets bound and their layout)
+    VkPipelineLayout layout; VkDescriptorSet sets[2];  // (SS_SETS: the graphics sets bound and their layout,
+    uint32_t ndyn, dyn[64];                             // and their dynamic uniform buffer offsets)
 } ss;
 static int ss_on = -1;
 static void ss_forget(void) { ss.known = 0; ss.vb_known = 0; }
@@ -1839,6 +1843,26 @@ static void compile_program(void *arg) {
     p->fs = vk_module(sf, nf);
     free(sv);
     free(sf);
+#ifdef __ANDROID__
+    {   // Dynamic uniform buffers: every draw copies its constant buffers to a new place in transient memory, and with
+        // the offsets inside the sets hardly any set matched the previous draw's - one allocated and written per stage
+        // per draw (Qualcomm's driver: ~18% of the render thread). With the offsets given at bind time (stage_set),
+        // draws of the same buffers and textures share their sets. The game's constant buffers first, then the
+        // runtime's tables, up to the device's limit. LARECOMP_NO_DYN_UBO=1: off.
+        static int off = -1;
+        if (off < 0) off = getenv("LARECOMP_NO_DYN_UBO") != NULL;
+        uint32_t lim = off ? 0 : g_vk.props.limits.maxDescriptorSetUniformBuffersDynamic, used = 0;
+        if (lim > 64) lim = 64;  // (draw_'s offset arrays)
+        for (int pass = 0; pass < 2; pass++)
+            for (int i = 0; i < p->nbinds && used < lim; i++) {
+                VkBindingInfo *b = &p->binds[i];
+                bool game = b->binding >= 1 && b->binding < 17;
+                if (b->type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || game != (pass == 0)) continue;
+                b->type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+                used++;
+            }
+    }
+#endif
     p->layout = make_layout(p, 2, VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT);
     atomic_fetch_add(&stat_compiles, 1);
     atomic_store(&p->state, p->vs && p->fs ? 1 : 2);
@@ -3850,8 +3874,12 @@ static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo
 // viewport decision), or NULL.
 static float g_mirror_w;  // mirror mode's composite: its render target width (rscale[65].x; 0 otherwise)
 
+static bool is_ubo(VkDescriptorType t) { return t == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || t == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC; }
+
+// dyn / ndyn: the set's dynamic uniform buffer offsets, in binding order (its bindings of that type: compile_program)
 static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t set, int stage, ShaderInfo *si, const float *rscale_row0,
-                                 const float tint[8], uint32_t gx, uint32_t gy, uint32_t gz, const VkDescriptorImageInfo *pre_ii) {
+                                 const float tint[8], uint32_t gx, uint32_t gy, uint32_t gz, const VkDescriptorImageInfo *pre_ii,
+                                 uint32_t *dyn, uint32_t *ndyn) {
 #ifdef __ANDROID__
     VkDescriptorSet ds = VK_NULL_HANDLE;  // (allocated at the end, unless this submission already wrote the same set)
 #else
@@ -3885,7 +3913,7 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
                 tex_wh[sg][ti][0] = wh[0]; tex_wh[sg][ti][1] = wh[1];
             }
             w[n].pImageInfo = &ii[n];
-        } else if (b->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER && b->binding < 17) {
+        } else if (is_ubo(b->type) && b->binding < 17) {
             bi[n] = cbuf_info(stage, si, (int)b->binding, gx, gy, gz);
             w[n].pBufferInfo = &bi[n];
         } else if (b->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
@@ -3915,7 +3943,7 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
     }
     for (int i = 0; i < p->nbinds; i++) {
         VkBindingInfo *b = &p->binds[i];
-        if (b->set != set || b->type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
+        if (b->set != set || !is_ubo(b->type) ||
             (b->binding != 18 && b->binding != 19 && b->binding != GMAP_BUFFER_INDEX)) continue;
         w[n] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = b->binding,
                                       .descriptorCount = 1, .descriptorType = b->type};
@@ -3940,6 +3968,18 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
         }
         w[n].pBufferInfo = &bi[n];
         n++;
+    }
+    {   // dynamic uniform buffers: their offsets out of the set (in binding order), the descriptors at offset 0
+        uint32_t nd = 0, bind[MAX_BIND];
+        for (int i = 0; i < n; i++) {
+            if (w[i].descriptorType != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC) continue;
+            uint32_t k = nd++;
+            while (k > 0 && bind[k - 1] > w[i].dstBinding) { bind[k] = bind[k - 1]; if (dyn) dyn[k] = dyn[k - 1]; k--; }
+            bind[k] = w[i].dstBinding;
+            if (dyn) dyn[k] = (uint32_t)bi[i].offset;
+            bi[i].offset = 0;
+        }
+        if (ndyn) *ndyn = nd;
     }
 #ifdef __ANDROID__
     // Draws of one material in a row write the same set over and over (same buffers / offsets / views / samplers): a
@@ -4121,7 +4161,7 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     else
 #endif
     if (cp->si->uses_gmem_map) gfast_prepare(cb);
-    VkDescriptorSet ds = stage_set(&cp->p, cp->p.set_layout[0], 0, 5, cp->si, NULL, NULL, gx, gy, gz, NULL);
+    VkDescriptorSet ds = stage_set(&cp->p, cp->p.set_layout[0], 0, 5, cp->si, NULL, NULL, gx, gy, gz, NULL, NULL, NULL);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cp->pipe);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cp->p.layout, 0, 1, &ds, 0, NULL);
     vkCmdDispatch(cb, gx, gy, gz);
@@ -4400,7 +4440,7 @@ static void draw_(CmdRec *r, bool indexed) {
     if (keep) wait_built(&pp->state);
     if (atomic_load(&pp->state) != 1) { stat_skipped++; return; }
     ss_enabled();
-    if (ss_need(SS_PIPE, ss.pipe == pp->pipe)) { ss.pipe = pp->pipe; vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pp->pipe); }
+    if (ss_need(SS_PIPE, ss.pipe == pp->pipe)) { ss.pipe = pp->pipe; stat_pipe_binds++; vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pp->pipe); }
     uint64_t prof_td_ = prof ? SDL_GetTicksNS() : 0;
     if (prof) prof_key += prof_td_ - prof_tk_;
 
@@ -4504,7 +4544,8 @@ static void draw_(CmdRec *r, bool indexed) {
     else if (gwin_mode && (pr->vi->uses_gmem_map || pr->fi->uses_gmem_map))
         gwin_prepare((pr->vi->uses_gmem_map ? 1u : 0u) | (pr->fi->uses_gmem_map ? 2u : 0u));
 #endif
-    VkDescriptorSet vset = stage_set(pr, pr->set_layout[0], 0, 0, pr->vi, NULL, NULL, 0, 0, 0, NULL);
+    uint32_t dyn[64], ndv = 0, ndf = 0;  // (the sets' dynamic uniform buffer offsets: vertex, then fragment)
+    VkDescriptorSet vset = stage_set(pr, pr->set_layout[0], 0, 0, pr->vi, NULL, NULL, 0, 0, 0, NULL, dyn, &ndv);
     PROF_ADD(prof_sets);
     VkDescriptorImageInfo fii[64];
     uint64_t prof_tx_ = prof ? SDL_GetTicksNS() : 0;
@@ -4561,13 +4602,18 @@ static void draw_(CmdRec *r, bool indexed) {
     apply_scissor();
     float rs0[4] = {vp_sx, vp_sy, vp_ox, vp_oy};
     uint64_t prof_t1_ = prof ? SDL_GetTicksNS() : 0;
-    VkDescriptorSet fset = stage_set(pr, pr->set_layout[1], 1, 1, pr->fi, rs0, tint, 0, 0, 0, fii);
+    VkDescriptorSet fset = stage_set(pr, pr->set_layout[1], 1, 1, pr->fi, rs0, tint, 0, 0, 0, fii, dyn + ndv, &ndf);
     if (prof) prof_sets += SDL_GetTicksNS() - prof_t1_;
     VkDescriptorSet sets[2] = {vset, fset};
-    // (the same sets as the previous draw - the set cache, stage_set: not bound again)
-    if (ss_need(SS_SETS, ss.layout == pr->layout && ss.sets[0] == vset && ss.sets[1] == fset)) {
+    // (the same sets and offsets as the previous draw - the set cache, stage_set: not bound again)
+    uint32_t nd = ndv + ndf;
+    if (ss_need(SS_SETS, ss.layout == pr->layout && ss.sets[0] == vset && ss.sets[1] == fset && ss.ndyn == nd &&
+                       !memcmp(ss.dyn, dyn, nd * sizeof dyn[0]))) {
         ss.layout = pr->layout, ss.sets[0] = vset, ss.sets[1] = fset;
-        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pr->layout, 0, 2, sets, 0, NULL);
+        ss.ndyn = nd;
+        memcpy(ss.dyn, dyn, nd * sizeof dyn[0]);
+        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pr->layout, 0, 2, sets, nd, dyn);
+        stat_set_binds++;
     }
     if (pr->vi->uses_gmem_store) vc_mark_sbufs(0);
     if (pr->fi->uses_gmem_store) vc_mark_sbufs(1);
