@@ -15,6 +15,7 @@ adb shell am force-stop $PKG
 adb shell run-as $PKG mkdir -p files/$VER
 # (run-as may not read external storage, nor take a redirect: the shell reads it and pipes it in)
 for f in botwgame.so botwgame.so.id; do adb shell "cat $EXT/extracted/$f | run-as $PKG sh -c 'cat > files/$VER/$f'"; done
-adb shell "mkdir -p $EXT/build/frames && chmod -R 777 $EXT/build" 2>/dev/null || true
+# (the group shared by the app and adb, inherited: what the app writes there - captures, debug frames - adb can read)
+adb shell "mkdir -p $EXT/build/frames && chgrp -R ext_data_rw $EXT/build && chmod -R 2777 $EXT/build" 2>/dev/null || true
 bash android/run_boot.sh "${2:-120}" \
     "LARECOMP_DATA_ROOT=$EXT,LARECOMP_GAME_LIB=$INT/botwgame.so,LARECOMP_SAVE_SEED=/sdcard/Android/data/$PKG/files/save${3:+,$3}"

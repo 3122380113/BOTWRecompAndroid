@@ -1934,12 +1934,12 @@ static void translate_program(void *arg) {
     }
 #ifdef __ANDROID__
     {   // LARECOMP_DUMP_FS=<fs hash, as [gpuprof] / [fshash] print it>: that fragment shader's GLSL (and its vertex
-        // shader's) to cache/fs_<hash>.glsl, for looking at a slow one
+        // shader's) to build/fs_<hash>.glsl, for looking at a slow one
         const char *want = getenv("LARECOMP_DUMP_FS");
         uint64_t h = hmix(1469598103934665603ull, (const void *)(uintptr_t)(p->code[1] + 0x30), 0x200);
         if (want && strtoull(want, NULL, 16) == h) {
             char path[96];
-            snprintf(path, sizeof path, "cache/fs_%016llx.glsl", (unsigned long long)h);
+            snprintf(path, sizeof path, "build/fs_%016llx.glsl", (unsigned long long)h);
             FILE *f = fopen(path, "wb");
             if (f) {
                 fprintf(f, "// fragment shader %016llx (code %llx)\n%s\n// ---- vertex shader (code %llx)\n%s\n",
@@ -2801,6 +2801,16 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
     if ((si->cbuf_dynamic & (1u << k)) && r.size) size = r.size > 0x10000 ? 0x10000 : r.size;
     if (size > r.size && r.size) size = r.size;
     if (size < 16) size = 16;
+    {   // LARECOMP_LOG_CBUF=<fs hash>: the first floats of the draws of that fragment shader get in cb3 (its stage's
+        // first game buffer), as copied - a race with the game's writes shows here without a debug frame's timing
+        static uint64_t want = ~0ull;
+        if (want == ~0ull) want = getenv("LARECOMP_LOG_CBUF") ? strtoull(getenv("LARECOMP_LOG_CBUF"), NULL, 16) : 0;
+        if (want && g_cur_fs_hash == want && k == 3 && stage != 0) {
+            const float *f = (const float *)(uintptr_t)r.addr;
+            LOG("[cbuf] %llx: %.3f %.3f %.3f %.3f + %.3f %.3f %.3f %.3f\n", (unsigned long long)r.addr, f[0], f[1], f[2],
+                f[3], f[4], f[5], f[6], f[7]);
+        }
+    }
     // snapshot: later CPU writes must not leak in. Shared by the draws of one submission binding the same range:
     // within a command list nothing writes guest memory (no inline UpdateUniformBuffer: that writes through below
     // and drops the shared copies).
@@ -4779,6 +4789,10 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
     LOG(" | vp %.0f %.0f %.0f %.0f | attrs %#x blend %#x ds %02x%02x%02x poly %02x%02x chmask %08x\n", st.viewport[0][0], st.viewport[0][1],
         st.viewport[0][2], st.viewport[0][3], pr->vi->attr_mask, st.color_state[0], st.ds[0], st.ds[1], st.ds[2], st.poly[0], st.poly[1],
         st.channel_mask);
+    if (st.color_state[0] & 1)  // (target 0's blend: srcC dstC srcA dstA eqC eqA, as BlendState stores them)
+        LOG("[draw]   blend0 %u %u %u %u eq %u %u color %.3f %.3f %.3f %.3f\n", st.blend[0][1], st.blend[0][2],
+            st.blend[0][3], st.blend[0][4], st.blend[0][5], st.blend[0][6], st.blend_color[0], st.blend_color[1],
+            st.blend_color[2], st.blend_color[3]);
     if (getenv("LARECOMP_DEBUG_TEXSTATE"))  // vertex attributes: guest format, stream, offset, stride
         for (int i = 0; i < 16; i++)
             if (pr->vi->attr_mask & (1u << i)) {
@@ -4799,7 +4813,7 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
             if (!r.addr) continue;
             const float *u = (const float *)(uintptr_t)r.addr;
             LOG("[draw]   vcb%d %llx size %u:", c, (unsigned long long)r.addr, (unsigned)r.size);
-            for (int k = 0; k < 96 && k * 4 < (int)r.size; k++) LOG(" %.9g", u[k]);
+            for (int k = 0; k < 160 && k * 4 < (int)r.size; k++) LOG(" %.9g", u[k]);
             LOG("\n");
         }
         for (int s = 0; s < 2; s++) {

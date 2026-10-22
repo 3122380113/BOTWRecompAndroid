@@ -292,8 +292,17 @@ static void attr_load(Ctx *c, int dst, uint32_t addr, const char *idx) {
                 c->in_attr_mask |= 1u << a;
                 // IPA "pass" yields attr/w (the shader multiplies by w itself); Metal gives attr. "multiply" is the
                 // pass value times a register - usually w (from the pass of position w: Metal's attr again), but a
-                // shader may pass its own (the Mysterious Woods mist: 1/(v4.w * pos.w), a projective screen lookup)
-                if (c->ipa_mode == 0) sprintf(e, "as_type<uint>(in.v%d[%d] * in.pos.w)", a, comp);
+                // shader may pass its own (the Mysterious Woods mist: 1/(v4.w * pos.w), a projective screen lookup).
+                // An input the SPH interpolates linearly in screen space (declared noperspective) has no 1/w in it:
+                // "pass" yields attr itself, "multiply" attr times the register (SavageWindRecomp, MIT: BOTW 1.8.2's
+                // UI vertex colors under its perspective camera, w ~ 989 - attr/w left the title screen's dark scrim
+                // behind the logo and the menu transparent).
+                bool linear = (c->noperspective_mask >> a) & 1;
+                if (c->ipa_mode == 0 && linear) sprintf(e, "as_type<uint>(in.v%d[%d])", a, comp);
+                else if (c->ipa_mode == 1 && c->ipa_mul != RZ && linear) {
+                    char mb[16];
+                    sprintf(e, "as_type<uint>(in.v%d[%d] * as_type<float>(%s))", a, comp, reg(c, c->ipa_mul, mb));
+                } else if (c->ipa_mode == 0) sprintf(e, "as_type<uint>(in.v%d[%d] * in.pos.w)", a, comp);
                 else if (c->ipa_mode == 1 && c->ipa_mul != RZ) {
                     char mb[16];
                     sprintf(e, "as_type<uint>(in.v%d[%d] * in.pos.w * as_type<float>(%s))", a, comp, reg(c, c->ipa_mul, mb));
@@ -2692,6 +2701,12 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
     if (stage == STAGE_FRAGMENT) {
         c->omap_target = *(const uint32_t *)(sph + 0x48);
         c->omap_depth = (*(const uint32_t *)(sph + 0x4C) >> 1) & 1;
+        // ImapGenericVector[32] (SPH 0x18): 2 bits per component of each generic input, 1 constant, 2 perspective,
+        // 3 screen-linear. An input with a screen-linear component is noperspective (in practice all its used
+        // components agree).
+        for (int i = 0; i < 32; i++)
+            for (int k = 0; k < 4; k++)
+                if (((sph[0x18 + i] >> (k * 2)) & 3) == 3) c->noperspective_mask |= 1u << i;
     }
     // find the end: the last EXIT followed by self-branch padding, or max_size
     size_t n = (max_size - (code - blob)) / 8;
