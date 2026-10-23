@@ -121,10 +121,10 @@ void settings_load(void) {
     while (fgets(line, sizeof line, f)) {
         char key[64];
 #ifdef __ANDROID__
-        char val[512];
+        char val[512] = "";  // (a key with nothing after "=": mods_off when every mod is on)
         if (sscanf(line, " %63[^= ] = %511[^\n]", key, val) < 1) continue;
 #else
-        char val[128];
+        char val[128] = "";
         if (sscanf(line, " %63[^= ] = %127[^\n]", key, val) < 1) continue;
 #endif
         if (!strcmp(key, "aspect")) g_settings.aspect = !strcmp(val, "original") ? ASPECT_ORIGINAL : ASPECT_UNLOCKED;
@@ -166,6 +166,7 @@ void settings_load(void) {
                 if (!strcmp(val, g_language_codes[i])) g_settings.language = i;
         }
         else if (!strcmp(key, "menu_tip_seen")) g_settings.menu_tip_seen = atoi(val) != 0, tip_key = true;
+        else if (!strcmp(key, "mods_off")) snprintf(g_settings.mods_off, sizeof g_settings.mods_off, "%s", val);
         else if (!strcmp(key, "aspect_asked")) g_settings.aspect_asked = atoi(val) != 0, aspect_key = true;
         else bind_settings_load(key, val);  // bind_pad_* / bind_key_*: runtime/hle/bindings.c
     }
@@ -209,6 +210,7 @@ void settings_save(void) {
                                                      ? g_settings.language : LANG_AUTO]);
     fprintf(f, "aspect_asked = %d\n", g_settings.aspect_asked);
     fprintf(f, "menu_tip_seen = %d\n", g_settings.menu_tip_seen);
+    fprintf(f, "mods_off = %s\n", g_settings.mods_off);
     bind_settings_save(f);
     fclose(f);
 }

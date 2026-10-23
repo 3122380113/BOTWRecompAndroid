@@ -7,6 +7,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "../mods.h"
 #include "../hle.h"
 #include "../ipc.h"
 
@@ -263,11 +264,14 @@ static void rom_index(int fd) {
         rom_files[rom_nfiles++] = (RomFile){rom_data_off + data, size, path, (uint32_t)o};
         o += 0x20 + ((namelen + 3) & ~3u);
     }
-    // Mods: replacement files are served from the mods folder. The file-meta table is patched
-    // (in a copy) to point them at data appended past the end of the image; reads there go to host files.
+    // Mods: replacement files are served from the mods folder (LARECOMP_MODS), then from the game mods turned on in
+    // the menu's Mods page (runtime/mods.c: mods/<mod>/romfs, Android). The file-meta table is patched (in a copy) to
+    // point them at data appended past the end of the image; reads there go to host files.
+    mods_scan();
     for (int i = 0; i < rom_nfiles; i++) {
         char host[1200];
-        if (!mods_override(rom_files[i].path, host, sizeof host)) continue;
+        if (!mods_override(rom_files[i].path, host, sizeof host) && !mods_romfs_override(rom_files[i].path, host, sizeof host))
+            continue;
         struct stat sb;
         if (stat(host, &sb)) continue;
         if (!ov_meta) {

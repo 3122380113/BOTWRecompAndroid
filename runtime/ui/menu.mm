@@ -767,6 +767,9 @@ extern "C" int menu_keyboard_run(const char *initial, int max_len, char *out, in
 // The tab bar and its pages, into the current window: the in-game menu, and the start screen's Settings (in_game
 // false: nothing of the game is loaded yet - the tabs that need it are greyed out; prelaunch: the start screen's own
 // first tab, game files and fonts, drawn by launcher.mm).
+#ifdef __ANDROID__
+extern "C" void mods_tab_draw(float scale);  // ui/mods_tab.mm
+#endif
 static void settings_page(int id, float scale, bool in_game, void (*prelaunch)(float)) {
     switch (id) {
     case -1: prelaunch(scale); break;
@@ -774,6 +777,9 @@ static void settings_page(int id, float scale, bool in_game, void (*prelaunch)(f
     case 1: tab_audio(); break;
     case 8: tab_about(); break;
     case 9: tab_quit(scale, in_game); break;
+#ifdef __ANDROID__
+    case 10: mods_tab_draw(scale); break;  // (ui/mods_tab.mm)
+#endif
     }
 }
 
@@ -785,12 +791,16 @@ extern "C" bool menu_settings_back_requested() { bool back = g_touch_settings_ba
 static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     // (id: the page; -1 = Prelaunch)
     struct Tab { const char *name; int id; bool on; };
-    Tab tabs[8];
+    Tab tabs[10];
     int ntabs = 0;
     if (prelaunch) tabs[ntabs++] = {"Prelaunch", -1, true};
     // ids (test hooks: LARECOMP_MENU_TAB) as in LAS Recomp, whose game-specific tabs (2-7) are gone
-    static const char *names[] = {"Video", "Audio", "", "", "", "", "", "", "Controls", "Quit"};
+    static const char *names[] = {"Video", "Audio", "", "", "", "", "", "", "Controls", "Quit", "Mods"};
+#ifdef __ANDROID__
+    static const int order[] = {8, 0, 1, 10, 9};  // Controls, Video, Audio, Mods (runtime/mods.c), Quit
+#else
     static const int order[] = {8, 0, 1, 9};  // Controls, Video, Audio, Quit
+#endif
     for (int i : order)  // (Quit: in game only - the start screen has its own QUIT)
         if (i != 9 || !prelaunch) tabs[ntabs++] = {names[i], i, true};
 #ifdef __ANDROID__
