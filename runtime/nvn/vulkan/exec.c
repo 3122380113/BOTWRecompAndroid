@@ -1588,7 +1588,9 @@ static void begin_pass(void) {
             const char *e = getenv("LARECOMP_VK_CHUNK_US");
             chunk = e ? atol(e) : vk_driver_is_qualcomm() ? 0 : 2000;
         }
-        if (chunk > 0 && vk_async_on() && last_submit_ns && SDL_GetTicksNS() - last_submit_ns > (uint64_t)chunk * 1000)
+        extern int vk_ab(const char *what);
+        long ch = chunk > 0 && vk_ab("chunk") == 1 ? 500 : chunk;
+        if (ch > 0 && vk_async_on() && last_submit_ns && SDL_GetTicksNS() - last_submit_ns > (uint64_t)ch * 1000)
             renderer_submit();
     }
 #endif
@@ -5946,7 +5948,8 @@ void renderer_save_texture_tex(TexBackend *b, const char *path) {
 // the odd stretches - so both sides run in the same heat (back-to-back runs on a warm phone differed by more than the
 // change); LARECOMP_LOG_PACE tags each frame "ab 0/1". Switches: split (no long-pass split), ubo (constant buffers
 // read in place), sgsr (Snapdragon GSR 1 for the scene instead of the setting's upscaler), nobarrier (no barrier at
-// the start of a pass: unsafe, what they cost), copy (feedback copies instead of in-place reads). -1: not under test.
+// the start of a pass: unsafe, what they cost), copy (feedback copies instead of in-place reads), chunk (submissions
+// every 0.5 ms of translation instead of LARECOMP_VK_CHUNK_US). -1: not under test.
 int vk_ab(const char *what) {
     static int n = -1;
     static char w[32];
