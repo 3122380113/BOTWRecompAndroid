@@ -2413,6 +2413,10 @@ static NvnTexEntry *shader_texture_entry(int stage, ShaderTexture *st_) {
     return &((NvnTexEntry *)st.tpool->entries)[tic];
 }
 
+// The 3D scene upscaled for this draw (scene_upscale): sampled instead of the scene texture, at its scale.
+static struct { NvnTexture *t; VkImageView view; float sx, sy; } scene_up;
+static void scene_upscale(Prog *pr, CmdRec *r);
+
 static NvnTexture *shader_texture_object(int stage, ShaderTexture *st_) {
     NvnTexEntry *e = shader_texture_entry(stage, st_);
     return e ? e->tex : NULL;
@@ -3924,6 +3928,7 @@ static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo
                 memo[ms].type = (uint8_t)st_->type; memo[ms].has_view = e->has_view; memo[ms].view = view;
             }
             renderer_texture_scale(e->tex, &sc[0], &sc[1]);
+            if (e->tex == scene_up.t && stage == 1) { view = scene_up.view; sc[0] = scene_up.sx; sc[1] = scene_up.sy; }
             wh[0] = e->tex->width; wh[1] = e->tex->height;
             for (int k = 0; k < nfeedback; k++)
                 if (e->tex == feedback_tex[k] && is_attachment_entry(e) && (st_->type == TEXTYPE_2D || st_->type == TEXTYPE_2D_ARRAY)) {
@@ -4435,6 +4440,7 @@ static void draw_(CmdRec *r, bool indexed) {
     if (ct_on()) ct_draw(pr, "draw");
     alias_draw_check();
     resolve_feedback(pr);
+    scene_upscale(pr, r);
     snap_reason = "draw-depthwrite";
     if (st.rt.depth && st.ds[0] && st.ds[1]) {
         bool fb = false;
@@ -5290,9 +5296,9 @@ static VkImageView raw_view(TexBackend *b) {
 static VkPipelineLayout post_layout;
 static VkDescriptorSetLayout post_set_layout;
 
-static VkPipeline post_pipeline(const char *fs) {
-    static struct { const char *fs; VkPipeline p; } cache[8];
-    for (int i = 0; i < 8; i++) if (cache[i].p && cache[i].fs == fs) return cache[i].p;
+static VkPipeline post_pipeline(const char *fs, VkFormat fmt) {
+    static struct { const char *fs; VkFormat f; VkPipeline p; } cache[16];
+    for (int i = 0; i < 16; i++) if (cache[i].p && cache[i].fs == fs && cache[i].f == fmt) return cache[i].p;
     if (!post_layout) {
         VkDescriptorSetLayoutBinding b[3];
         for (uint32_t i = 0; i < 3; i++)
@@ -5322,7 +5328,6 @@ static VkPipeline post_pipeline(const char *fs) {
                                               .pAttachments = &cba};
     VkDynamicState dyn[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
     VkPipelineDynamicStateCreateInfo dy = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = 2, .pDynamicStates = dyn};
-    VkFormat fmt = VK_FORMAT_R8G8B8A8_UNORM;
     VkPipelineRenderingCreateInfo ri = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO, .colorAttachmentCount = 1,
                                         .pColorAttachmentFormats = &fmt};
     VkPipelineDepthStencilStateCreateInfo ds = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
@@ -5332,16 +5337,17 @@ static VkPipeline post_pipeline(const char *fs) {
                                        .pColorBlendState = &cb, .pDynamicState = &dy, .layout = post_layout};
     VkPipeline p;
     VK_CHECK(vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, &p));
-    for (int i = 0; i < 8; i++) if (!cache[i].p) { cache[i].fs = fs; cache[i].p = p; break; }
+    for (int i = 0; i < 16; i++) if (!cache[i].p) { cache[i].fs = fs; cache[i].f = fmt; cache[i].p = p; break; }
     return p;
 }
 
-// Post image `i` at w x h (RGBA8, kept until the size changes). 0, 1: SMAA edges / weights, 2: SMAA output,
-// 3, 4: FSR EASU / RCAS.
-static TexBackend *post_image(int i, uint32_t w, uint32_t h) {
-    static TexBackend img[5];
+// Post image `i` at w x h in format f (kept until the size or format changes). 0, 1: SMAA edges / weights, 2: SMAA
+// output, 3, 4: FSR EASU / RCAS (or SGSR) of the presented image; 5, 6: the same of the 3D scene (scene_upscale).
+enum { POST_IMAGES = 7 };
+static TexBackend *post_image(int i, uint32_t w, uint32_t h, VkFormat f) {
+    static TexBackend img[POST_IMAGES];
     TexBackend *d = &img[i];
-    if (d->image && (d->width != w || d->height != h)) {
+    if (d->image && (d->width != w || d->height != h || d->format != f)) {
         vk_views_forget(d);
         vk_defer_image(d->image, d->mem);
         d->image = VK_NULL_HANDLE;
@@ -5349,12 +5355,12 @@ static TexBackend *post_image(int i, uint32_t w, uint32_t h) {
     }
     if (!d->image) {
         VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
-                                .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = {w, h, 1}, .mipLevels = 1, .arrayLayers = 1,
+                                .format = f, .extent = {w, h, 1}, .mipLevels = 1, .arrayLayers = 1,
                                 .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
                                 .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
         VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
         VK_CHECK(vmaCreateImage(g_vk.vma, &ci, &ai, &d->image, &d->mem, NULL));
-        d->format = VK_FORMAT_R8G8B8A8_UNORM; d->width = w; d->height = h; d->depth = 1; d->layers = 1; d->levels = 1;
+        d->format = f; d->width = w; d->height = h; d->depth = 1; d->layers = 1; d->levels = 1;
         d->samples = 1; d->aspect = VK_IMAGE_ASPECT_COLOR_BIT; d->base_type = VK_IMAGE_VIEW_TYPE_2D;
         vk_image_init_layout(vk_cmd(), d->image, d->aspect);
     }
@@ -5395,7 +5401,7 @@ static VkImageView smaa_lut(int i) {
 // clear: start from zero (SMAA's edge pass only writes edge pixels; its weights / output read them).
 static void post_pass(VkCommandBuffer cb, const char *fs, const VkImageView *srcs, int n, TexBackend *dst, const float pc[8],
                       bool clear) {
-    VkPipeline pipe = post_pipeline(fs);  // (before the rendering begins: created inside it, the NVIDIA driver crashed)
+    VkPipeline pipe = post_pipeline(fs, dst->format);  // (before the rendering begins: created inside it, the NVIDIA driver crashed)
     vk_full_barrier(cb);
     VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = post_view(dst),
                                     .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
@@ -5434,7 +5440,8 @@ static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, 
     uint32_t ow = (uint32_t)lround(ow_d), oh = (uint32_t)lround(oh_d);
     if (ow > 16384) ow = 16384;
     if (oh > 16384) oh = 16384;
-    bool fsr = g_settings.upscaler == UPSCALE_FSR1 && (ow > b->width + 1 || oh > b->height + 1);  // (an upscale only)
+    bool fsr = (g_settings.upscaler == UPSCALE_FSR1 || g_settings.upscaler == UPSCALE_SGSR1) &&
+               (ow > b->width + 1 || oh > b->height + 1);  // (an upscale only)
     if (!smaa && !fsr) return v;
     extern void vk_frame_suspend(void);
     extern void vk_frame_resume(void);
@@ -5442,8 +5449,8 @@ static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, 
     if (smaa) {  // SMAA 1x: luma edges -> blending weights -> neighbourhood blending
         float w = (float)b->width, h = (float)b->height;
         float m[8] = {1.0f / w, 1.0f / h, w, h};
-        TexBackend *edges = post_image(0, b->width, b->height), *weights = post_image(1, b->width, b->height);
-        TexBackend *out = post_image(2, b->width, b->height);
+        TexBackend *edges = post_image(0, b->width, b->height, VK_FORMAT_R8G8B8A8_UNORM), *weights = post_image(1, b->width, b->height, VK_FORMAT_R8G8B8A8_UNORM);
+        TexBackend *out = post_image(2, b->width, b->height, VK_FORMAT_R8G8B8A8_UNORM);
         VkImageView in[3] = {v};
         post_pass(cb, "smaa_edge.frag", in, 1, edges, m, true);
         VkImageView wi[3] = {post_view(edges), smaa_lut(0), smaa_lut(1)};
@@ -5452,9 +5459,16 @@ static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, 
         post_pass(cb, "smaa_blend.frag", bi, 2, out, m, false);
         v = post_view(out);
     }
-    if (fsr) {
+    if (fsr && g_settings.upscaler == UPSCALE_SGSR1) {
         float iw = (float)b->width, ih = (float)b->height;
-        TexBackend *e = post_image(3, ow, oh), *r = post_image(4, ow, oh);
+        TexBackend *o = post_image(3, ow, oh, VK_FORMAT_R8G8B8A8_UNORM);
+        float ps[8] = {1.0f / iw, 1.0f / ih, iw, ih, (float)ow, (float)oh};
+        VkImageView si[3] = {v};
+        post_pass(cb, "sgsr1.frag", si, 1, o, ps, false);
+        v = post_view(o);
+    } else if (fsr) {
+        float iw = (float)b->width, ih = (float)b->height;
+        TexBackend *e = post_image(3, ow, oh, VK_FORMAT_R8G8B8A8_UNORM), *r = post_image(4, ow, oh, VK_FORMAT_R8G8B8A8_UNORM);
         float pe[8] = {iw / ow, ih / oh, 0.5f * iw / ow - 0.5f, 0.5f * ih / oh - 0.5f, iw, ih};
         VkImageView ei[3] = {v};
         post_pass(cb, "easu.frag", ei, 1, e, pe, false);
@@ -5469,10 +5483,73 @@ static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, 
         static uint32_t piw, pih, pow_, poh;
         static int psm = -1, pfs = -1;
         if (b->width != piw || b->height != pih || ow != pow_ || oh != poh || smaa != psm || fsr != pfs)
-            LOG("[post] %ux%u%s%s -> %ux%u\n", b->width, b->height, smaa ? " smaa" : "", fsr ? " fsr1" : "", ow, oh);
+            LOG("[post] %ux%u%s%s -> %ux%u\n", b->width, b->height, smaa ? " smaa" : "",
+                !fsr ? "" : g_settings.upscaler == UPSCALE_SGSR1 ? " sgsr1" : " fsr1", ow, oh);
         piw = b->width; pih = b->height; pow_ = ow; poh = oh; psm = smaa; pfs = fsr;
     }
     return v;
+}
+
+// ---- the upscaler at the scene -> final image composite (Video > Upscaler: AMD FSR 1, Snapdragon GSR 1; SavageWind-
+// Recomp's). The 3D scene's targets are at the internal resolution (textures.c RS_SCENE), the final image at the
+// screen's (RS_OUT), and the game's composite draw would scale the scene up bilinearly. Before that draw, EASU + RCAS
+// (or SGSR 1) bring the scene to its size in the final image, in the scene's own format (10-bit: no banding); the draw
+// then samples that at 1:1 (texture_info). LARECOMP_SCENE_UPSCALE=0: the game's own bilinear composite (A/B).
+static void scene_upscale(Prog *pr, CmdRec *r) {
+    scene_up.t = NULL;
+    static int on = -1;
+    if (on < 0) on = getenv("LARECOMP_SCENE_UPSCALE") ? atoi(getenv("LARECOMP_SCENE_UPSCALE")) : 1;
+    int mode = g_settings.upscaler;
+    if (!on || (mode != UPSCALE_FSR1 && mode != UPSCALE_SGSR1)) return;
+    NvnTexture *rt = st.rt.ncolor ? st.rt.color[0] : NULL;
+    if (!rt || r->x[2] > 6 || !pr->fi->ntex || vk_texture_scale_group(rt) != RS_OUT) return;
+    const float *vp = st.viewport[0];
+    if (vp[2] < rt->width * 0.5f || vp[3] < rt->height * 0.5f) return;  // (a composite fills most of the image)
+    float osx, osy;
+    renderer_texture_scale(rt, &osx, &osy);
+    uint32_t ow = (uint32_t)lroundf(vp[2] * osx), oh = (uint32_t)lroundf(vp[3] * osy);
+    if (ow > 16384) ow = 16384;
+    if (oh > 16384) oh = 16384;
+    for (int i = 0; i < pr->fi->ntex && i < 64; i++) {
+        NvnTexture *t = shader_texture_object(1, &pr->fi->tex[i]);
+        // the scene: a full-size scene target (not one of its reduced steps: bloom, blur)
+        if (!t || t->target != 1 || vk_texture_scale_group(t) != RS_SCENE || t->width * 2 < vp[2] || t->height * 2 < vp[3]) continue;
+        TexBackend *b = vk_tex(t, false);
+        if (!b->image || b->layers != 1 || b->samples != 1 || b->depth != 1 || (b->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT)) continue;
+        if (ow <= b->width + 1 && oh <= b->height + 1) return;  // (at its size in the final image already)
+        VkFormatProperties fp;
+        vkGetPhysicalDeviceFormatProperties(g_vk.phys, b->format, &fp);
+        if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) continue;
+        vk_end_pass();
+        VkCommandBuffer cb = vk_cmd();
+        float iw = (float)b->width, ih = (float)b->height;
+        static const VkComponentMapping id = {0};
+        VkImageView in[3] = {vk_image_view(b, VK_IMAGE_VIEW_TYPE_2D, b->format, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_COLOR_BIT)};
+        TexBackend *o = post_image(6, ow, oh, b->format);
+        if (mode == UPSCALE_SGSR1) {
+            float ps[8] = {1.0f / iw, 1.0f / ih, iw, ih, (float)ow, (float)oh};
+            post_pass(cb, "sgsr1.frag", in, 1, o, ps, false);
+        } else {
+            TexBackend *e = post_image(5, ow, oh, b->format);
+            float pe[8] = {iw / ow, ih / oh, 0.5f * iw / ow - 0.5f, 0.5f * ih / oh - 0.5f, iw, ih};
+            post_pass(cb, "easu.frag", in, 1, e, pe, false);
+            float pr_[8] = {exp2f(-0.2f), 0, 0, 0, (float)ow, (float)oh};  // (sharpness 0.2 stops: AMD's default)
+            VkImageView ri[3] = {post_view(e)};
+            post_pass(cb, "rcas.frag", ri, 1, o, pr_, false);
+        }
+        vk_full_barrier(cb);
+        scene_up.t = t;
+        scene_up.view = post_view(o);
+        scene_up.sx = (float)ow / (float)t->width;
+        scene_up.sy = (float)oh / (float)t->height;
+        static uint32_t lw, lh, low, loh;
+        static int lmode = -1;
+        if (b->width != lw || b->height != lh || ow != low || oh != loh || mode != lmode)
+            LOG("[post] scene %ux%u -> %s %ux%u (format %d)\n", b->width, b->height, mode == UPSCALE_SGSR1 ? "sgsr1" : "fsr1",
+                ow, oh, b->format);
+        lw = b->width; lh = b->height; low = ow; loh = oh; lmode = mode;
+        return;
+    }
 }
 
 // Inside the window image's rendering (device.c vk_frame_begin): the game image into (vx, vy, vw, vh).

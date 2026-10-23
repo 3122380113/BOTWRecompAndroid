@@ -319,8 +319,9 @@ static const char *builtin_src(const char *name, int *stage) {
         return src[k];
     }
     // AMD FidelityFX Super Resolution 1 (MIT), EASU: edge-adaptive upscale. a = (in / out scale xy, offset zw),
-    // b.xy = input size. 12 taps around the source pixel, direction / edge length from luma, Lanczos-2-like
-    // weights stretched along the edge, clamped to the nearest 4 (no ringing).
+    // b.xy = input size (alpha: bilinear, for the 3D scene's composite: exec.c scene_upscale). 12 taps around the
+    // source pixel, direction / edge length from luma, Lanczos-2-like weights stretched along the edge, clamped to the
+    // nearest 4 (no ringing).
     if (!strcmp(name, "easu.frag")) {
         *stage = STAGE_FRAGMENT;
         return "#version 450\n"
@@ -346,6 +347,7 @@ static const char *builtin_src(const char *name, int *stage) {
                "}\n"
                "void main() {\n"
                "  vec2 pp = floor(gl_FragCoord.xy) * pc.a.xy + pc.a.zw;\n"
+               "  float alpha = texture(t, (pp + 0.5) / pc.b.xy).a;\n"
                "  vec2 fpf = floor(pp); pp -= fpf;\n"
                "  ivec2 fp = ivec2(fpf);\n"
                "  //    b c\n"
@@ -386,7 +388,72 @@ static const char *builtin_src(const char *name, int *stage) {
                "  tapf(ac, aw, vec2(1.0, 0.0) - pp, dir, len2, lob, clp, gC);\n"
                "  tapf(ac, aw, vec2(1.0, 2.0) - pp, dir, len2, lob, clp, oC);\n"
                "  tapf(ac, aw, vec2(0.0, 2.0) - pp, dir, len2, lob, clp, nC);\n"
-               "  o = vec4(min(mx, max(mn, ac / aw)), 1.0);\n"
+               "  o = vec4(min(mx, max(mn, ac / aw)), alpha);\n"
+               "}\n";
+    }
+    // Snapdragon Game Super Resolution 1 (sgsr/v1/include/glsl/sgsr1_shader_mobile_edge_direction.frag of
+    // github.com/SnapdragonStudios/snapdragon-gsr: Copyright (c) 2025, Qualcomm Innovation Center, Inc. All rights
+    // reserved. SPDX-License-Identifier: BSD-3-Clause), its default mode (RGBA, luma from green, no edge direction):
+    // one pass, a bilinear sample sharpened where the 12 texels around it show an edge (Lanczos-2-like weights from
+    // their deviation from the mean). a = (1 / input size, input size), b.xy = output size. Alpha: the bilinear
+    // sample's (the 3D scene's composite: exec.c scene_upscale), where SGSR writes 1.
+    if (!strcmp(name, "sgsr1.frag")) {
+        *stage = STAGE_FRAGMENT;
+        return "#version 450\n"
+               "layout(set = 0, binding = 0) uniform sampler2D ps0;\n"
+               "layout(push_constant) uniform P { vec4 a; vec4 b; } pc;\n"
+               "layout(location = 0) out vec4 o;\n"
+               "const float EdgeThreshold = 8.0 / 255.0, EdgeSharpness = 2.0;\n"
+               "float fastLanczos2(float x) { float wA = x - 4.0; float wB = x * wA - wA; wA *= wA; return wB * wA; }\n"
+               "vec2 weightY(float dx, float dy, float c, float std) {\n"
+               "  float x = (dx * dx + dy * dy) * 0.55 + clamp(abs(c) * std, 0.0, 1.0);\n"
+               "  float w = fastLanczos2(x);\n"
+               "  return vec2(w, w * c);\n"
+               "}\n"
+               "void main() {\n"
+               "  vec4 vi = pc.a;\n"
+               "  vec2 uv = gl_FragCoord.xy / pc.b.xy;\n"
+               "  vec4 color = textureLod(ps0, uv, 0.0);\n"
+               "  float alpha = color.w;\n"
+               "  vec2 imgCoord = uv * vi.zw + vec2(-0.5, 0.5);\n"
+               "  vec2 imgCoordPixel = floor(imgCoord);\n"
+               "  vec2 coord = imgCoordPixel * vi.xy;\n"
+               "  vec2 pl = imgCoord - imgCoordPixel;\n"
+               "  vec4 left = textureGather(ps0, coord, 1);\n"
+               "  float edgeVote = abs(left.z - left.y) + abs(color.y - left.y) + abs(color.y - left.z);\n"
+               "  if (edgeVote > EdgeThreshold) {\n"
+               "    coord.x += vi.x;\n"
+               "    vec4 right = textureGather(ps0, coord + vec2(vi.x, 0.0), 1);\n"
+               "    vec4 upDown;\n"
+               "    upDown.xy = textureGather(ps0, coord + vec2(0.0, -vi.y), 1).wz;\n"
+               "    upDown.zw = textureGather(ps0, coord + vec2(0.0, vi.y), 1).yx;\n"
+               "    float mean = (left.y + left.z + right.x + right.w) * 0.25;\n"
+               "    left -= vec4(mean); right -= vec4(mean); upDown -= vec4(mean);\n"
+               "    color.w = color.y - mean;\n"
+               "    float sum = abs(left.x) + abs(left.y) + abs(left.z) + abs(left.w) + abs(right.x) + abs(right.y) +\n"
+               "                abs(right.z) + abs(right.w) + abs(upDown.x) + abs(upDown.y) + abs(upDown.z) + abs(upDown.w);\n"
+               "    float sumMean = 1.014185e+01 / sum;\n"
+               "    float std = sumMean * sumMean;\n"
+               "    vec2 aWY = weightY(pl.x, pl.y + 1.0, upDown.x, std);\n"
+               "    aWY += weightY(pl.x - 1.0, pl.y + 1.0, upDown.y, std);\n"
+               "    aWY += weightY(pl.x - 1.0, pl.y - 2.0, upDown.z, std);\n"
+               "    aWY += weightY(pl.x, pl.y - 2.0, upDown.w, std);\n"
+               "    aWY += weightY(pl.x + 1.0, pl.y - 1.0, left.x, std);\n"
+               "    aWY += weightY(pl.x, pl.y - 1.0, left.y, std);\n"
+               "    aWY += weightY(pl.x, pl.y, left.z, std);\n"
+               "    aWY += weightY(pl.x + 1.0, pl.y, left.w, std);\n"
+               "    aWY += weightY(pl.x - 1.0, pl.y - 1.0, right.x, std);\n"
+               "    aWY += weightY(pl.x - 2.0, pl.y - 1.0, right.y, std);\n"
+               "    aWY += weightY(pl.x - 2.0, pl.y, right.z, std);\n"
+               "    aWY += weightY(pl.x - 1.0, pl.y, right.w, std);\n"
+               "    float finalY = aWY.y / aWY.x;\n"
+               "    float maxY = max(max(left.y, left.z), max(right.x, right.w));\n"
+               "    float minY = min(min(left.y, left.z), min(right.x, right.w));\n"
+               "    float deltaY = clamp(EdgeSharpness * finalY, minY, maxY) - color.w;\n"
+               "    deltaY = clamp(deltaY, -23.0 / 255.0, 23.0 / 255.0);\n"  // (smooth high contrast input)
+               "    color.xyz = clamp(color.xyz + deltaY, 0.0, 1.0);\n"
+               "  }\n"
+               "  o = vec4(color.xyz, alpha);\n"
                "}\n";
     }
     // FSR 1 RCAS: contrast-adaptive sharpening of the EASU output (same size). a.x = sharpness (exp2(-stops)),
@@ -414,7 +481,7 @@ static const char *builtin_src(const char *name, int *stage) {
                "  vec3 hitMax = (1.0 - max(mx4, e)) / min(4.0 * mn4 - 4.0, vec3(-1.0 / 65536.0));\n"
                "  vec3 lobeRGB = max(-hitMin, hitMax);\n"
                "  float lobe = max(-(0.25 - 1.0 / 16.0), min(max(lobeRGB.r, max(lobeRGB.g, lobeRGB.b)), 0.0)) * pc.a.x * nz;\n"
-               "  o = vec4((lobe * (b + d + f + h) + e) / (4.0 * lobe + 1.0), 1.0);\n"
+               "  o = vec4((lobe * (b + d + f + h) + e) / (4.0 * lobe + 1.0), texelFetch(t, ip, 0).a);\n"
                "}\n";
     }
     if (!strcmp(name, "clear.vert")) {
