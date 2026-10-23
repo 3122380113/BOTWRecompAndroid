@@ -99,6 +99,8 @@ val prepareBotwRecompAndroid by tasks.registering {
     inputs.files(listOf("tools/gen.py", "tools/lifter.py", "tools/analyze.py", "tools/nso.py", "tools/passes.py", "tools/patches.py",
                         "tools/simd_c.py", "tools/gamelib_entry.c", "runtime/cpu.h",
                         "runtime/simd.h", "runtime/simd_fp.h", "runtime/gamelib.h", "runtime/hle/hle_symbols.txt").map { repo.resolve(it) })
+    val hotLists = repo.resolve("tools").listFiles { f -> f.name.matches(Regex("hot_functions_\\d+\\.txt")) }?.toList() ?: listOf()
+    inputs.files(hotLists)
     outputs.dir(gen)
     doLast {
         val out = gen.get().asFile
@@ -136,6 +138,9 @@ val prepareBotwRecompAndroid by tasks.registering {
                 repo.resolve("runtime/$n").copyTo(a.resolve("gamelib-src/$n"), overwrite = true)
             repo.resolve("tools/gamelib_entry.c").copyTo(a.resolve("gamelib-src/gamelib_entry.c"), overwrite = true)
             repo.resolve("runtime/hle/hle_symbols.txt").copyTo(a.resolve("gamelib-src/hle_symbols.txt"), overwrite = true)
+            // (runtime/gamebuild.c hot / cold: only these functions at -O1, one list per game version; not part of the
+            // game code's id)
+            for (f in hotLists) f.copyTo(a.resolve("gamelib-src/${f.name}"), overwrite = true)
         }
     }
 }

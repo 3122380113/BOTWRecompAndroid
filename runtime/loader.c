@@ -66,18 +66,24 @@ static uint64_t gnu_hash_nsyms(uint64_t h) {
     return (uint64_t)last + 1;
 }
 
+// The game's version for main's build id (the NSO header's bytes 0x40-0x47; 0: unknown) - also runtime/gamebuild.c
+int game_version_of_build(const uint8_t id[8]) {
+    static const struct { uint8_t id[8]; int version; } builds[] = {
+        {{0x20, 0x94, 0xf1, 0x52, 0x83, 0x66, 0x83, 0xa3}, 100},
+        {{0x8e, 0x99, 0x78, 0xd5, 0x0b, 0xdd, 0x20, 0xb4}, 160},
+        {{0xde, 0x0b, 0x6a, 0xc4, 0xef, 0xc1, 0xdd, 0xa7}, 182},
+    };
+    for (unsigned i = 0; i < sizeof builds / sizeof *builds; i++)
+        if (!memcmp(id, builds[i].id, 8)) return builds[i].version;
+    return 0;
+}
+
 static void load_nso(Module *m, const char *path, uint64_t base) {
     size_t len;
     uint8_t *raw = read_file(path, &len);
     if (!raw || memcmp(raw, "NSO0", 4)) FATAL("cannot load %s\n", path);
     if (base == MAIN_BASE) {  // (the game's version: g_game_version)
-        static const struct { uint8_t id[8]; int version; } builds[] = {
-            {{0x20, 0x94, 0xf1, 0x52, 0x83, 0x66, 0x83, 0xa3}, 100},
-            {{0x8e, 0x99, 0x78, 0xd5, 0x0b, 0xdd, 0x20, 0xb4}, 160},
-            {{0xde, 0x0b, 0x6a, 0xc4, 0xef, 0xc1, 0xdd, 0xa7}, 182},
-        };
-        for (unsigned i = 0; i < sizeof builds / sizeof *builds; i++)
-            if (!memcmp(raw + 0x40, builds[i].id, 8)) g_game_version = builds[i].version;
+        g_game_version = game_version_of_build(raw + 0x40);
         LOG("[loader] main build %02x%02x%02x%02x...: game version %d\n", raw[0x40], raw[0x41], raw[0x42], raw[0x43],
             g_game_version);
     }

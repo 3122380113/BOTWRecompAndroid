@@ -258,6 +258,7 @@ static void log_tail(const char *path, char *out, size_t n) {  // the last line 
 typedef struct {
     char src[1100], obj[1100], log[1100];
     unsigned long long bytes;
+    bool o0;  // (a file with a giant function: compiled at -O0 - mark_cold)
 } Unit;
 
 typedef struct {
@@ -276,6 +277,7 @@ static void add_unit(Units *us, const char *src, const char *work, const char *s
     snprintf(u->log, sizeof u->log, "%s" SEP "%s.log", work, stem);
     struct stat st;
     u->bytes = stat(src, &st) == 0 ? (unsigned long long)st.st_size : 0;
+    u->o0 = false;
 }
 
 // The flags the game code was built with (GAMELIB_CFLAGS, part of its id). zig cc reads -march=<cpu> with its own CPU
@@ -295,10 +297,145 @@ static void add_cflags(Args *a, const Tools *t) {
     }
 }
 
+#ifdef __ANDROID__
+// Hot / cold (LASRecompAndroid's): compiling the generated C at -O1 is most of the setup's time on a phone, and most of
+// the game's functions never run in a play session. gamelib-src/hot_functions_<version>.txt (tools/hot_functions.py:
+// the functions sessions of that game version entered, as hex addresses - versions differ in what lives where, so the
+// game's version comes from main's build id) keeps those at -O1; every other function in a generated file gets
+// optnone - the -O0 code generator, about 2.3x faster to compile. No list (or LARECOMP_GAMEBUILD_HOT=0): all at -O1.
+// A file with a giant function (over HEAVY_LABELS labels: a jump table's function has one per instruction) is compiled
+// at -O0, hot or not, as android/build_gamelib.sh does on the PC: clang spent hours on each at -O1 (v1.6.0), and
+// optnone isn't enough there - -O1 still runs its loop and block frequency analyses over the giant graph (v1.6.0's
+// main_1022.c, NDK clang on the PC: 135-277 s with the function optnone, 15 s for the file at -O0). The lists aren't
+// part of the game code's id (GAMELIB_ID): they change how fast it is built, not what it does.
+#define HEAVY_LABELS 15000
+static uint64_t *g_hot;
+static size_t g_nhot;
+static unsigned long long g_cold_fns, g_heavy_fns, g_all_fns, g_cold_files;
+
+static int cmp_u64(const void *a, const void *b) {
+    uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
+    return x < y ? -1 : x > y;
+}
+
+static void load_hot(const char *path) {
+    free(g_hot), g_hot = NULL, g_nhot = 0, g_cold_fns = g_heavy_fns = g_all_fns = g_cold_files = 0;
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    size_t cap = 0;
+    char line[64];
+    while (fgets(line, sizeof line, f)) {
+        if (!strchr(line, '\n'))  // (a longer line - a comment: its rest isn't another address)
+            for (int ch; (ch = fgetc(f)) != EOF && ch != '\n';) {}
+        if (line[0] == '#') continue;
+        // "<address>" as the generated code names it, or "main <offset>" / "sdk <offset>" (the module's base plus that)
+        const char *p = line;
+        uint64_t base = 0;
+        if (!strncmp(p, "main ", 5)) base = 0x7000000000ull, p += 5;
+        else if (!strncmp(p, "sdk ", 4)) base = 0x7004000000ull, p += 4;
+        char *end;
+        uint64_t a = base + strtoull(p, &end, 16);
+        if (end == p) continue;
+        if (g_nhot == cap) g_hot = realloc(g_hot, sizeof *g_hot * (cap = cap ? cap * 2 : 4096));
+        g_hot[g_nhot++] = a;
+    }
+    fclose(f);
+    qsort(g_hot, g_nhot, sizeof *g_hot, cmp_u64);
+}
+
+// Whether the line at p starts a function definition ("void f_<address>(Cpu *c) {", not a declaration "...;")
+static bool def_at(const char *p, uint64_t *addr) {
+    if (strncmp(p, "void f_", 7)) return false;
+    char *end;
+    *addr = strtoull(p + 7, &end, 16);
+    return !strncmp(end, "(Cpu *c) {", 10);
+}
+
+// The next function definition after the one at p (d: the file's start - its first line counts too): its line's start
+static const char *next_def(const char *d, const char *p, uint64_t *addr) {
+    if (p == d && def_at(p, addr)) return p;
+    while ((p = strstr(p + (p == d ? 0 : 1), "\nvoid f_"))) {
+        p++;  // (the line's start)
+        if (def_at(p, addr)) return p;
+    }
+    return NULL;
+}
+
+// A generated file's cold functions get optnone, in place (left as it is when there are none). *o0: compile the file at
+// -O0 - it has a giant function, or none of its functions is hot (the same code as all of them optnone, but -O1 would
+// still run its analyses over them: 3 chunks of 1.8.2's main, NDK clang on the PC, -O1 9.1 s, -O0 4.4 s, 87% optnone
+// 6.9 s).
+static bool mark_cold(const char *src, bool *o0) {
+    *o0 = false;
+    FILE *f = fopen(src, "rb");
+    if (!f) return false;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *d = n > 0 ? malloc((size_t)n + 2) : NULL;
+    bool ok = d && fread(d, 1, (size_t)n, f) == (size_t)n;
+    fclose(f);
+    if (!ok) { free(d); return false; }
+    d[n] = d[n + 1] = 0;  // (a label test reads two past a newline)
+    char tmp[1200];
+    snprintf(tmp, sizeof tmp, "%s.cold", src);
+    FILE *o = NULL;
+    static const char attr[] = "__attribute__((optnone, noinline)) ";
+    const char *copied = d;
+    uint64_t a, an;
+    unsigned defs = 0, hot = 0;
+    for (const char *p = next_def(d, d, &a), *q; p && ok; p = q, a = an) {
+        q = next_def(d, p + 1, &an);
+        const char *stop = q ? q : d + n;
+        unsigned labels = 0;
+        for (const char *l = p; (l = memchr(l, '\n', (size_t)(stop - l))) && labels <= HEAVY_LABELS; l++)
+            labels += l[1] == 'L' && l[2] == '_';
+        g_all_fns++, defs++;
+        if (labels > HEAVY_LABELS) g_heavy_fns++, *o0 = true;
+        bool cold = g_nhot && !bsearch(&a, g_hot, g_nhot, sizeof *g_hot, cmp_u64);
+        if (!cold) { hot++; continue; }
+        g_cold_fns++;
+        if (!o && !(o = fopen(tmp, "wb"))) { ok = false; break; }
+        ok = fwrite(copied, 1, (size_t)(p - copied), o) == (size_t)(p - copied) && fputs(attr, o) >= 0;
+        copied = p;
+    }
+    if (g_nhot && defs && !hot) {  // (all cold: the file at -O0 as it is)
+        *o0 = true;
+        g_cold_files++;
+        if (o) fclose(o), remove(tmp);
+        free(d);
+        return ok;
+    }
+    if (!o) { free(d); return ok; }  // (nothing to mark)
+    ok = ok && fwrite(copied, 1, (size_t)(d + n - copied), o) == (size_t)(d + n - copied);
+    if (fclose(o) != 0) ok = false;
+    free(d);
+    if (ok && rename(tmp, src) == 0) return true;
+    remove(tmp);
+    return false;
+}
+
+// The hot list for the game in game_dir: its version from exefs/main's build id (runtime/loader.c)
+static void load_hot_for(const char *game_dir) {
+    const char *e = getenv("LARECOMP_GAMEBUILD_HOT"), *gen = getenv("LARECOMP_GEN_DIR");
+    char path[1200], nso[1100];
+    uint8_t head[0x48] = {0};
+    snprintf(nso, sizeof nso, "%s/exefs/main", game_dir);
+    FILE *f = fopen(nso, "rb");
+    int version = f && fread(head, 1, sizeof head, f) == sizeof head ? game_version_of_build(head + 0x40) : 0;
+    if (f) fclose(f);
+    snprintf(path, sizeof path, "%s/gamelib-src/hot_functions_%d.txt", gen ? gen : ".", version);
+    load_hot(e && strcmp(e, "0") ? e : e ? "" : path);
+    LOG("[gamebuild] game version %d, hot functions: %zu%s; files with a function over %d labels: -O0\n", version, g_nhot,
+        g_nhot ? " (the rest compiled with optnone)" : " (all at -O1)", HEAVY_LABELS);
+}
+#endif
+
 static PlatProc start_compile(const Tools *t, const Unit *u) {
     Args a = {0};
     compiler(&a, t);
     add_cflags(&a, t);
+    if (u->o0) add(&a, "-O0");  // (after GAMELIB_CFLAGS' -O1: the last one counts)
     char inc[1200];
     snprintf(inc, sizeof inc, "-I%s", t->inc);
     add(&a, inc);
@@ -345,6 +482,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
     mkdir(work, 0755);
 #ifdef __ANDROID__
     android_env(work);
+    load_hot_for(game_dir);
     {   // (the previous one in internal storage: a failed build must not leave it looking current)
         char idp[1200];
         snprintf(idp, sizeof idp, "%s.id", lib);
@@ -446,6 +584,10 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
 
         // compiles
         while (nrun < jobs && next < units.n) {
+#ifdef __ANDROID__  // (unit 0 is the shipped entry file; a file that can't be marked just stays at -O1)
+            if (next > 0 && !mark_cold(units.u[next].src, &units.u[next].o0))
+                LOG("[gamebuild] couldn't mark cold functions in %s\n", units.u[next].src);
+#endif
             PlatProc p = start_compile(&t, &units.u[next]);
             if (!p) { snprintf(why, why_size, "the compiler didn't start"); ok = false; break; }
             run[nrun].p = p, run[nrun].unit = next++;
@@ -557,6 +699,10 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
     }
     free(units.u);
     rt_remove_game_file(game_dir, ".gamebuild");  // the C, the objects, the logs
+#ifdef __ANDROID__
+    LOG("[gamebuild] %llu of %llu functions cold (optnone, or %llu files all cold at -O0), %llu giant (their files at "
+        "-O0)\n", g_cold_fns, g_all_fns, g_cold_files, g_heavy_fns);
+#endif
     LOG("[gamebuild] %s in %.0fs\n", ok ? "done" : "failed", (double)(plat_now_ns() - t0) / 1e9);
     if (ok && o->progress) o->progress(1, "Finishing...");
     return ok;
