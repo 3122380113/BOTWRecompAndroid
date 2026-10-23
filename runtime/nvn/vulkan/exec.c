@@ -2892,6 +2892,20 @@ static void resolve_feedback(Prog *pr) {
                     }
                     continue;
                 }
+                // A color target the draw writes, sampled in place too (LARECOMP_FEEDBACK_COPY=1: copied, as before).
+                // BOTW's terrain decals (fs f984e489, in the G-buffer pass) read and write two of its targets, a
+                // barrier every one or two: 32 pairs of 1280x720 copies a frame on the Great Plateau, 11 of its 40 ms
+                // of GPU. In place, a pass that wrote the target already ends first - begin_pass's barrier makes those
+                // writes visible, as a copy had them - and those passes of one or two draws run in system memory on
+                // Turnip (~0.04 ms each). Only the writes before the game's last barrier (NVN's rule) left the ground
+                // dark: its draws don't fence every write they then read.
+                static int copy = -1;
+                if (copy < 0) copy = getenv("LARECOMP_FEEDBACK_COPY") != NULL;
+                if (!copy && bit && bit < 1u << 8) {
+                    if (in_pass && !st.rt_dirty && (pass_written & bit)) st.rt_dirty = true;
+                    stat_feedback_reads++;
+                    continue;
+                }
             }
             bool have = false;
             for (int k = 0; k < nfeedback; k++) have |= feedback_tex[k] == t;
