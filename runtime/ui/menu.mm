@@ -539,8 +539,8 @@ static void tab_display(void) {
         static const char *ups[] = {"Bilinear", "AMD FSR 1", "Snapdragon GSR 1"};
         static const int up_mode[] = {UPSCALE_BILINEAR, UPSCALE_FSR1, UPSCALE_SGSR1};
         const char *ud = "How the 3D image is scaled up to the screen when it renders at a lower resolution. AMD FSR 1: "
-                         "edge-aware upscaling and sharpening, the sharpest. Snapdragon GSR 1: one light pass, softer and "
-                         "more natural (made for phones, works on any GPU). Bilinear: plain and soft.";
+                         "edge-aware upscaling and sharpening, the sharpest, two passes. Snapdragon GSR 1: one light pass, "
+                         "softer and more natural, the faster (made for phones, works on any GPU). Bilinear: plain and soft.";
 #endif
         enum { NUP = sizeof up_mode / sizeof up_mode[0] };
         int ui = 1;
@@ -551,7 +551,12 @@ static void tab_display(void) {
             ud = udm;
             opt_disable_next();
         }
-        if (opt_choice("Upscaler", &ui, ups, NUP, 1, ud)) g_settings.upscaler = up_mode[ui];
+#ifdef __ANDROID__
+        enum { UP_DEFAULT = 2 };  // (Snapdragon GSR 1: settings.c)
+#else
+        enum { UP_DEFAULT = 1 };
+#endif
+        if (opt_choice("Upscaler", &ui, ups, NUP, UP_DEFAULT, ud)) g_settings.upscaler = up_mode[ui];
     }
     static const char *aa[] = {"Off", "SMAA"};
     opt_choice("Anti-aliasing", &g_settings.antialias, aa, 2, AA_OFF,

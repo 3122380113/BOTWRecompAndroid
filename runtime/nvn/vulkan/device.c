@@ -1456,6 +1456,18 @@ bool vk_driver_is_qualcomm(void) {
     }
     return q > 0;
 }
+
+// Mesa's Turnip (Adreno): where reads of a target a pass also writes were tested (exec.c resolve_feedback)
+bool vk_driver_is_turnip(void) {
+    static int t = -1;
+    if (t < 0 && g_vk.phys) {
+        VkPhysicalDeviceDriverProperties d = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+        VkPhysicalDeviceProperties2 p = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &d};
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &p);
+        t = d.driverID == VK_DRIVER_ID_MESA_TURNIP;
+    }
+    return t > 0;
+}
 #endif
 
 void backend_init(void) {

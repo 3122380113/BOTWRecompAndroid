@@ -2903,9 +2903,14 @@ static void resolve_feedback(Prog *pr) {
                 // copy (until a barrier, a change of targets or a write by a draw not reading it: the snapshot
                 // bookkeeping) share that pass. Those passes of a few draws run in system memory on Turnip (~0.02 ms).
                 // Only the writes before the game's last barrier (NVN's rule) left the ground dark: its draws don't
-                // fence every write they then read.
+                // fence every write they then read. Sampling a target the pass writes is a feedback loop Vulkan leaves
+                // undefined (without VK_EXT_attachment_feedback_loop_layout): on Turnip only, where it was checked
+                // frame by frame (LARECOMP_FEEDBACK_INPLACE=1 elsewhere too).
                 static int copy = -1;
-                if (copy < 0) copy = getenv("LARECOMP_FEEDBACK_COPY") != NULL;
+                if (copy < 0) {
+                    extern bool vk_driver_is_turnip(void);
+                    copy = getenv("LARECOMP_FEEDBACK_COPY") != NULL || (!vk_driver_is_turnip() && !getenv("LARECOMP_FEEDBACK_INPLACE"));
+                }
                 if (!copy && bit && bit < 1u << 8) {
                     int si = -1;
                     for (int k = 0; k < 8; k++) if (snap_tex[k] == t) si = k;
