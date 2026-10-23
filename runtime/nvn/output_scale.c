@@ -3,8 +3,9 @@
 // composes it into its final 1920x1080 image with the HUD. The final image's targets are allocated at (sx, sy) times
 // their size - the window's resolution, so the HUD is sharp - and the scene's at (scene_sx, scene_sy) times theirs
 // (vulkan/textures.c RS_OUT / RS_SCENE); the image is then drawn into (vx, vy, vw, vh) of the window. Video tab
-// "Internal resolution" (g_settings.res_mode) sets the scene's:
-//   Match display  the scene at the size it takes on the screen
+// "Internal resolution" (g_settings.res_mode) sets the scene's, "Output resolution" (g_settings.out_lines) caps the
+// final image's (else the window's):
+//   Match display  the scene at the size it takes in the final image
 //   1x .. 4x       N times the Switch's docked scene: 900 lines x N; capped to the GPU's 16384-pixel texture limit
 //   .75x / .50x / .25x  of Match display
 //   Dynamic        Match display, lowered in steps while the GPU can't hold the frame rate and raised again when it
@@ -73,11 +74,15 @@ void output_scale(double dw, double dh, bool reshape_allowed, double now, double
     // the final image: the window's resolution, in units of the Switch's 1080 lines
     double h = fmax(reshape ? dh / 1080.0 : fit, 0.1);
     double sx = h * shape, sy = h;
-    {   // LARECOMP_OUT_LINES=<n> (a test): the final image at most n lines (1080: the Switch's), scaled to the window
-        static double out_lines = -1;
-        if (out_lines < 0) out_lines = getenv("LARECOMP_OUT_LINES") ? atof(getenv("LARECOMP_OUT_LINES")) : 0;
+    {   // Video tab "Output resolution" (g_settings.out_lines): the final image at most that many lines, scaled up to the
+        // window when presented - the game's last passes and the scene's upscale over fewer pixels, the HUD softer
+        // (LARECOMP_OUT_LINES=<n> for tests: the same, over the setting)
+        static double env_lines = -1;
+        if (env_lines < 0) env_lines = getenv("LARECOMP_OUT_LINES") ? atof(getenv("LARECOMP_OUT_LINES")) : 0;
+        double out_lines = env_lines > 0 ? env_lines : g_settings.out_lines;
         if (out_lines > 0 && sy * 1080.0 > out_lines) { double k = out_lines / (sy * 1080.0); sx *= k; sy *= k; }
     }
+    h = sy;  // (Match display below: the final image's size, which is the screen's unless Output resolution is lower)
     double cap = fmin(MAX_TEX / (1920.0 * sx), MAX_TEX / (1080.0 * sy));
     if (cap < 1.0) { sx *= cap; sy *= cap; }
     o->sx = sx; o->sy = sy; o->shape = shape;

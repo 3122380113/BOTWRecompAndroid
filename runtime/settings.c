@@ -143,6 +143,7 @@ void settings_reset_defaults(void) {
     g_settings.fullscreen = d->fullscreen;
     g_settings.res_mode = d->res_mode;
     g_settings.upscaler = d->upscaler;
+    g_settings.out_lines = d->out_lines;
     g_settings.antialias = d->antialias;
     g_settings.volume = d->volume;
     g_settings.reverb = d->reverb;
@@ -214,6 +215,10 @@ void settings_load(void) {
                                 : !strcmp(val, "sgsr1") ? UPSCALE_SGSR1
 #endif
                                 : UPSCALE_SHARP;
+        else if (!strcmp(key, "output_resolution")) {  // ("screen", or the final image's lines: 1080 / 900 / 720)
+            int n = atoi(val);
+            g_settings.out_lines = n == 1080 || n == 900 || n == 720 ? n : 0;
+        }
         else if (!strcmp(key, "antialias")) g_settings.antialias = !strcmp(val, "off") ? AA_OFF : AA_SMAA;  // ("fxaa": SMAA now)
         else if (!strcmp(key, "language")) {  // ("auto" or one of the game's codes; anything else: auto)
             g_settings.language = LANG_AUTO;
@@ -259,6 +264,8 @@ void settings_save(void) {
 #endif
     fprintf(f, "upscaler = %s\n", g_settings.upscaler == UPSCALE_METALFX ? "metalfx" : g_settings.upscaler == UPSCALE_FSR1 ? "fsr1" :
                                    g_settings.upscaler == UPSCALE_SGSR1 ? "sgsr1" : "bilinear");
+    if (g_settings.out_lines > 0) fprintf(f, "output_resolution = %d\n", g_settings.out_lines);
+    else fprintf(f, "output_resolution = screen\n");
     fprintf(f, "antialias = %s\n", g_settings.antialias == AA_SMAA ? "smaa" : "off");
     if (g_settings.res_mode == RES_DYNAMIC) fprintf(f, "resolution = dynamic\n");
     else if (g_settings.res_mode == RES_Q75) fprintf(f, "resolution = 75%%\n");

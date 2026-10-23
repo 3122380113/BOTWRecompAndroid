@@ -25,6 +25,8 @@ typedef struct {
     bool fullscreen;
     int res_mode;        // RES_MATCH, 1..4 (N x the Switch's 1080p), RES_DYNAMIC, RES_Q75/50/25 (share of the display)
     int upscaler;        // UPSCALE_*: how a lower internal resolution reaches the window (MetalFX: macOS, FSR 1: Windows)
+    int out_lines;       // Output resolution: the final image (scene + HUD) at most this many lines, scaled up to the
+                         // screen at the end (0: the screen's own; 1080 / 900 / 720) - nvn/output_scale.c
     int antialias;       // AA_*: anti-aliasing of the game image before it is scaled to the window
     float volume;        // master volume, 1 = 100%
     bool reverb;         // room reverb effect
