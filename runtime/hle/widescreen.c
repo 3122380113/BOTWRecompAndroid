@@ -4,6 +4,14 @@
 // (output aspect / 16:9) each frame. Work in progress: 1.8.2's one 16:9 constant (main 0x158afc8, loaded at
 // 0x7001381c34) builds some cameras' projections, but not the main camera's (patched to rt_aspect_bits by hand in the
 // generated code for tests: the image still stretched); the main camera's aspect comes from elsewhere.
+// Found 2026-10-23 (LARECOMP_FIND_PROJ, vulkan/exec.c): the G-buffer's vertex shaders read the main camera's projection
+// from their first constant buffer (0x920 bytes, P at +0x70: 1.2063 2.1445 -1.0001 -2.0001 - fovy 50 degrees, 16:9,
+// near 1, far 25000). Its source is a sead::PerspectiveProjection (vtable 0x101ba4438; at 3df0c4598 on the Great Plateau
+// save): +8 mDirty, +9 mDeviceDirty, +0xC mMatrix, +0x4C mDeviceMatrix, +0x98 near, far, fovy, sin, cos, tan, +0xB0
+// mAspect. Setting mAspect (and the dirty flags) each frame from the render thread doesn't hold (LARECOMP_CAM_PROJ:
+// the game sets 16:9 again before it builds the matrix), and a write watch on it caught nothing (as before: the placed
+// heap). Next: hook where sead stores the aspect or rebuilds the matrix (the vtable's updateMatrixImpl_), so culling
+// widens with it; then the HUD's orthographic projection, centred.
 #include <stdbool.h>
 #include <stdint.h>
 

@@ -1131,6 +1131,22 @@ void backend_present(NvnTexture *t) {
         }
     }
     if (g_debug_frame) LOG("===== debug frame %llu =====\n", (unsigned long long)total_frames);
+    {   // LARECOMP_CAM_PROJ=<hex address> (a widescreen test): a sead::PerspectiveProjection there (1.8.2's main camera
+        // was at 3df0c4598 on the Great Plateau save) gets the output's aspect and its matrices marked dirty, each frame
+        static uint64_t cp = ~0ull;
+        if (cp == ~0ull) cp = getenv("LARECOMP_CAM_PROJ") ? strtoull(getenv("LARECOMP_CAM_PROJ"), NULL, 16) : 0;
+        extern bool widescreen_allowed(void);
+        extern float widescreen_factor(void);
+        if (cp >= HEAP_BASE && cp + 0xC0 <= HEAP_BASE + HEAP_MAX) {
+            float *aspect = (float *)(uintptr_t)(cp + 0xB0), want = 16.0f / 9.0f * (widescreen_allowed() ? widescreen_factor() : 1.0f);
+            if (*aspect > 1.0f && *aspect < 4.0f && *aspect != want) {
+                *aspect = want;
+                *(uint8_t *)(uintptr_t)(cp + 8) = 1, *(uint8_t *)(uintptr_t)(cp + 9) = 1;  // (mDirty, mDeviceDirty)
+                static int n;
+                if (n++ < 5) LOG("[widescreen] camera projection %llx: aspect %.4f\n", (unsigned long long)cp, want);
+            }
+        }
+    }
     {   // LARECOMP_PEEK=<hex address>:<hex length>, LARECOMP_PEEK_EVERY=<frames>: guest memory in the log (diagnosis)
         static uint64_t pa = ~0ull, pl;
         static long pe;

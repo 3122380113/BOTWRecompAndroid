@@ -4689,6 +4689,42 @@ static void draw_(CmdRec *r, bool indexed) {
         if (st.ubuf[0][5].addr) widescreen_scene_ubo((const float *)(uintptr_t)st.ubuf[0][5].addr, st.ubuf[0][5].size);
     }
     if (g_debug_frame) debug_draw(pr, r, indexed);
+    {   // LARECOMP_FIND_PROJ=<frame>: the constant buffers of that frame's draws holding a 16:9 perspective projection
+        // (P[1][1] / P[0][0] = 16/9, five floats apart in either order): where the camera is (widescreen, frame generation)
+        static long at = -2;
+        if (at == -2) at = getenv("LARECOMP_FIND_PROJ") ? atol(getenv("LARECOMP_FIND_PROJ")) : -1;
+        if (at >= 0 && (long)renderer_present_count() == at) {
+            static int nlog;
+            static uint64_t seen[64];
+            static int nseen;
+            for (int sg = 0; sg < 2 && nlog < 80; sg++)
+                for (int b = 0; b < 18 && nlog < 80; b++) {
+                    const Range *u = &st.ubuf[sg][b];
+                    if (!u->addr || u->size < 64) continue;
+                    const float *f = (const float *)(uintptr_t)u->addr;
+                    uint64_t nf = (u->size > 0x1000 ? 0x1000 : u->size) / 4;
+                    for (uint64_t k = 0; k + 15 < nf; k++) {
+                        float p0 = f[k], p1 = f[k + 5];
+                        if (!(p0 > 0.3f && p0 < 6.0f && p1 > p0)) continue;
+                        float r = p1 / p0;
+                        if (r < 1.76f || r > 1.80f) continue;
+                        uint64_t key = (u->addr + k * 4) ^ ((uint64_t)sg << 62);
+                        bool dup = false;
+                        for (int i = 0; i < nseen; i++) dup |= seen[i] == key;
+                        if (dup) continue;
+                        if (nseen < 64) seen[nseen++] = key;
+                        LOG("[proj] stage %d cbuf %d (+%#llx of %#llx at %llx) fs %016llx: %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f\n",
+                            sg, b, (unsigned long long)(k * 4), (unsigned long long)u->size, (unsigned long long)u->addr,
+                            (unsigned long long)g_cur_fs_hash, f[k], f[k + 1], f[k + 2], f[k + 3], f[k + 4], f[k + 5], f[k + 6],
+                            f[k + 7], f[k + 8], f[k + 9], f[k + 10], f[k + 11], f[k + 12], f[k + 13], f[k + 14], f[k + 15]);
+                        const uint32_t *w = (const uint32_t *)f;  // (the exact bits: LARECOMP_FIND for the matrix's source)
+                        LOG("[proj]   bits %08x %08x %08x %08x and the buffer from +0: %08x %08x %08x %08x %08x %08x %08x %08x\n",
+                            w[k], w[k + 5], w[k + 10], w[k + 11], w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
+                        nlog++;
+                    }
+                }
+        }
+    }
     if (ct_on()) ct_draw(pr, "draw");
     alias_draw_check();
     resolve_feedback(pr);
