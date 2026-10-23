@@ -1070,15 +1070,31 @@ static void emit_tmml(Ctx *c, uint64_t w, bool bindless, uint32_t pc) {
         slot = bindless_slot(c, hbank, hoff, type, array);
         if (c->fail) return;
     } else if (bindless) {
+        // (the next TEX / TEXS on the same coordinate register, else the last one before: a shader of BOTW 1.8.2 had
+        // none after it and failed whole - its draws skipped)
         const uint64_t *code = (const uint64_t *)c->code;
         bool found = false;
-        for (size_t i = pc / 8 + 1; i < c->ninsts && i < pc / 8 + 64 && !found; i++) {
-            if (i % 4 == 0) continue;
-            uint64_t x = code[i];
-            bool tex = (x & 0xfc38000000000000ull) == 0xc038000000000000ull, texs = (x & 0xf600000000000000ull) == 0xd000000000000000ull;
-            if ((tex || texs) && (int)bits(x, 8, 8) == a) index = (uint32_t)bits(x, 36, 13), found = true;
+        for (int dir = 1; dir >= -1 && !found; dir -= 2)
+            for (size_t k = 1; k < 64 && !found; k++) {
+                if (dir < 0 && k > pc / 8) break;
+                size_t i = dir > 0 ? pc / 8 + k : pc / 8 - k;
+                if (i >= c->ninsts) break;
+                if (i % 4 == 0) continue;
+                uint64_t x = code[i];
+                bool tex = (x & 0xfc38000000000000ull) == 0xc038000000000000ull, texs = (x & 0xf600000000000000ull) == 0xd000000000000000ull;
+                if ((tex || texs) && (int)bits(x, 8, 8) == a) index = (uint32_t)bits(x, 36, 13), found = true;
+            }
+        if (!found) {  // no texture to ask: LOD 0 (the finest level) rather than no draw at all
+            static int told;
+            if (!told++) fprintf(stderr, "[shader] TMML.B with no known texture (pc %#x): LOD 0\n", pc);
+            int n = 0;
+            for (int i = 0; i < 4; i++)
+                if (mask & (1u << i)) {
+                    if (d != RZ && d + n < RZ) { c->reg_used[d + n] = 1; sp(&c->body, "    r%d = 0u;\n", d + n); }
+                    n++;
+                }
+            return;
         }
-        if (!found) { fail(c, "bindless tmml"); return; }
     }
     if (slot < 0) slot = tex_slot(c, index, -1, false, false);
     if (c->tex_weak[slot]) {
