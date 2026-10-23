@@ -1043,6 +1043,8 @@ void backend_present(NvnTexture *t) {
         // render scale + placement in the window: runtime/nvn/output_scale.c (Video tab "Internal resolution");
         // no GPU timer here (-1): dynamic resolution goes by the frame time
         OutScale os;
+        extern void widescreen_set_shape(float f);  // (the window's: the game's cameras widen from the start)
+        widescreen_set_shape((float)((dw / dh) / (16.0 / 9.0)));
         output_scale(dw, dh, widescreen_allowed(), SDL_GetTicksNS() / 1e9, -1, &os);
 #ifdef __ANDROID__
         static int matrix_trace = -1;

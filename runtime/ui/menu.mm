@@ -509,8 +509,9 @@ static void tab_display(void) {
     const char *aspects[] = {"Unlocked", "Original 16:9"};
     opt_choice("Aspect ratio", &g_settings.aspect, aspects, 2, ASPECT_UNLOCKED,
                "Unlocked: the view fills the screen, so wider screens show more of Hyrule, and the HUD moves out to its "
-               "edges (menus stay in the middle). Game version 1.8.2 (1.0.0 and 1.6.0 keep 16:9 with bars). Original 16:9: the game's own "
-               "framing, with bars.");
+               "edges (menus stay in the middle). Game version 1.8.2 (1.0.0 and 1.6.0 keep 16:9 with bars); a change applies "
+               "when the game starts again (Quit -> Return to start, then Play). Original 16:9: the game's own framing, "
+               "with bars.");
 #ifndef __ANDROID__  // (Android: always the whole screen)
     bool fs = g_settings.fullscreen;
     if (opt_toggle("Fullscreen", &fs, false, "Fills the screen. Also: F11, Alt+Enter or Cmd+Ctrl+F.")) {

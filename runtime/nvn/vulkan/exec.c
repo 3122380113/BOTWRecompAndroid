@@ -1569,10 +1569,17 @@ static void vk_end_pass_at(int line) {
 
 static uint32_t level_extent(uint32_t v, uint32_t lv) { v >>= lv; return v ? v : 1; }
 
+// The frame the 3D scene's G-buffer was last drawn in (a pass of 3+ scene-sized targets with depth): widescreen.c
+// keeps the title screen and loading screens - no scene - at 16:9
+static volatile uint64_t g_scene_frame;
+uint64_t vk_scene_frame(void) { return g_scene_frame; }
+
 static void begin_pass(void) {
     if (in_pass && !st.rt_dirty) return;
     pipeline_dirty = true;
     vk_end_pass();
+    if (st.rt.depth && st.rt.ncolor >= 3 && st.rt.color[0] && vk_texture_scale_group(st.rt.color[0]) == RS_SCENE)
+        g_scene_frame = renderer_present_count();
 #ifdef __ANDROID__
     {   // LARECOMP_VK_ASYNC: the GPU starts on a frame while the render thread still translates the rest of it - a
         // submission at a pass boundary (no pass split: on a tiler that would store and reload its tiles) once

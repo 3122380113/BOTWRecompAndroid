@@ -12,6 +12,8 @@ uint64_t framepace_period_ns(void);
 bool framepace_on(void);
 // 1.8.2: the game is paused (pause menu, map) or the title screen's menu is up
 bool framepace_in_menu(void);
+// 1.8.2: the title screen's menu is up
+bool framepace_on_title(void);
 // The present (nvn/objects.c): a frame went out at t (plat_now_ns), on its pace's grid or not.
 void framepace_presented(uint64_t t, bool on_grid);
 

@@ -68,6 +68,21 @@ static bool in_menu(void) {
 // (widescreen.c: the HUD stays in place in the menus)
 bool framepace_in_menu(void) { return g_game_version == 182 && in_menu(); }
 
+// (widescreen.c) the title screen's menu is up - screen 1 in the UI screen manager, as in_menu - and the game isn't paused
+bool framepace_on_title(void) {
+    if (g_game_version != 182) return false;
+    uint64_t holder = *(uint64_t *)(uintptr_t)GA(0x7001c05d88ull);
+    uint64_t mgr = holder ? *(uint64_t *)(uintptr_t)holder : 0;
+    bool on = mgr && !*(uint32_t *)(uintptr_t)PAUSE_STATE && VF(uint32_t, mgr, 0x28) > 1 && VF(uint64_t, mgr, 0x30) &&
+              *(uint64_t *)(uintptr_t)(VF(uint64_t, mgr, 0x30) + 8);
+    static int last = -1;
+    if (getenv("LARECOMP_LOG_TITLE") && on != last) {
+        last = on;
+        LOG("[framepace] title screen %d (screens %u, menu %d)\n", on, mgr ? VF(uint32_t, mgr, 0x28) : 0, in_menu());
+    }
+    return on;
+}
+
 // An event is running: a cutscene, a talk, an item fanfare (ksys::evt::Manager [0x7001cd8db8]: its active event at
 // +0x1d2b8). Some of their waits count frames: the new game's opening gave Link control 2 s early at 60 fps.
 static bool in_event(void) {
