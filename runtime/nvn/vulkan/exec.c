@@ -5588,7 +5588,12 @@ static TexBackend *post_image(int i, uint32_t w, uint32_t h, VkFormat f) {
         d->mem = VK_NULL_HANDLE;
     }
     if (!d->image) {
+        // (the scene's EASU output, A2B10G10R10: compressed (UBWC) on Turnip, RCAS's texelFetch of it read 16x4 blocks
+        // of zeros - black dashes in the grass, about one a frame on the Adreno 830; uncompressed with a mutable
+        // format, as SGSR's single pass and an RGBA8 intermediate showed none either)
+        bool plain = i == 5 && f == VK_FORMAT_A2B10G10R10_UNORM_PACK32;
         VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+                                .flags = plain ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0,
                                 .format = f, .extent = {w, h, 1}, .mipLevels = 1, .arrayLayers = 1,
                                 .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
                                 .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
@@ -5760,6 +5765,7 @@ static void scene_upscale(Prog *pr, CmdRec *r) {
         static const VkComponentMapping id = {0};
         VkImageView in[3] = {vk_image_view(b, VK_IMAGE_VIEW_TYPE_2D, b->format, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_COLOR_BIT)};
         TexBackend *o = post_image(6, ow, oh, b->format);
+        gp_mark(cb, "scene upscale %ux%u -> %ux%u: %s", b->width, b->height, ow, oh, mode == UPSCALE_SGSR1 ? "sgsr1" : "easu");
         if (mode == UPSCALE_SGSR1) {
             float ps[8] = {1.0f / iw, 1.0f / ih, iw, ih, (float)ow, (float)oh};
             post_pass(cb, "sgsr1.frag", in, 1, o, ps, false);
@@ -5767,6 +5773,7 @@ static void scene_upscale(Prog *pr, CmdRec *r) {
             TexBackend *e = post_image(5, ow, oh, b->format);
             float pe[8] = {iw / ow, ih / oh, 0.5f * iw / ow - 0.5f, 0.5f * ih / oh - 0.5f, iw, ih};
             post_pass(cb, "easu.frag", in, 1, e, pe, false);
+            gp_mark(cb, "scene upscale: rcas");
             float pr_[8] = {exp2f(-0.2f), 0, 0, 0, (float)ow, (float)oh};  // (sharpness 0.2 stops: AMD's default)
             VkImageView ri[3] = {post_view(e)};
             post_pass(cb, "rcas.frag", ri, 1, o, pr_, false);
