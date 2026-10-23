@@ -291,7 +291,6 @@ void plat_print_backtrace(void) {
 
 // (installed through ART's signal chain: ART still handles its own faults first)
 static void crash_handler(int sig, siginfo_t *si, void *ctx) {
-    if (sig == SIGSEGV && si->si_code == SEGV_ACCERR && wt_fault((uint64_t)(uintptr_t)si->si_addr)) return;  // (write tracking)
     ucontext_t *uc = ctx;
     static volatile int depth;
     if (sig == SIGABRT && depth++ > 0) { signal(SIGABRT, SIG_DFL); abort(); }  // (nested: just die)
@@ -304,7 +303,8 @@ static void crash_handler(int sig, siginfo_t *si, void *ctx) {
         for (int i = 0; i < 64 && h->magic && h->size; i++, h = (struct _aarch64_ctx *)((char *)h + h->size))
             if (h->magic == ESR_MAGIC) { g_fault_wnr = (int)((((struct esr_context *)h)->esr >> 6) & 1); break; }
     }
-    if (rt_fault_watch(fa, pc)) return;
+    if (rt_fault_watch(fa, pc)) return;  // (debugging watches first: a watched page may be write-tracked too)
+    if (sig == SIGSEGV && si->si_code == SEGV_ACCERR && wt_fault(fa)) return;  // (write tracking)
     char what[32];
     snprintf(what, sizeof what, "signal %d", sig);
     rt_fault_report(what, fa, pc, lr);
