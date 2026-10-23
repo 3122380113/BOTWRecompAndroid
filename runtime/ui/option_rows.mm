@@ -9,6 +9,7 @@
 #include "imgui.h"
 #include "imgui_internal.h"  // (SetKeyOwner, NavCursorVisible)
 
+#include "i18n.h"
 #include "option_rows.h"
 #include "osk.h"
 
@@ -112,11 +113,11 @@ void ui_touch_scroll() {
 static void touch_begin(const char *label, const char *desc, bool heading = true) {
     ImGui::PushID(label);
     ImGui::PushTextWrapPos(0);
-    if (heading) ImGui::TextUnformatted(label);
+    if (heading) ImGui::TextUnformatted(tr(label));
     ImGui::PopTextWrapPos();
     if (desc && *desc) {
         ImGui::PushTextWrapPos(0);
-        ImGui::TextDisabled("%s", desc);
+        ImGui::TextDisabled("%s", tr(desc));
         ImGui::PopTextWrapPos();
     }
     ImGui::BeginDisabled(g_next_disabled);
@@ -159,8 +160,7 @@ void opt_begin(const char *id, float scale) {
 void opt_section(const char *title) { ui_sheikah_heading(title, g_scale); }
 
 void ui_sheikah_heading(const char *title, float s) {
-    std::string t = title;
-    for (char &c : t) c = (char)toupper((unsigned char)c);
+    std::string t = ui_upper(tr(title));  // (Portuguese too: the accented letters in capitals)
     if (ImGui::GetCursorPosY() > ImGui::GetStyle().WindowPadding.y + 1) ImGui::Dummy(ImVec2(0, 14 * s));
     ImVec2 p = ImGui::GetCursorScreenPos();
     float fs = ImGui::GetFontSize() * 0.78f, w = ImGui::GetContentRegionAvail().x;
@@ -182,7 +182,10 @@ void ui_sheikah_heading(const char *title, float s) {
 static int row(const char *label, const std::string &value, bool changed, const char *desc, bool upper = false,
                bool arrows = false, float bar = -1) {
     (void)upper;  // (the Sheikah look writes labels as given; option pages pass them in sentence case)
-    ImGui::PushID(label);
+    ImGui::PushID(label);  // (the English label: the row's id in any language)
+    const char *name = tr(label);  // (what is shown: ui/i18n.mm)
+    const std::string shown = value.empty() ? value : std::string(tr(value.c_str()));
+    if (desc) desc = tr(desc);
     if (g_indent) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + g_indent * 28 * g_scale);  // (an option of the row above)
     ImVec2 p = ImGui::GetCursorScreenPos();
     float s = g_scale, fs = ImGui::GetFontSize();
@@ -245,10 +248,10 @@ static int row(const char *label, const std::string &value, bool changed, const 
         g_drag = fminf(1, fmaxf(0, (io.MousePos.x - bx0) / (bx1 - bx0)));
         g_drag_id = id, g_row_dragged = true;
     } else if (g_drag_id == id && !io.MouseDown[0]) g_drag = -1, g_drag_id = 0;
-    if (foc) g_desc_focus = desc ? desc : "", g_name_focus = label;
-    if (hov) g_desc_hover = desc ? desc : "", g_name_hover = label;
-    if (was_sel || clicked) g_desc_sel = desc ? desc : "", g_name_sel = label;
-    if (g_desc_first.empty() && g_name_first.empty()) g_desc_first = desc ? desc : "", g_name_first = label;
+    if (foc) g_desc_focus = desc ? desc : "", g_name_focus = name;
+    if (hov) g_desc_hover = desc ? desc : "", g_name_hover = name;
+    if (was_sel || clicked) g_desc_sel = desc ? desc : "", g_name_sel = name;
+    if (g_desc_first.empty() && g_name_first.empty()) g_desc_first = desc ? desc : "", g_name_first = name;
 
     ImDrawList *dl = ImGui::GetWindowDrawList();
     const ImU32 cyan = IM_COL32(65, 222, 246, 235), gold = IM_COL32(186, 157, 97, off ? 60 : 110);
@@ -264,20 +267,20 @@ static int row(const char *label, const std::string &value, bool changed, const 
     ImU32 label_col = off ? IM_COL32(120, 120, 112, 255) : IM_COL32(240, 235, 218, 255);
     // the label, cut short with an ellipsis before the value's column (long names, bigger fonts)
     float room = vx0 - (p.x + pad) - pad * 0.5f;
-    const char *end = label;
+    const char *end = name;
     while (*end) {
         const char *next = end + 1;
         while (((unsigned char)*next & 0xc0) == 0x80) ++next;
-        if (ImGui::CalcTextSize(label, next).x > room) break;
+        if (ImGui::CalcTextSize(name, next).x > room) break;
         end = next;
     }
-    dl->AddText(ImVec2(p.x + pad, ty), label_col, label, end);
-    if (*end) dl->AddText(ImVec2(p.x + pad + ImGui::CalcTextSize(label, end).x, ty), label_col, "...");
-    if (!value.empty()) {
+    dl->AddText(ImVec2(p.x + pad, ty), label_col, name, end);
+    if (*end) dl->AddText(ImVec2(p.x + pad + ImGui::CalcTextSize(name, end).x, ty), label_col, "...");
+    if (!shown.empty()) {
         ImU32 vcol = off ? IM_COL32(120, 120, 112, 255) : changed ? IM_COL32(255, 252, 240, 255) : IM_COL32(214, 210, 196, 255);
-        float vw = ImGui::CalcTextSize(value.c_str()).x;
+        float vw = ImGui::CalcTextSize(shown.c_str()).x;
         float vy = bar >= 0 && sel ? ty - fs * 0.18f : ty;
-        dl->AddText(ImVec2((vx0 + vx1 - vw) * 0.5f, vy), vcol, value.c_str());
+        dl->AddText(ImVec2((vx0 + vx1 - vw) * 0.5f, vy), vcol, shown.c_str());
         if (sel && arrows && !off) {
             arrow(dl, lax, cy, aw, false, cyan);
             arrow(dl, rax, cy, aw, true, cyan);
@@ -384,7 +387,7 @@ bool opt_text(const char *label, char *buf, size_t cap, const char *hint, const 
 #ifdef __ANDROID__
     ImGuiID touch_id = ImGui::GetID(label);
     touch_begin(label, desc);
-    bool entered = ui_input_text("##text", buf, cap, ImGuiInputTextFlags_EnterReturnsTrue, hint, label);
+    bool entered = ui_input_text("##text", buf, cap, ImGuiInputTextFlags_EnterReturnsTrue, tr(hint), label);
     if (ImGui::IsItemActive()) g_text_editing = touch_id;
     else if (g_text_editing == touch_id) g_text_editing = 0;
     touch_end(); return entered;
@@ -437,8 +440,7 @@ void opt_end(void) {
     // the watermark first: the Sheikah eye, faint, low in the pane
     ui_sheikah_eye(dl = ImGui::GetWindowDrawList(), ImVec2(cp.x + cs.x * 0.5f, cp.y + cs.y * 0.7f), fminf(cs.x * 0.17f, 70 * s),
                    IM_COL32(45, 150, 180, 45), 2 * s);
-    std::string name = g_name_shown;
-    for (char &c : name) c = (char)toupper((unsigned char)c);
+    std::string name = ui_upper(g_name_shown.c_str());
     ImGui::PushTextWrapPos(0);
     ImGui::TextColored(ImVec4(0.90f, 0.85f, 0.70f, 1), "%s", name.c_str());
     ImGui::PopTextWrapPos();

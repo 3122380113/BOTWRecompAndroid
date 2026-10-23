@@ -18,6 +18,7 @@
 #include <string.h>
 #include <vector>
 
+#include "i18n.h"
 #include "imgui.h"
 
 extern "C" {
@@ -347,7 +348,7 @@ extern "C" void touch_controls_draw(ImVec2 display, ImFont *font) {
     ImU32 line = IM_COL32(255, 255, 255, (int)(110 * alpha)), text = IM_COL32(240, 235, 219, (int)(200 * alpha));
     if (editing) {
         dl->AddRectFilled(ImVec2(0, 0), display, IM_COL32(0, 0, 0, 90));
-        const char *tip = "Drag the controls to move them";
+        const char *tip = tr("Drag the controls to move them");
         float fs = 4.5f * u;
         ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0, tip);
         dl->AddText(font, fs, ImVec2(disp_w / 2 - ts.x / 2, 20 * u), IM_COL32(255, 255, 255, 230), tip);

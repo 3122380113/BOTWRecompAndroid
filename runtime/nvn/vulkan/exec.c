@@ -2571,6 +2571,7 @@ static TexBackend *feedback_snap[4];  // (the snapshot copy itself: array views 
 static int nfeedback;
 static NvnTexture *inplace_tex[4];  // (targets this draw samples in place while writing them: resolve_feedback)
 static int ninplace;
+static int g_inplace_copy = -1;  // (those targets copied instead; -1: not decided yet this boot - vk_exec_reset)
 static uint64_t g_cur_fs_hash;
 static NvnTexture *snap_tex[8];
 static bool snap_ok[8];
@@ -2942,14 +2943,18 @@ static void resolve_feedback(Prog *pr) {
                 // Only the writes before the game's last barrier (NVN's rule) left the ground dark: its draws don't
                 // fence every write they then read. Sampling a target the pass writes is a feedback loop Vulkan leaves
                 // undefined (without VK_EXT_attachment_feedback_loop_layout): on Turnip only, where it was checked
-                // frame by frame (LARECOMP_FEEDBACK_INPLACE=1 elsewhere too).
-                static int copy = -1;
-                if (copy < 0) {
+                // frame by frame on the Adreno 830 - Automatic keeps it to the Adreno 8xx (settings.h inplace_reads,
+                // the start screen's Driver compatibility; LARECOMP_FEEDBACK_INPLACE=1 on any driver).
+                if (g_inplace_copy < 0) {
                     extern bool vk_driver_is_turnip(void);
-                    copy = getenv("LARECOMP_FEEDBACK_COPY") != NULL || (!vk_driver_is_turnip() && !getenv("LARECOMP_FEEDBACK_INPLACE"));
+                    extern bool vk_turnip_path_on(int setting);
+                    bool inplace = getenv("LARECOMP_FEEDBACK_INPLACE") || (vk_driver_is_turnip() && vk_turnip_path_on(g_settings.inplace_reads));
+                    g_inplace_copy = getenv("LARECOMP_FEEDBACK_COPY") != NULL || !inplace;
+                    LOG("[vk] targets a draw writes, sampled by it: %s (%s)\n", g_inplace_copy ? "copies" : "in place",
+                        g_settings.inplace_reads < 0 ? "automatic" : "settings");
                 }
                 extern int vk_ab(const char *what);
-                if (!copy && bit && bit < 1u << 8 && vk_ab("copy") != 1) {
+                if (!g_inplace_copy && bit && bit < 1u << 8 && vk_ab("copy") != 1) {
                     int si = -1;
                     for (int k = 0; k < 8; k++) if (snap_tex[k] == t) si = k;
                     if (si < 0 || !snap_ok[si]) {
@@ -3223,6 +3228,13 @@ bool vk_heap_place(uint64_t size) {
     vk_wait_ready();
     if (gmem_buf) return true;
     if (!g_vk.map_placed || getenv("LARECOMP_VK_NO_PLACED")) return false;
+    extern bool vk_turnip_path_on(int setting);
+    if (!vk_turnip_path_on(g_settings.gpu_heap)) {
+        // (the start screen's Driver compatibility: Automatic leaves it to the Adreno 8xx it was made on)
+        LOG("[vk] guest heap as GPU memory: off (%s) - shader global memory through CPU copies\n",
+            g_settings.gpu_heap < 0 ? "automatic: not an Adreno 8xx" : "settings");
+        return false;
+    }
     uint64_t align = g_vk.placed_align > 65536 ? g_vk.placed_align : 65536;
     size = (size + align - 1) & ~(align - 1);
     if ((HEAP_BASE & (align - 1)) || size > HEAP_MAX) {
@@ -3273,8 +3285,9 @@ bool vk_heap_place(uint64_t size) {
     gmem_placed = true;
     gcopy_mode = false;
     gwin_mode = size > g_vk.props.limits.maxStorageBufferRange && !getenv("LARECOMP_VK_NO_GWIN");
-    LOG("[vk] guest heap %llu MB is GPU memory (placed at %llx, memory type %d)%s\n", (unsigned long long)(size >> 20),
-        (unsigned long long)HEAP_BASE, type, gwin_mode ? "; draws reach global memory through windows" : "");
+    LOG("[vk] guest heap %llu MB is GPU memory (placed at %llx, memory type %d, flags 0x%x, storage range %llu MB)%s\n",
+        (unsigned long long)(size >> 20), (unsigned long long)HEAP_BASE, type, (unsigned)mp.memoryTypes[type].propertyFlags,
+        (unsigned long long)(g_vk.props.limits.maxStorageBufferRange >> 20), gwin_mode ? "; draws reach global memory through windows" : "");
     return true;
 }
 #endif
@@ -4169,6 +4182,7 @@ void vk_exec_reset(void) {
         gmem_mem = VK_NULL_HANDLE;
     }
     gmem_size = gmem_tried = 0;
+    g_inplace_copy = -1;  // (the next boot reads the setting again: resolve_feedback)
 #ifdef __ANDROID__
     gcopy_mode = !g_vk.host_import && !getenv("LARECOMP_VK_NO_GCOPY");  // (until the next heap is placed: vk_heap_place)
     gres_reset();  // (the arena's resident ranges: keyed by the old heap's addresses)

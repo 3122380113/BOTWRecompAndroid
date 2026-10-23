@@ -34,6 +34,15 @@ typedef struct {
     bool touch_controls;  // on-screen controls while no controller is connected (ui/touch_controls.mm)
     int fps_mode;         // 0: the game's own choice (30 / 60, the frame pacer), 1: 30 fps, 2: 60 fps
     bool shader_int32;    // shader address math in 32-bit words even where the driver offers 64-bit (vulkan/exec.c)
+    // Driver compatibility (the start screen's Settings > Prelaunch, ui/launcher.mm; from LASRecompAndroid), for GPUs
+    // where a Turnip path draws wrong: read when the game starts (gpu_heap, inplace_reads) or when the app starts
+    // (turnip_lrz, log_file). -1 Automatic: on for the Adreno 8xx GPUs these paths were made on, off elsewhere
+    // (vulkan/device.c vk_adreno_8xx); 1 on, 0 off.
+    int gpu_heap;         // Turnip: the game's memory mapped as GPU memory (vulkan/exec.c vk_heap_place); off: CPU copies
+    int inplace_reads;    // Turnip: draws sample targets they write as they are (vulkan/exec.c resolve_feedback); off: copies
+    int turnip_lrz;       // Turnip's low-resolution Z; off: TU_DEBUG=nolrz before the driver loads (vulkan/device.c)
+    bool log_file;        // the log in a file as well (platform/android.c), to send with a report
+    char gpu_model[64];   // the GPU of the last start ("Adreno (TM) 830v1"): turnip_lrz's Automatic, before the driver
 #define TOUCH_NCTL 19  // (ui/touch_controls.mm: LAS's 12, then the right stick, L3 / R3 and the d-pad)
     float touch_pos[TOUCH_NCTL][2];  // each on-screen control's place, a share of the screen (negative: default)
     float touch_scale, touch_opacity;
@@ -55,3 +64,5 @@ void settings_reset_defaults(void);
 const char *settings_language(void);
 // That code's name for the menu ("Spanish")
 const char *settings_language_name(void);
+// Android: the phone's language is Portuguese (the menus' own text: ui/i18n.mm). LARECOMP_HOST_LANG=pt|en (tests)
+bool settings_host_portuguese(void);

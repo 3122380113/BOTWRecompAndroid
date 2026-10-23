@@ -10,6 +10,7 @@
 #include <string.h>
 #include <string>
 
+#include "i18n.h"
 #include "imgui.h"
 #include "option_rows.h"
 
@@ -61,10 +62,10 @@ extern "C" void mods_tab_draw(float scale) {
     opt_begin("##mods", scale);
     opt_section("Mods");
     ImGui::PushTextWrapPos(0);
-    ImGui::TextDisabled("%s", "Mods replace the game's files: each is a folder with a romfs folder inside, laid out as for "
-                              "Yuzu, Eden or Ryujinx (made for this game version). Turning one on or off applies when the "
-                              "game starts again: Quit -> Return to start, then Play. Only files the game has are "
-                              "replaced.");
+    ImGui::TextDisabled("%s", tr("Mods replace the game's files: each is a folder with a romfs folder inside, laid out as for "
+                                 "Yuzu, Eden or Ryujinx (made for this game version). Turning one on or off applies when the "
+                                 "game starts again: Quit -> Return to start, then Play. Only files the game has are "
+                                 "replaced."));
     ImGui::PopTextWrapPos();
     ImGui::Spacing();
     static ModInfo mods[MODS_MAX];
@@ -72,7 +73,7 @@ extern "C" void mods_tab_draw(float scale) {
     static double at;
     double now = SDL_GetTicks() / 1000.0;
     if (n < 0 || now - at > 1) n = mods_list(mods, MODS_MAX), at = now;  // (once a second: a copy can land meanwhile)
-    if (!n) ImGui::TextDisabled("%s", "No mods yet.");
+    if (!n) ImGui::TextDisabled("%s", tr("No mods yet."));
     for (int i = 0; i < n; i++) {
         static char notes[MODS_MAX][1600];
         static char note_of[MODS_MAX][96];
@@ -97,12 +98,12 @@ extern "C" void mods_tab_draw(float scale) {
                                           "ZIP / RAR): it is copied into the app, for the game version running now."))
         import_mod();
     ImGui::EndDisabled();
-    if (busy) ImGui::TextDisabled("%s", "Copying the mod...");
+    if (busy) ImGui::TextDisabled("%s", tr("Copying the mod..."));
     else if (msg.size() > 1) {  // (from the activity: "1|<name>" imported, "0|<reason>" failed, "2|" cancelled)
         char line[400];
-        if (msg[0] == '1') snprintf(line, sizeof line, "Imported %s. It is on, from the next start of the game.", msg.c_str() + 2);
-        else if (msg[0] == '2') snprintf(line, sizeof line, "%s", "Import cancelled.");
-        else snprintf(line, sizeof line, "Import failed: %s", msg.c_str() + 2);
+        if (msg[0] == '1') snprintf(line, sizeof line, tr("Imported %s. It is on, from the next start of the game."), msg.c_str() + 2);
+        else if (msg[0] == '2') snprintf(line, sizeof line, "%s", tr("Import cancelled."));
+        else snprintf(line, sizeof line, tr("Import failed: %s"), tr(msg.c_str() + 2));
         ImGui::PushTextWrapPos(0);
         ImGui::TextUnformatted(line);
         ImGui::PopTextWrapPos();

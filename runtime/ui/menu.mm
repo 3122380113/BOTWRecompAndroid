@@ -12,6 +12,7 @@
 #include <atomic>
 #include <vector>
 
+#include "i18n.h"
 #include "imgui.h"
 #include "option_rows.h"
 #include "imgui_internal.h"  // (NavCursorVisible)
@@ -450,7 +451,7 @@ static void header(const char *t) {
     return;
 #endif
     ImGui::PushFont(g_font_big);
-    ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", t);
+    ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", tr(t));
     ImGui::PopFont();
     ImGui::Separator();
     ImGui::Spacing();
@@ -458,7 +459,7 @@ static void header(const char *t) {
 
 static void hint(const char *t) {
     ImGui::PushTextWrapPos(0);
-    ImGui::TextDisabled("%s", t);
+    ImGui::TextDisabled("%s", tr(t));
     ImGui::PopTextWrapPos();
 }
 
@@ -467,13 +468,15 @@ static void hint(const char *t) {
 static bool choice(const char *label, int *value, const char *const *names, int n, float reserve = 0) {
     ImGui::PushID(label);
     ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(label);
+    ImGui::TextUnformatted(tr(label));
     ImGui::SameLine(ImGui::GetContentRegionAvail().x * 0.45f);
     bool changed = false;
     ImGui::SetNextItemWidth(reserve > 0 ? -reserve : -1);
-    if (ImGui::BeginCombo("##c", names[*value])) {
+    if (ImGui::BeginCombo("##c", tr(names[*value]))) {
         for (int i = 0; i < n; i++) {
-            if (ImGui::Selectable(names[i], i == *value)) { *value = i; changed = true; }
+            ImGui::PushID(i);  // (the shown names may repeat once translated)
+            if (ImGui::Selectable(tr(names[i]), i == *value)) { *value = i; changed = true; }
+            ImGui::PopID();
             if (i == *value) ImGui::SetItemDefaultFocus();
         }
         ImGui::EndCombo();
@@ -560,14 +563,14 @@ static void tab_display(void) {
         for (int i = 0; i < NRES; i++) if (res_mode[i] == g_settings.res_mode) ri = i;
         float sx, sy;
         renderer_get_scene_scale(&sx, &sy);
-        char d[400];
-        int n = snprintf(d, sizeof d, "How sharp the 3D image is (the HUD is always drawn at your screen's resolution). "
-                                      "Match display: your screen's own resolution. Dynamic: as sharp as your GPU keeps at "
-                                      "full speed. 1x-2x: the Switch's 900p times that. 75%% / 50%% / 25%%: a share of the "
-                                      "display, for slower devices.\n\nRendering the 3D image at %.0f x %.0f.",
+        char d[640];
+        int n = snprintf(d, sizeof d, tr("How sharp the 3D image is (the HUD is always drawn at your screen's resolution). "
+                                         "Match display: your screen's own resolution. Dynamic: as sharp as your GPU keeps at "
+                                         "full speed. 1x-2x: the Switch's 900p times that. 75%% / 50%% / 25%%: a share of the "
+                                         "display, for slower devices.\n\nRendering the 3D image at %.0f x %.0f."),
                          1600.0 * sx, 900.0 * sy);
-        if (g_settings.res_mode == RES_DYNAMIC)
-            snprintf(d + n, sizeof d - n, " Dynamic: %.0f%% of the display right now.", output_scale_dynamic_factor() * 100);
+        if (g_settings.res_mode == RES_DYNAMIC && n > 0 && n < (int)sizeof d)
+            snprintf(d + n, sizeof d - n, tr(" Dynamic: %.0f%% of the display right now."), output_scale_dynamic_factor() * 100);
         if (opt_choice("Internal resolution", &ri, res, NRES, RES_MATCH_AT, d, false)) g_settings.res_mode = res_mode[ri];
     }
     {   // bilinear next to each OS's own upscaler (MetalFX on macOS) or AMD FSR 1 and Snapdragon GSR 1 (Vulkan)
@@ -586,9 +589,9 @@ static void tab_display(void) {
         enum { NUP = sizeof up_mode / sizeof up_mode[0] };
         int ui = 1;
         for (int i = 0; i < NUP; i++) if (up_mode[i] == g_settings.upscaler) ui = i;
-        char udm[512];
+        char udm[768];
         if (g_settings.res_mode == RES_MATCH) {  // (renders at the window's size: nothing to scale up)
-            snprintf(udm, sizeof udm, "%s\n\nNot used at Match display: the game already renders at your display's resolution.", ud);
+            snprintf(udm, sizeof udm, tr("%s\n\nNot used at Match display: the game already renders at your display's resolution."), tr(ud));
             ud = udm;
             opt_disable_next();
         }
@@ -633,10 +636,10 @@ static void tab_quit(float scale, bool in_game) {
     static int ask;  // 0: the two choices; 1: start screen?; 2: desktop?
     if (ask && (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
         ask = 0;
-    const char *lost = in_game ? "\n\nProgress since your last save is lost." : "";
-    char d1[200], d2[200];
-    snprintf(d1, sizeof d1, "Leaves the game and goes back to the BOTWRecompAndroid start screen.%s", lost);
-    snprintf(d2, sizeof d2, "Closes BOTWRecompAndroid.%s", lost);
+    const char *lost = in_game ? tr("\n\nProgress since your last save is lost.") : "";
+    char d1[320], d2[320];
+    snprintf(d1, sizeof d1, tr("Leaves the game and goes back to the BOTWRecompAndroid start screen.%s"), lost);
+    snprintf(d2, sizeof d2, tr("Closes BOTWRecompAndroid.%s"), lost);
 #ifdef __ANDROID__
     const char *quit_app = "Close app", *quit_app_yes = "Close app";
     const char *quit_start = "Return to start", *quit_start_yes = "Return to start";
@@ -672,8 +675,8 @@ static void tab_about(void) {
     header("System language");
     {
         // what the game is told the console's language is: its text follows this (runtime/settings.c)
-        char autol[64];
-        snprintf(autol, sizeof autol, "Auto (%s)", settings_language_name());
+        char autol[96];
+        snprintf(autol, sizeof autol, tr("Auto (%s)"), tr(settings_language_name()));
         const char *names[N_LANGUAGES];
         names[0] = autol;
         for (int i = 1; i < N_LANGUAGES; i++) names[i] = g_language_names[i];
@@ -687,9 +690,9 @@ static void tab_about(void) {
     ImGui::Spacing();
     header("Menu");
 #ifdef __ANDROID__
-    ImGui::TextUnformatted("Open / close this menu:  the menu button on the screen, the back button, or the controller's "
-                           "Home / Xbox / PlayStation button, or Back + Start");
-    ImGui::TextUnformatted("Switch tabs:  L / R        Back:  B");
+    ImGui::TextUnformatted(tr("Open / close this menu:  the menu button on the screen, the back button, or the controller's "
+                              "Home / Xbox / PlayStation button, or Back + Start"));
+    ImGui::TextUnformatted(tr("Switch tabs:  L / R        Back:  B"));
 #else
     ImGui::TextUnformatted("Open / close this menu:  F1, Esc, the controller's Home / Xbox / PlayStation button, or Back + Start");
     ImGui::TextUnformatted("Switch tabs:  L / R  (Q / E)        Back:  B  (Esc)");
@@ -725,7 +728,7 @@ static void keyboard_draw_touch(ImGuiIO &io, float scale, bool appearing) {
                                     ImGuiWindowFlags_AlwaysAutoResize);
     ImFont *big = g_menu_font_big ? g_menu_font_big : g_font_big, *small = g_menu_font ? g_menu_font : g_font;
     ImGui::PushFont(big);
-    ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "Enter your name");
+    ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", tr("Enter your name"));
     if (appearing) ImGui::SetKeyboardFocusHere();
     ImGui::SetNextItemWidth(-1);
     ImGui::InputText("##name", g_kbd_text, (size_t)(g_kbd_max * 4 + 1 < (int)sizeof g_kbd_text ? g_kbd_max * 4 + 1 : sizeof g_kbd_text),
@@ -737,9 +740,9 @@ static void keyboard_draw_touch(ImGuiIO &io, float scale, bool appearing) {
     float y = ImGui::GetCursorPosY(), x0 = ImGui::GetCursorPosX(), xr = ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x;
     ImGui::PushFont(big);
     ImGui::SetCursorPos(ImVec2(xr - 2 * bw - sp, y));
-    if (ImGui::Button("Cancel", ImVec2(bw, bh))) g_kbd = 3;
+    if (ImGui::Button(tr("Cancel"), ImVec2(bw, bh))) g_kbd = 3;
     ImGui::SetCursorPos(ImVec2(xr - bw, y));
-    if (ImGui::Button("OK", ImVec2(bw, bh))) g_kbd = 2;
+    if (ImGui::Button(tr("OK"), ImVec2(bw, bh))) g_kbd = 2;
     ImGui::PopFont();
     ImGui::PushFont(small);
     ImGui::SetCursorPos(ImVec2(x0, y + (bh - ImGui::GetTextLineHeight()) * 0.5f));
@@ -768,7 +771,7 @@ static void keyboard_draw(ImGuiIO &io, float scale) {
     ImGui::Begin("##kbd", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
                                     ImGuiWindowFlags_AlwaysAutoResize);
     ImGui::PushFont(g_font_big);
-    ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "Enter your name");
+    ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", tr("Enter your name"));
     ImGui::PopFont();
     if (!pad) {  // keyboard: type straight into the field
         if (appearing) ImGui::SetKeyboardFocusHere();
@@ -892,9 +895,10 @@ static bool sheikah_button(const char *label, ImVec2 size, int icon, float scale
         dl->AddTriangleFilled(ImVec2(e.x + r * 0.45f, e.y - r * 0.05f), ImVec2(e.x - r * 0.35f, e.y - r * 0.35f),
                               ImVec2(e.x - r * 0.05f, e.y + r * 0.45f), col);
     }
-    float tx = ix + r + 22 * scale, tw = ImGui::CalcTextSize(label).x;
+    const std::string shown = ui_upper(tr(label));  // (the label in capitals, in the menu's language)
+    float tx = ix + r + 22 * scale, tw = ImGui::CalcTextSize(shown.c_str()).x;
     tx = fmaxf(tx, a.x + (size.x - tw) * 0.5f + r);
-    dl->AddText(ImVec2(tx, cy - fs * 0.5f), col, label);
+    dl->AddText(ImVec2(tx, cy - fs * 0.5f), col, shown.c_str());
     ImGui::PopID();
     return clicked;
 }
@@ -964,15 +968,21 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     {   // the eye, the title between two lines with diamonds
         float cx = wp.x + ws.x * 0.5f, ey = wp.y + 26 * scale;
         ui_sheikah_eye(wdl, ImVec2(cx, ey), 15 * scale, cyan, 2 * scale);
-        const char *title = "SETTINGS";
+        const std::string title_s = ui_upper(tr("Settings"));
+        const char *title = title_s.c_str();
+        auto next_char = [](const char *c) {  // (a whole UTF-8 character: Ç, Õ)
+            const char *n = c + 1;
+            while (((unsigned char)*n & 0xc0) == 0x80) ++n;
+            return n;
+        };
         ImFont *tf = g_font_big;
         float tsz = 46 * scale, spacing = 4 * scale, tw = 0;
-        for (const char *c = title; *c; c++) tw += tf->CalcTextSizeA(tsz, FLT_MAX, 0, c, c + 1).x + spacing;
+        for (const char *c = title; *c; c = next_char(c)) tw += tf->CalcTextSizeA(tsz, FLT_MAX, 0, c, next_char(c)).x + spacing;
         tw -= spacing;
         float ty = ey + 24 * scale, x = cx - tw * 0.5f;
-        for (const char *c = title; *c; c++) {
-            wdl->AddText(tf, tsz, ImVec2(x, ty), ivory, c, c + 1);
-            x += tf->CalcTextSizeA(tsz, FLT_MAX, 0, c, c + 1).x + spacing;
+        for (const char *c = title; *c; c = next_char(c)) {
+            wdl->AddText(tf, tsz, ImVec2(x, ty), ivory, c, next_char(c));
+            x += tf->CalcTextSizeA(tsz, FLT_MAX, 0, c, next_char(c)).x + spacing;
         }
         float ly = ty + tsz * 0.55f, l0 = tw * 0.5f + 26 * scale, l1 = l0 + 150 * scale;
         for (int side = -1; side <= 1; side += 2) {
@@ -983,12 +993,10 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     }
     {   // the tabs: centred when they fit, else scrolled sideways
         float th = 64 * scale, fs = ImGui::GetFontSize(), tab_w[16], total = 0;
-        char ups[16][32];
+        char ups[16][48];
         for (int i = 0; i < ntabs && i < 16; i++) {
             const char *nm = tabs[i].id == -1 ? "Files" : tabs[i].name;
-            int k = 0;
-            for (; nm[k] && k < 31; k++) ups[i][k] = (char)toupper((unsigned char)nm[k]);
-            ups[i][k] = 0;
+            snprintf(ups[i], sizeof ups[i], "%s", ui_upper(tr(nm)).c_str());
             tab_w[i] = fmaxf(190 * scale, ImGui::CalcTextSize(ups[i]).x + fs * 1.6f + 56 * scale);
             total += tab_w[i];
         }
@@ -1051,14 +1059,14 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     ImGui::EndChild();
     {   // BACK on the left; RESTORE DEFAULTS on the right on Video and Audio (asks first)
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8 * scale);
-        if (sheikah_button("BACK", ImVec2(250 * scale, 62 * scale), 0, scale)) {
+        if (sheikah_button("Back", ImVec2(250 * scale, 62 * scale), 0, scale)) {
             if (prelaunch) g_touch_settings_back = true;
             else set_open(false);
         }
         if (g_tab == 0 || g_tab == 1) {
             float rw = 380 * scale;
             ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - rw);
-            if (sheikah_button("RESTORE DEFAULTS", ImVec2(rw, 62 * scale), 1, scale)) ImGui::OpenPopup("##restore");
+            if (sheikah_button("Restore defaults", ImVec2(rw, 62 * scale), 1, scale)) ImGui::OpenPopup("##restore");
         }
         ImGui::SetNextWindowPos(ImVec2(wp.x + ws.x * 0.5f, wp.y + ws.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
         ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(0.035f, 0.065f, 0.075f, 0.97f));
@@ -1067,16 +1075,16 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
             ImVec2 pp = ImGui::GetWindowPos(), ps = ImGui::GetWindowSize();
             ui_sheikah_frame(ImGui::GetWindowDrawList(), ImVec2(pp.x + 2, pp.y + 2), ImVec2(pp.x + ps.x - 2, pp.y + ps.y - 2), gold,
                              12 * scale, 2 * scale);
-            ImGui::TextUnformatted("Restore the Video and Audio settings to their defaults?");
-            ImGui::TextDisabled("Saves, game files, mods, drivers and the controls stay as they are.");
+            ImGui::TextUnformatted(tr("Restore the Video and Audio settings to their defaults?"));
+            ImGui::TextDisabled("%s", tr("Saves, game files, mods, drivers and the controls stay as they are."));
             ImGui::Dummy(ImVec2(0, 10 * scale));
-            if (sheikah_button("RESTORE", ImVec2(260 * scale, 58 * scale), 1, scale)) {
+            if (sheikah_button("Restore", ImVec2(260 * scale, 58 * scale), 1, scale)) {
                 settings_reset_defaults();
                 settings_save();
                 ImGui::CloseCurrentPopup();
             }
             ImGui::SameLine();
-            if (sheikah_button("CANCEL", ImVec2(260 * scale, 58 * scale), 0, scale) ||
+            if (sheikah_button("Cancel", ImVec2(260 * scale, 58 * scale), 0, scale) ||
                 ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false))
                 ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
@@ -1303,7 +1311,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         // Sheikah frame's own title and BACK (tabs_body)
 #ifndef __ANDROID__
         ImGui::PushFont(g_font_big);
-        ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "Settings");
+        ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", tr("Settings"));
         ImGui::PopFont();
         {
             float bx = 44 * scale;

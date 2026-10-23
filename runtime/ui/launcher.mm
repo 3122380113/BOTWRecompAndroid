@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <atomic>
 
+#include "i18n.h"
 #include "imgui.h"
 #include "imgui_internal.h"  // (SetKeyOwner)
 #include "option_rows.h"
@@ -376,6 +377,7 @@ done:
 #include <jni.h>
 std::atomic<bool> g_android_imported{false};
 static std::string g_driver_msg;
+static bool g_driver_restart;  // (the message asks for a restart: a Restart now button beside it)
 
 static void android_call(const char *method) {  // a static method of the activity
     JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
@@ -387,6 +389,46 @@ static void android_call(const char *method) {  // a static method of the activi
     if (env->ExceptionCheck()) env->ExceptionClear();
     env->DeleteLocalRef(c);
     env->DeleteLocalRef(act);
+}
+
+// The log file (Driver compatibility; runtime/platform/android.c): written to a folder the player picks
+// (BOTWRecompAndroidActivity pickLogFolder / openLog), where a file manager can open it - Android/data/ is out of its reach
+extern "C" void android_log_file(bool on);
+extern "C" bool vk_adreno_8xx(const char *name);  // (Driver compatibility's Automatic: runtime/nvn/vulkan/device.c)
+extern "C" bool vk_lrz_at_start(void);
+extern "C" const char *vk_gpu_name(void);
+extern "C" bool vk_driver_is_turnip(void);
+extern "C" const char *vk_gpu_desc(void);  // ("Adreno (TM) 830 - Turnip")
+static std::string g_log_folder;  // its name ("Download/BOTWRecomp"), "" with none
+static bool g_log_folder_read;
+
+static void log_folder_read() {  // (BOTWRecompAndroidActivity.logFolderName, once: then from each pick)
+    JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
+    jobject act = (jobject)SDL_GetAndroidActivity();
+    if (!env || !act) return;
+    jclass c = env->GetObjectClass(act);
+    jmethodID m = env->GetStaticMethodID(c, "logFolderName", "()Ljava/lang/String;");
+    jstring s = m ? (jstring)env->CallStaticObjectMethod(c, m) : NULL;
+    if (env->ExceptionCheck()) { env->ExceptionClear(); s = NULL; }
+    if (s) {
+        const char *t = env->GetStringUTFChars(s, NULL);
+        pthread_mutex_lock(&g_lock);
+        g_log_folder = t ? t : "";
+        pthread_mutex_unlock(&g_lock);
+        if (t) env->ReleaseStringUTFChars(s, t);
+        env->DeleteLocalRef(s);
+    }
+    env->DeleteLocalRef(c);
+    env->DeleteLocalRef(act);
+}
+
+extern "C" JNIEXPORT void JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeLogFolderPicked(JNIEnv *env, jclass, jstring name) {
+    const char *t = env->GetStringUTFChars(name, NULL);
+    pthread_mutex_lock(&g_lock);
+    if (t && *t) g_log_folder = t;  // ("": cancelled - the folder before stays)
+    pthread_mutex_unlock(&g_lock);
+    if (t) env->ReleaseStringUTFChars(name, t);
+    if (g_settings.log_file) android_log_file(true);  // (the file moves to the folder, with this run's lines so far)
 }
 
 extern "C" JNIEXPORT jboolean JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeBuildIdOk(JNIEnv *env, jclass, jbyteArray head) {
@@ -516,9 +558,12 @@ extern "C" JNIEXPORT void JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidAc
 extern "C" JNIEXPORT void JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeDriverPicked(JNIEnv *env, jclass, jstring name) {
     const char *n = env->GetStringUTFChars(name, NULL);
     pthread_mutex_lock(&g_lock);
-    g_driver_msg = n && !strcmp(n, "-") ? "The system's driver from the next start on. Restart BOTWRecompAndroid to use it."
-                   : n && *n                ? std::string(n) + " installed. Restart BOTWRecompAndroid to use it."
-                                            : "That file isn't a driver.";
+    char m[512];
+    snprintf(m, sizeof m, tr("%s installed. Restart BOTWRecompAndroid to use it."), n ? n : "");
+    g_driver_msg = n && !strcmp(n, "-") ? tr("The system's driver from the next start on. Restart BOTWRecompAndroid to use it.")
+                   : n && *n                ? m
+                                            : tr("That file isn't a driver.");
+    g_driver_restart = n && *n;
     pthread_mutex_unlock(&g_lock);
     if (n) env->ReleaseStringUTFChars(name, n);
 }
@@ -712,18 +757,18 @@ static bool aspect_prompt(float s) {
     if (open) {
         ImGui::SetWindowFontScale(1.25f);
         ImGui::PushTextWrapPos(0);
-        ImGui::TextUnformatted("How would you like to play?");
+        ImGui::TextUnformatted(tr("How would you like to play?"));
         ImGui::Spacing();
-        ImGui::TextDisabled("You can change this any time in Settings.");
+        ImGui::TextDisabled("%s", tr("You can change this any time in Settings."));
         ImGui::PopTextWrapPos();
         ImGui::Dummy(ImVec2(0, 14 * s));
         float bw = 300 * s, gap = 20 * s;
         ImGui::SetCursorPosX((ImGui::GetWindowWidth() - 2 * bw - gap) * 0.5f);
         int pick = -1;
         ImGui::SetItemDefaultFocus();
-        if (ImGui::Button("Authentic 16:9", ImVec2(bw, 44 * s))) pick = ASPECT_ORIGINAL;
+        if (ImGui::Button(tr("Authentic 16:9"), ImVec2(bw, 44 * s))) pick = ASPECT_ORIGINAL;
         ImGui::SameLine(0, gap);
-        if (ImGui::Button("Unlocked (fill the screen)", ImVec2(bw, 44 * s))) pick = ASPECT_UNLOCKED;
+        if (ImGui::Button(tr("Unlocked (fill the screen)"), ImVec2(bw, 44 * s))) pick = ASPECT_UNLOCKED;
         if (pick >= 0) {
             g_settings.aspect = pick;
             g_settings.aspect_asked = true;
@@ -754,20 +799,20 @@ static bool menu_tip(float s) {
         static const char *const home[] = {"Home button", "Xbox button", "PlayStation button"};  // (bind_label_family)
         static const char *const pad[] = {"Minus + Plus", "View + Menu", "Create + Options"};
         ImGui::PushTextWrapPos(0);
-        ImGui::TextUnformatted("BOTWRecompAndroid has its own menu for settings and controls.");
+        ImGui::TextUnformatted(tr("BOTWRecompAndroid has its own menu for settings and controls."));
         ImGui::Spacing();
         int fam = bind_label_family() % 3;
 #ifdef __ANDROID__
-        ImGui::Text("Open it in game with the menu button on the screen or the back button, or on a controller with the "
-                    "%s (or %s together).", home[fam], pad[fam]);
+        ImGui::Text(tr("Open it in game with the menu button on the screen or the back button, or on a controller with the "
+                       "%s (or %s together)."), tr(home[fam]), tr(pad[fam]));
 #else
-        ImGui::Text("Open it in game with F1 or Esc, or on a controller with the %s (or %s together).", home[fam], pad[fam]);
+        ImGui::Text(tr("Open it in game with F1 or Esc, or on a controller with the %s (or %s together)."), tr(home[fam]), tr(pad[fam]));
 #endif
         ImGui::PopTextWrapPos();
         ImGui::Dummy(ImVec2(0, 14 * s));
         ImGui::SetCursorPosX((ImGui::GetWindowWidth() - 180 * s) * 0.5f);
         ImGui::SetItemDefaultFocus();
-        if (ImGui::Button("OK", ImVec2(180 * s, 44 * s)) || ImGui::IsKeyPressed(ImGuiKey_Enter) ||
+        if (ImGui::Button(tr("OK"), ImVec2(180 * s, 44 * s)) || ImGui::IsKeyPressed(ImGuiKey_Enter) ||
             ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown)) {
             g_settings.menu_tip_seen = true;
             settings_save();
@@ -817,6 +862,7 @@ static bool menu_item(const char *label, bool enabled, bool *hovered = NULL, con
     ImVec2 at = ImGui::GetCursorScreenPos();
     // (the ID from the label's fixed part: a new ID loses the selection)
     ImGui::PushID(label, split ? split : label + strlen(label));
+    if (!split) label = tr(label);  // (shown in the menu's language; the id stays the English one)
     ImVec2 sz = ImGui::CalcTextSize(label);
     // (EnableNav: otherwise an InvisibleButton can't be reached with the d-pad / arrow keys - ImGui 1.91)
     ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));  // (the hover band shows the selection, no box)
@@ -965,7 +1011,7 @@ static void prelaunch_tab(float sc) {
         return;
 #endif
         ImGui::PushFont(g_font_menu);
-        ImGui::TextColored(gold, "%s", t);
+        ImGui::TextColored(gold, "%s", tr(t));
         ImGui::PopFont();
         ImGui::Separator();
         ImGui::Spacing();
@@ -975,26 +1021,109 @@ static void prelaunch_tab(float sc) {
     {
         const char *d = getenv("LARECOMP_VK_DRIVER");
         const char *base = d && *d ? strrchr(d, '/') : NULL;
-        ImGui::Text("In use: %s", d && *d ? (base ? base + 1 : d) : "the system's driver");
+        ImGui::Text(tr("In use: %s"), d && *d ? (base ? base + 1 : d) : tr("the system's driver"));
         ImGui::PushTextWrapPos(0);
-        ImGui::TextDisabled("The game runs on the system's driver, lighting included. On Adreno GPUs, Mesa's Turnip "
-                            "driver runs it at 60 fps: choose a Turnip driver package (.zip, as for adrenotools).");
+        ImGui::TextDisabled("%s", tr("The game runs on the system's driver, lighting included. On Adreno GPUs, Mesa's Turnip "
+                                     "driver runs it faster: choose a Turnip driver package (.zip, as for adrenotools)."));
         ImGui::PopTextWrapPos();
-        if (ImGui::Button("Choose driver")) android_call("pickDriver");
+        if (ImGui::Button(tr("Choose driver"))) android_call("pickDriver");
         if (d && *d) {  // (a custom driver in use: back to the system's)
             ImGui::SameLine();
-            if (ImGui::Button("Use the system driver")) android_call("useSystemDriver");
+            if (ImGui::Button(tr("Use the system driver"))) android_call("useSystemDriver");
         }
         pthread_mutex_lock(&g_lock);
         std::string msg = g_driver_msg;
+        bool restart = g_driver_restart;
         pthread_mutex_unlock(&g_lock);
         if (!msg.empty()) {
             ImGui::Text("%s", msg.c_str());
-            if (msg.find("Restart") != std::string::npos) {
+            if (restart) {
                 ImGui::SameLine();
-                if (ImGui::Button("Restart now")) android_call("restartApp");
+                if (ImGui::Button(tr("Restart now"))) android_call("restartApp");
             }
         }
+    }
+    ImGui::Spacing();
+    ImGui::Spacing();
+    heading("Driver compatibility");
+    {   // (runtime/settings.h gpu_heap / inplace_reads / turnip_lrz / log_file: for GPUs where a Turnip path draws wrong;
+        // LASRecompAndroid's, with BOTW's in-place reads of draw targets)
+        bool changed = false;
+        const bool a8 = vk_adreno_8xx(vk_gpu_name());  // (Automatic: on for Adreno 8xx only)
+        auto tri = [&](const char *id, int *v) {  // Automatic / On / Off: -1 / 1 / 0
+            bool ch = false;
+            ImGui::PushID(id);
+            ch |= ImGui::RadioButton(tr(a8 ? "Automatic (on for this GPU)" : "Automatic (off for this GPU)"), v, -1);
+            ImGui::SameLine();
+            ch |= ImGui::RadioButton(tr("On"), v, 1);
+            ImGui::SameLine();
+            ch |= ImGui::RadioButton(tr("Off"), v, 0);
+            ImGui::PopID();
+            return ch;
+        };
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextDisabled("%s", tr("For GPUs where the game draws wrong with Turnip (missing text, odd colors, black "
+                                  "patches). Automatic suits most phones: the fastest paths on Adreno 8xx GPUs, the safer "
+                                  "ones on the others."));
+        ImGui::Text(tr("This GPU: %s"), vk_gpu_desc());
+        if (!vk_driver_is_turnip())
+            ImGui::TextDisabled("%s", tr("These options are for Turnip: the driver in use takes the safer paths anyway."));
+        ImGui::Spacing();
+        ImGui::Text("%s", tr("Game memory on the GPU (Turnip)"));
+        changed |= tri("heap", &g_settings.gpu_heap);
+        ImGui::TextDisabled("%s", tr("On: the game's memory is mapped straight into the GPU's, the fastest way. Off: what each "
+                                  "frame uses is copied instead - it draws right where the fast way doesn't, but this game "
+                                  "runs at about half the frame rate (15 fps instead of 35 on an Adreno 830). Automatic: on "
+                                  "for Adreno 8xx GPUs, off for the others - on another Adreno, try On first. Applies when "
+                                  "the game starts."));
+        ImGui::Spacing();
+        ImGui::Text("%s", tr("Draw-target reads in place (Turnip)"));
+        changed |= tri("inplace", &g_settings.inplace_reads);
+        ImGui::TextDisabled("%s", tr("On: decals and effects read the image they draw on as it is, the fastest way. Off: a copy "
+                                  "of it each time, slower (fewer fps) but by the Vulkan rules. Automatic: on for Adreno 8xx "
+                                  "GPUs, off for the others. Applies when the game starts."));
+        ImGui::Spacing();
+        ImGui::Text("%s", tr("Turnip low-resolution Z (LRZ)"));
+        changed |= tri("lrz", &g_settings.turnip_lrz);
+        ImGui::TextDisabled("%s", tr("Turnip's early depth test, a little faster. Off can fix missing or broken drawing on "
+                                  "some Adreno GPUs. Automatic: on for Adreno 8xx GPUs, off for the others. Applies when "
+                                  "BOTWRecompAndroid restarts."));
+        bool lrz_now = g_settings.turnip_lrz < 0 ? a8 : g_settings.turnip_lrz != 0;
+        if (lrz_now != vk_lrz_at_start()) {  // (Turnip reads it once, when the app starts)
+            ImGui::Text("%s", tr("Restart BOTWRecompAndroid to apply it."));
+            ImGui::SameLine();
+            ImGui::PushID("lrz");  // (the driver's own Restart now may be showing too)
+            if (ImGui::Button(tr("Restart now"))) {
+                settings_save();
+                android_call("restartApp");
+            }
+            ImGui::PopID();
+        }
+        if (!g_log_folder_read) {
+            g_log_folder_read = true;
+            log_folder_read();
+        }
+        pthread_mutex_lock(&g_lock);
+        std::string folder = g_log_folder;
+        pthread_mutex_unlock(&g_lock);
+        ImGui::Spacing();
+        if (ImGui::Checkbox(tr("Save a log file"), &g_settings.log_file)) {
+            changed = true;
+            if (g_settings.log_file && folder.empty()) android_call("pickLogFolder");  // (then nativeLogFolderPicked)
+            else android_log_file(g_settings.log_file);
+        }
+        ImGui::TextDisabled("%s", tr("Writes what the app reports (GPU, driver, errors) to botwrecomp-log.txt in a folder you "
+                                  "choose (create one, e.g. Download/BOTWRecomp), to open on the phone and send with a "
+                                  "bug report. Turn it on and play until the problem shows; after a crash, the run "
+                                  "before is kept as botwrecomp-log-previous.txt."));
+        if (folder.empty()) ImGui::TextDisabled("%s", tr("No folder chosen: the log stays in the app's own folder, which "
+                                                         "Android only lets a computer (adb) read."));
+        else ImGui::Text(tr("Log folder: %s"), folder.c_str());
+        ImGui::PushID("logdir");
+        if (ImGui::Button(tr(folder.empty() ? "Choose folder" : "Change folder"))) android_call("pickLogFolder");
+        ImGui::PopID();
+        ImGui::PopTextWrapPos();
+        if (changed) settings_save();
     }
     ImGui::Spacing();
     ImGui::Spacing();
@@ -1335,7 +1464,7 @@ extern "C" void launcher_run(const char *root) {
                 bool pressed = menu_item("PLAY", status.empty());
                 if (status.empty()) {  // PLAY twinkles now and then while the game is ready
                     ImGui::PushFont(g_font_menu);
-                    float w = ImGui::CalcTextSize("PLAY").x, h = ImGui::CalcTextSize("PLAY").y;
+                    float w = ImGui::CalcTextSize(tr("PLAY")).x, h = ImGui::CalcTextSize(tr("PLAY")).y;
                     ImGui::PopFont();
                     float t = (float)ImGui::GetTime(), ph = fmodf(t, 3.6f), ph2 = fmodf(t + 0.45f, 3.6f);
                     float k1 = ph < 0.9f ? sinf(ph / 0.9f * 3.14159265f) : 0, k2 = ph2 < 0.7f ? sinf(ph2 / 0.7f * 3.14159265f) : 0;
@@ -1397,7 +1526,7 @@ extern "C" void launcher_run(const char *root) {
                 bool back = false;
 #ifndef __ANDROID__
                 ImGui::PushFont(g_font_menu);
-                ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "Settings");
+                ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", tr("Settings"));
                 ImGui::PopFont();
                 {  // close: a drawn X in the corner (B / Esc too)
                     float bx = 44 * sc;
@@ -1449,7 +1578,7 @@ extern "C" void launcher_run(const char *root) {
                 ImGui::PopStyleColor();
                 ImGui::PushFont(g_font_small);
                 ImGui::PushFont(g_font_menu);
-                ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "Game Files");
+                ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", tr("Game Files"));
                 ImGui::PopFont();
                 bool back = false;
                 if (!busy) {  // close: the drawn X in the corner, as Settings (B / Esc too)
@@ -1481,21 +1610,21 @@ extern "C" void launcher_run(const char *root) {
                 auto check_left_of_value = [&](const std::string &v) {
                     if (v != "Selected") return;
                     ImVec2 rb = ImGui::GetItemRectMax(), ra = ImGui::GetItemRectMin();
-                    float fs = ImGui::GetFontSize(), vw = ImGui::CalcTextSize(v.c_str()).x;
+                    float fs = ImGui::GetFontSize(), vw = ImGui::CalcTextSize(tr(v.c_str())).x;
                     float x = rb.x - 16 * sc - vw - fs * 0.95f, cy = (ra.y + rb.y) * 0.5f, u = fs * 0.62f;
                     ImU32 g = IM_COL32(120, 220, 120, 255);
                     ImDrawList *dl = ImGui::GetWindowDrawList();
                     dl->AddLine(ImVec2(x, cy), ImVec2(x + u * 0.35f, cy + u * 0.35f), g, fs * 0.11f);
                     dl->AddLine(ImVec2(x + u * 0.35f, cy + u * 0.35f), ImVec2(x + u, cy - u * 0.4f), g, fs * 0.11f);
                 };
-                std::string src_d = "The folder with your own game folders (exefs/romfs) of The Legend of Zelda: Breath "
-                                    "of the Wild for Nintendo Switch, version 1.0.0. The game isn't included with BOTWRecompAndroid.";
-                if (!src.empty()) src_d += "\n\nChosen: " + src;
+                std::string src_d = tr("The folder with your own game folders (exefs/romfs) of The Legend of Zelda: Breath "
+                                       "of the Wild for Nintendo Switch, version 1.0.0. The game isn't included with BOTWRecompAndroid.");
+                if (!src.empty()) src_d += std::string(tr("\n\nChosen: ")) + src;
                 // the step that's running / its result, under the rows and in the Set up row's explanation
                 const std::string &job_line = job;
-                std::string ex_d = "Copies the game files BOTWRecompAndroid needs and recompiles the game from them. This only "
-                                   "needs to be done once and may take a while. Your own files aren't changed.";
-                if (!job.empty()) ex_d += "\n\n" + job + (job_hint.empty() ? "" : ".\n" + job_hint);
+                std::string ex_d = tr("Copies the game files BOTWRecompAndroid needs and recompiles the game from them. This only "
+                                      "needs to be done once and may take a while. Your own files aren't changed.");
+                if (!job.empty()) ex_d += "\n\n" + std::string(tr(job.c_str())) + (job_hint.empty() ? "" : ".\n" + std::string(tr(job_hint.c_str())));
 
                 // the controller's cursor starts on the first row (not the X), a few frames while the window lays out
                 static int seen_frame = -10, focus_first;  // (not drawn last frame: the window has just opened)
@@ -1557,9 +1686,9 @@ extern "C" void launcher_run(const char *root) {
                     ImGui::Dummy(ImVec2(0, 14 * sc));
                     ImGui::PushTextWrapPos(0);
                     ImGui::TextColored(failed ? ImVec4(1, 0.5f, 0.4f, 1) : busy ? ImVec4(0.93f, 0.76f, 0.33f, 1)
-                                              : ImVec4(0.45f, 0.95f, 0.55f, 1), "%s", job_line.c_str());
+                                              : ImVec4(0.45f, 0.95f, 0.55f, 1), "%s", tr(job_line.c_str()));
                     if (failed && !job_hint.empty())  // (what to do next, in the rows' own text colour)
-                        ImGui::TextColored(ImVec4(0.86f, 0.85f, 0.80f, 1), "%s", job_hint.c_str());
+                        ImGui::TextColored(ImVec4(0.86f, 0.85f, 0.80f, 1), "%s", tr(job_hint.c_str()));
                     ImGui::PopTextWrapPos();
                 }
                 opt_end();
@@ -1584,8 +1713,8 @@ extern "C" void launcher_run(const char *root) {
                     float f = test_busy ? 0.42f : extract_progress();
                     // (while the game code is built: what's happening, on whose files - runtime/gamebuild.c)
                     bool recompiling = g_build_frac >= 0;
-                    const char *title = recompiling ? "Recompiling the game" : "Setting up the game files";
-                    static const char *const notes[] = {"This only needs to be done once and may take a while."};
+                    const char *title = tr(recompiling ? "Recompiling the game" : "Setting up the game files");
+                    const char *const notes[] = {tr("This only needs to be done once and may take a while.")};
                     int nnotes = recompiling ? 1 : 0;
                     float tfs = g_font_menu->FontSize * 0.75f, sfs = g_font_small->FontSize * 0.85f;
                     ImVec2 ts = g_font_menu->CalcTextSizeA(tfs, FLT_MAX, 0, title);
@@ -1603,7 +1732,7 @@ extern "C" void launcher_run(const char *root) {
                     fg->AddRectFilled(ba, bb, IM_COL32(255, 255, 255, 25), 12 * sc);
                     if (f > 0) fg->AddRectFilled(ba, ImVec2(ba.x + (bb.x - ba.x) * f, bb.y), IM_COL32(236, 194, 84, 255), 12 * sc);
                     char line[200];
-                    snprintf(line, sizeof line, "%s   %d%%", test_busy ? "Setting up the game files..." : job.c_str(),
+                    snprintf(line, sizeof line, "%s   %d%%", tr(test_busy ? "Setting up the game files..." : job.c_str()),
                              (int)(f * 100));
                     ImVec2 ls = g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, line);
                     fg->AddText(g_font_small, sfs, ImVec2((a.x + b.x - ls.x) * 0.5f, bb.y + 26 * sc), IM_COL32(220, 216, 205, 255), line);
@@ -1628,13 +1757,13 @@ extern "C" void launcher_run(const char *root) {
                     ImGui::GetWindowDrawList()->AddLine(ImVec2(p.x + u * 0.35f, p.y + u * 0.8f), ImVec2(p.x + u * 0.85f, p.y + u * 0.2f), g, u * 0.12f);
                     ImGui::SetCursorPosX(x0 + u * 1.3f);
                 }
-                ImGui::TextColored(ImVec4(0.45f, 0.95f, 0.55f, 1), "Game files ready.");
+                ImGui::TextColored(ImVec4(0.45f, 0.95f, 0.55f, 1), "%s", tr("Game files ready."));
                 ImGui::SetCursorPosX(x0);
                 ImGui::TextColored(ImVec4(0.66f, 0.76f, 0.98f, 1), "Nintendo Switch  \xc2\xb7  v1.0.0");
             } else {
-                ImGui::TextColored(ImVec4(1, 0.72f, 0.4f, 1), "!  %s", busy ? "Setting up the game files..." : status.c_str());
+                ImGui::TextColored(ImVec4(1, 0.72f, 0.4f, 1), "!  %s", tr(busy ? "Setting up the game files..." : status.c_str()));
                 ImGui::SetCursorPosX(x0);
-                ImGui::TextDisabled("Set up the game files to play.");
+                ImGui::TextDisabled("%s", tr("Set up the game files to play."));
             }
             if (const char *f = getenv("LARECOMP_LAUNCHER_FONT")) {  // (test) which typeface this window shows
                 const char *b = strrchr(f, '/');

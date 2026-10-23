@@ -7,6 +7,7 @@
 #include "hle.h"
 #include "input_bind.h"
 #ifdef __ANDROID__
+#include <SDL3/SDL.h>
 #include <sys/system_properties.h>
 #endif
 
@@ -39,6 +40,9 @@ Settings g_settings = {
                   {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}},
     .touch_scale = 1.0f,
     .touch_opacity = 1.0f,
+    .gpu_heap = -1,
+    .inplace_reads = -1,
+    .turnip_lrz = -1,
     .fps_mode = 1,  // (30: the game's own choice dropped the overworld to 20, where the GPU's clocks settled low)
     .res_mode = 1,  // (1x: the Switch's 900p scene, the HUD at the screen's resolution - Match display drew the scene at
                     // 2560x1440 on the POCO F7 Ultra: 22 fps)
@@ -62,6 +66,25 @@ const char *const g_language_codes[N_LANGUAGES] = {"auto", "ja", "en-US", "es", 
 const char *const g_language_names[N_LANGUAGES] = {"Auto", "Japanese", "English", "Spanish", "French", "German",
                                                    "Italian", "Dutch", "Russian", "Korean", "Chinese (Simplified)",
                                                    "Chinese (Traditional)", "Portuguese (Brazil)"};
+
+bool settings_host_portuguese(void) {
+#ifdef __ANDROID__
+    static int pt = -1;
+    if (pt < 0) {
+        const char *e = getenv("LARECOMP_HOST_LANG");
+        if (e && *e) pt = !strncmp(e, "pt", 2);
+        else {  // (the phone's first preferred language, through SDL)
+            int n = 0;
+            SDL_Locale **l = SDL_GetPreferredLocales(&n);
+            pt = l && n > 0 && l[0]->language && !strcmp(l[0]->language, "pt");
+            SDL_free(l);
+        }
+    }
+    return pt;
+#else
+    return false;
+#endif
+}
 
 // LANG_AUTO: the host's own language (LANG=es_ES.UTF-8 -> es), en-US when it is none of the game's. Linux only:
 // macOS / Windows apps get no locale variables from the system, so Auto is English there (pick one in settings).
@@ -164,6 +187,11 @@ void settings_load(void) {
         else if (!strcmp(key, "touch_controls")) g_settings.touch_controls = atoi(val) != 0;
         else if (!strcmp(key, "frame_rate")) g_settings.fps_mode = !strcmp(val, "30") ? 1 : !strcmp(val, "60") ? 2 : 0;
         else if (!strcmp(key, "shader_int32")) g_settings.shader_int32 = atoi(val) != 0;
+        else if (!strcmp(key, "gpu_heap")) g_settings.gpu_heap = !strcmp(val, "auto") ? -1 : atoi(val) != 0;
+        else if (!strcmp(key, "inplace_reads")) g_settings.inplace_reads = !strcmp(val, "auto") ? -1 : atoi(val) != 0;
+        else if (!strcmp(key, "turnip_lrz")) g_settings.turnip_lrz = !strcmp(val, "auto") ? -1 : atoi(val) != 0;
+        else if (!strcmp(key, "log_file")) g_settings.log_file = atoi(val) != 0;
+        else if (!strcmp(key, "gpu_model")) snprintf(g_settings.gpu_model, sizeof g_settings.gpu_model, "%s", val);
         else if (!strcmp(key, "touch_scale")) g_settings.touch_scale = (float)atof(val);
         else if (!strcmp(key, "touch_opacity")) g_settings.touch_opacity = (float)atof(val);
         else if (!strcmp(key, "touch_layout")) {  // x,y per control (a share of the screen; negative: default)
@@ -219,6 +247,11 @@ void settings_save(void) {
     fprintf(f, "touch_controls = %d\n", g_settings.touch_controls);
     fprintf(f, "frame_rate = %s\n", g_settings.fps_mode == 1 ? "30" : g_settings.fps_mode == 2 ? "60" : "auto");
     fprintf(f, "shader_int32 = %d\n", g_settings.shader_int32);
+    static const char *const tri[] = {"auto", "0", "1"};  // (-1 / 0 / 1)
+#define TRI(v) tri[(v) < 0 ? 0 : (v) ? 2 : 1]
+    fprintf(f, "gpu_heap = %s\ninplace_reads = %s\nturnip_lrz = %s\nlog_file = %d\ngpu_model = %s\n", TRI(g_settings.gpu_heap),
+            TRI(g_settings.inplace_reads), TRI(g_settings.turnip_lrz), g_settings.log_file, g_settings.gpu_model);
+#undef TRI
     fprintf(f, "touch_scale = %.2f\ntouch_opacity = %.2f\ntouch_layout = ", g_settings.touch_scale, g_settings.touch_opacity);
     for (int i = 0; i < TOUCH_NCTL; i++)
         fprintf(f, "%s%.4f,%.4f", i ? "," : "", g_settings.touch_pos[i][0], g_settings.touch_pos[i][1]);
