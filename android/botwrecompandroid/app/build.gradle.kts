@@ -1,4 +1,5 @@
 import java.util.Properties
+import java.security.MessageDigest
 
 plugins {
     id("com.android.application")
@@ -141,6 +142,22 @@ val prepareBotwRecompAndroid by tasks.registering {
             // (runtime/gamebuild.c hot / cold: only these functions at -O1, one list per game version; not part of the
             // game code's id)
             for (f in hotLists) f.copyTo(a.resolve("gamelib-src/${f.name}"), overwrite = true)
+            val digest = MessageDigest.getInstance("SHA-256")
+            val buffer = ByteArray(65536)
+            for (f in a.walkTopDown().filter { it.isFile }.sortedBy { it.relativeTo(a).invariantSeparatorsPath }) {
+                digest.update(f.relativeTo(a).invariantSeparatorsPath.toByteArray(Charsets.UTF_8))
+                digest.update(0.toByte())
+                digest.update(f.length().toString().toByteArray(Charsets.US_ASCII))
+                digest.update(0.toByte())
+                f.inputStream().use { input ->
+                    while (true) {
+                        val n = input.read(buffer)
+                        if (n < 0) break
+                        digest.update(buffer, 0, n)
+                    }
+                }
+            }
+            out.resolve("assets/gen.id").writeText(digest.digest().joinToString("") { "%02x".format(it.toInt() and 255) })
         }
     }
 }
