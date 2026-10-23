@@ -40,6 +40,8 @@ Settings g_settings = {
     .touch_scale = 1.0f,
     .touch_opacity = 1.0f,
     .fps_mode = 1,  // (30: the game's own choice dropped the overworld to 20, where the GPU's clocks settled low)
+    .res_mode = 1,  // (1x: the Switch's 900p scene, the HUD at the screen's resolution - Match display drew the scene at
+                    // 2560x1440 on the POCO F7 Ultra: 22 fps)
 #else
     .show_fps = false,
 #endif
