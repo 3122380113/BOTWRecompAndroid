@@ -250,6 +250,8 @@ NVN(nvnQueueFenceSync) {
     s->signaled = 1;
     if (vk_async_on()) s->lseq = vk_async_fence(A(1));  // (its submission is known once the render thread gets there)
     else s->seq = renderer_fence_seq();
+    extern uint64_t renderer_present_count(void);
+    s->frame = renderer_present_count();
 }
 #else
 NVN(nvnQueueFenceSync) { NvnSync *s = sync_of(A(1)); s->signaled = 1; s->seq = renderer_fence_seq(); }
@@ -270,17 +272,29 @@ NVN(nvnSyncWait) {  // NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED
     static int whole = -1;  // LARECOMP_SYNC_ALL=1: old behaviour, wait for all submitted work
     if (whole < 0) whole = getenv("LARECOMP_SYNC_ALL") ? 1 : 0;
 #ifdef __ANDROID__
+    uint64_t t0 = plat_now_ns();
     kernel_blocking_begin();  // (a long wait: core 0 to the game's other threads, kernel.c)
     if (vk_async_on()) {  // the render thread's translation of the fence first (vulkan/async.c)
         if (flush || whole) vk_async_drain();
         else vk_async_wait_id(sync_of(A(0))->lseq);
     }
+    uint64_t t1 = plat_now_ns();
 #endif
     if (flush) renderer_flush();
     else if (whole) renderer_sync();
     else renderer_wait_seq(sync_of(A(0))->seq);  // only the submission that holds this fence
 #ifdef __ANDROID__
     kernel_blocking_end();
+    // LARECOMP_LOG_SYNC: waits over a millisecond in the world (frame 1500 on, 40 of them) - how old the fence was,
+    // the waits for its translation and its GPU work
+    static int log = -1, logged;
+    if (log < 0) log = getenv("LARECOMP_LOG_SYNC") != NULL;
+    extern uint64_t renderer_present_count(void);
+    if (log && plat_now_ns() - t0 > 1000000 && renderer_present_count() > 1500 && logged++ < 40) {
+        LOG("[nvn] SyncWait (lr %llx): fence from %lld frames ago, waited %.2f ms for the render thread, %.2f ms for the GPU\n",
+            (unsigned long long)c->x[30], (long long)(renderer_present_count() - sync_of(A(0))->frame), (t1 - t0) / 1e6,
+            (plat_now_ns() - t1) / 1e6);
+    }
 #endif
     RET(0);
 }
