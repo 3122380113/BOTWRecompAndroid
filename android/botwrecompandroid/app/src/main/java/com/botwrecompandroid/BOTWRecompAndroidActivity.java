@@ -10,7 +10,8 @@
 //   zig's headers) unpacked to <internal files>/gen once per app version, named in LARECOMP_GEN_DIR; its programs
 //   (libpymain.so, libzig.so) are in nativeLibraryDir;
 // - the system's pickers for the start screen (runtime/ui/launcher.mm): the game files folder (exefs/ and romfs/ are
-//   found in it and copied to <external files>/extracted) and the Vulkan driver (a .zip copied to the drivers folder).
+//   found in it; exefs/ is copied to <external files>/extracted and romfs.bin built there straight from romfs/) and
+//   the Vulkan driver (a .zip copied to the drivers folder).
 // The data root (game files, saves, settings) is <external files>: /sdcard/Android/data/com.botwrecomp.android/files.
 // While in front it reports the battery and thermal state once a second for the performance overlay
 // (runtime/ui/perf_overlay.mm): apps can't read those in /sys.
@@ -66,6 +67,7 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
     private static native void nativeImportBegin(String name);
     private static native void nativeImportProgress(long done, long total);
     private static native void nativeImportDone(int result);
+    private native String nativeBuildRomfs(String[] paths, long[] sizes);
     private static native void nativeDriverPicked(String name);
 
     private static final int REQ_GAME = 0x4c41, REQ_DRIVER = 0x4c42;
@@ -311,7 +313,7 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
                 d.id = c.getString(0);
                 d.name = c.getString(1);
                 d.dir = DocumentsContract.Document.MIME_TYPE_DIR.equals(c.getString(2));
-                d.size = c.isNull(3) ? 0 : c.getLong(3);
+                d.size = c.isNull(3) ? -1 : c.getLong(3);  // (-1: the provider doesn't say - listFiles refuses it)
                 out.add(d);
             }
         }
@@ -343,8 +345,37 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
 
     private long treeBytes(Uri tree, Doc dir) {
         long n = 0;
-        for (Doc k : children(tree, dir.id)) n += k.dir ? treeBytes(tree, k) : k.size;
+        for (Doc k : children(tree, dir.id)) n += k.dir ? treeBytes(tree, k) : Math.max(k.size, 0);
         return n;
+    }
+
+    // romfs/'s files (relative paths): nativeBuildRomfs builds romfs.bin straight from them, no copy of the folder
+    // (LASRecompAndroid's)
+    private Uri romfsTree;
+    private final List<Doc> romfsFiles = new ArrayList<>();
+    private final List<String> romfsPaths = new ArrayList<>();
+
+    private void listFiles(Uri tree, Doc dir, String prefix) throws IOException {
+        for (Doc k : children(tree, dir.id)) {
+            String rel = prefix + k.name;
+            if (k.dir) {
+                listFiles(tree, k, rel + "/");
+                continue;
+            }
+            if (k.size < 0) throw new IOException("The file provider did not report a size for " + k.name +
+                    ". Copy the extracted game files to a local folder and select it again.");
+            romfsFiles.add(k);
+            romfsPaths.add(rel);
+        }
+    }
+
+    // (called by nativeBuildRomfs) file i's data as a descriptor the native side reads and closes
+    @SuppressWarnings("unused")
+    private int openRomfsFile(int i) throws IOException {
+        android.os.ParcelFileDescriptor pfd = getContentResolver().openFileDescriptor(
+                DocumentsContract.buildDocumentUriUsingTree(romfsTree, romfsFiles.get(i).id), "r");
+        if (pfd == null) throw new IOException("Could not open " + romfsPaths.get(i));
+        return pfd.detachFd();
     }
 
     private long copied, total, reported;
@@ -396,14 +427,30 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
                 nativeImportDone(4);
                 return;
             }
+            // (listed before nativeImportBegin removes an earlier setup: a folder that can't be used leaves it alone)
+            romfsTree = tree;
+            romfsFiles.clear();
+            romfsPaths.clear();
+            listFiles(tree, romfs, "");
+            long romfsBytes = 0;
+            for (Doc d : romfsFiles) romfsBytes = Math.addExact(romfsBytes, d.size);
             String name = DocumentsContract.getTreeDocumentId(tree);
             nativeImportBegin(name.substring(name.lastIndexOf(':') + 1));
             File games = new File(getExternalFilesDir(null), "extracted");
             copied = reported = 0;
-            total = treeBytes(tree, romfs) + treeBytes(tree, exefs);
+            total = Math.addExact(romfsBytes, treeBytes(tree, exefs));
             copyTree(tree, exefs, new File(games, "exefs"));
-            copyTree(tree, romfs, new File(games, "romfs"));
             nativeImportProgress(copied, total);
+            long[] sizes = new long[romfsFiles.size()];
+            for (int i = 0; i < sizes.length; i++) sizes[i] = romfsFiles.get(i).size;
+            String failed = nativeBuildRomfs(romfsPaths.toArray(new String[0]), sizes);
+            romfsFiles.clear();
+            romfsPaths.clear();
+            if (failed != null) {
+                Log.e(TAG, "game data image: " + failed);
+                nativeImportDone(5);
+                return;
+            }
             result = 0;
         } catch (Exception e) {
             Log.e(TAG, "game files: " + e);
