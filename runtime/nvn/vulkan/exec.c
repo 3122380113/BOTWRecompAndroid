@@ -1748,6 +1748,10 @@ static VkRect2D scissor_rect(void) {
         NvnTexture *t0 = st.rt.ncolor ? st.rt.color[0] : NULL;
         if (t0 && !ox && !oy && fabsf(sx - sy) > 0.01f * sy && !(x <= 0 && y <= 0 && x + sw >= (int)t0->width && y + sh >= (int)t0->height) &&
             widescreen_ui_centred() && vk_texture_scale_group(t0) == RS_OUT) {
+            // (and moves with the HUD's panes out to the edge: widescreen_hud_shift, in 1280-wide layout units)
+            extern float widescreen_hud_shift(float x);
+            float k = t0->width / 1280.0f;
+            x += (int)lroundf(widescreen_hud_shift(((float)x + sw * 0.5f - t0->width * 0.5f) / k) * k);
             float u = fminf(sx, sy);
             ox = ((float)w - t0->width * u) * 0.5f, oy = ((float)h - t0->height * u) * 0.5f;
             sx = sy = u;
@@ -3097,6 +3101,37 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
     // snapshot: later CPU writes must not leak in. Shared by the draws of one submission binding the same range:
     // within a command list nothing writes guest memory (no inline UpdateUniformBuffer: that writes through below
     // and drops the shared copies).
+    if (stage == 0 && idx == 0 && size >= 64) {
+        // Widescreen: what the HUD's layouts draw through the widened camera moves out towards the screen's edge
+        // (widescreen.c widescreen_hud_shift), in its own copy. nn::ui2d's panes: the layout camera's projection in
+        // cb3[0..3], the pane's matrix in cb3[4..6] (its x at [4][3]); its text: one matrix, projection times the pane's,
+        // whose origin (the text's start) shows where it is - its rows 0 plus a share of row 3 move it on the screen.
+        extern float widescreen_hud_shift(float x);
+        extern float widescreen_factor(void);
+        extern bool widescreen_ui_centred(void);
+        const float *f = (const float *)(uintptr_t)r.addr;
+        NvnTexture *t0 = st.rt.ncolor ? st.rt.color[0] : NULL;
+        if (widescreen_ui_centred() && t0 && vk_texture_scale_group(t0) == RS_OUT && f[12] == 0 && f[13] == 0 && f[14] == -1.0f &&
+            f[1] == 0 && f[2] == 0) {
+            float g = widescreen_factor();
+            if (size >= 0x230 && f[15] == 0 && f[0] > 0 && fabsf(f[5] / f[0] - 16.0f / 9.0f * g) < 0.01f) {
+                float d = widescreen_hud_shift(f[19]);
+                if (d != 0) {
+                    VkSpan c = vk_transient_copy(f, size, 256);
+                    ((float *)c.ptr)[19] += d;
+                    return ubo_span(c, size);
+                }
+            } else if (f[15] > 1.0f) {
+                float d = widescreen_hud_shift(f[3] / f[15] * g * 640.0f);  // (layout x of the origin: 640 g units a side)
+                if (d != 0) {
+                    VkSpan c = vk_transient_copy(f, size, 256);
+                    float *m = (float *)c.ptr, k = d / (640.0f * g);  // (that many NDC units)
+                    for (int i = 0; i < 4; i++) m[i] += k * m[12 + i];
+                    return ubo_span(c, size);
+                }
+            }
+        }
+    }
     int dk = (si->cbuf_dynamic >> k) & 1;
     stat_cb_n[dk]++, stat_cb_bytes[dk] += size;
     if (dk && ct_on()) LOG("[ct] dyncbuf stage %d k %d addr %llx size %llx (bound %llx) fs %016llx\n", stage, k, (unsigned long long)r.addr,
@@ -4702,6 +4737,25 @@ static void draw_(CmdRec *r, bool indexed) {
         if (st.ubuf[0][5].addr) widescreen_scene_ubo((const float *)(uintptr_t)st.ubuf[0][5].addr, st.ubuf[0][5].size);
     }
     if (g_debug_frame) debug_draw(pr, r, indexed);
+    {   // LARECOMP_LOG_UI=<frame>: that frame's 2D-layout draws (nn::ui2d: projection in cb3[0..3], the pane's matrix in
+        // cb3[4..6], its quad in cb3[33]) - where each pane is
+        static long at = -2;
+        if (at == -2) at = getenv("LARECOMP_LOG_UI") ? atol(getenv("LARECOMP_LOG_UI")) : -1;
+        const Range *u = &st.ubuf[0][0];
+        if (at >= 0 && (long)renderer_present_count() == at && u->addr && u->size >= 80) {
+            const float *f = (const float *)(uintptr_t)u->addr;
+            if (getenv("LARECOMP_LOG_UI_ALL") && st.rt.ncolor && st.rt.color[0] && st.rt.color[0]->width == 1920)
+                LOG("[ui-all] fs %016llx vs %llx cb3 size %#llx: %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f\n",
+                    (unsigned long long)g_cur_fs_hash, (unsigned long long)st.program->stages[0].code_addr, (unsigned long long)u->size,
+                    f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9], f[10], f[11], f[12], f[13], f[14], f[15], f[16], f[17],
+                    f[18], f[19]);
+            if (u->size >= 0x230 && f[12] == 0 && f[13] == 0 && f[14] == -1.0f && f[15] == 0)
+                LOG("[ui] fs %016llx rt %ux%u pane x %.1f y %.1f z %.1f scale %.3f %.3f quad %.1f %.1f %.1f %.1f proj %.4f %.4f\n",
+                    (unsigned long long)g_cur_fs_hash, st.rt.ncolor && st.rt.color[0] ? st.rt.color[0]->width : 0,
+                    st.rt.ncolor && st.rt.color[0] ? st.rt.color[0]->height : 0, f[19], f[23], f[27], f[16], f[21],
+                    f[33 * 4], f[33 * 4 + 1], f[33 * 4 + 2], f[33 * 4 + 3], f[0], f[5]);
+        }
+    }
     {   // LARECOMP_FIND_PROJ=<frame>: the constant buffers of that frame's draws holding a 16:9 perspective projection
         // (P[1][1] / P[0][0] = 16/9, five floats apart in either order): where the camera is (widescreen, frame generation)
         static long at = -2;

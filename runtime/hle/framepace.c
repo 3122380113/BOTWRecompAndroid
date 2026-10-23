@@ -65,6 +65,9 @@ static bool in_menu(void) {
            *(uint64_t *)(uintptr_t)(VF(uint64_t, mgr, 0x30) + 8);
 }
 
+// (widescreen.c: the HUD stays in place in the menus)
+bool framepace_in_menu(void) { return g_game_version == 182 && in_menu(); }
+
 // An event is running: a cutscene, a talk, an item fanfare (ksys::evt::Manager [0x7001cd8db8]: its active event at
 // +0x1d2b8). Some of their waits count frames: the new game's opening gave Link control 2 s early at 60 fps.
 static bool in_event(void) {

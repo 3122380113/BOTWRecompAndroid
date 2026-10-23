@@ -10,6 +10,8 @@ int framepace_target(void);
 uint64_t framepace_period_ns(void);
 // true: the runtime paces the presents and sets the game's clock (1.8.2; LARECOMP_FRAMEPACE=0: the game's own pacing)
 bool framepace_on(void);
+// 1.8.2: the game is paused (pause menu, map) or the title screen's menu is up
+bool framepace_in_menu(void);
 // The present (nvn/objects.c): a frame went out at t (plat_now_ns), on its pace's grid or not.
 void framepace_presented(uint64_t t, bool on_grid);
 

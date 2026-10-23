@@ -2,7 +2,8 @@
 // window of another shape: its cameras' sead::PerspectiveProjection objects take the output's aspect where the game
 // rebuilds their matrix and where it asks for their aspect (rt_persp_update / rt_persp_aspect below, hooked into its
 // game code by tools/patches.py), so the view widens - and its culling with it. The HUD, drawn through such a camera
-// too, stays in the centred 16:9 part (vulkan/exec.c scissor_rect puts its scissors there). The renderers set the wide
+// too, would sit in the centred 16:9 part; its panes nearer the sides move out to the screen's edges
+// (widescreen_hud_shift: vulkan/exec.c cbuf_info moves them, scissor_rect their scissors). The renderers set the wide
 // factor (output aspect / 16:9) each frame. 1.0.0 and 1.6.0 have no hooks: 16:9 with bars (LARECOMP_WIDESCREEN=1
 // forces the wide targets there for tests: the image stretches); LARECOMP_NO_WIDESCREEN=1: never.
 // How the main camera was found (2026-10-23): LARECOMP_FIND_PROJ (vulkan/exec.c) found its projection in the G-buffer
@@ -18,6 +19,7 @@
 
 #include <string.h>
 
+#include "../framepace.h"
 #include "../hle.h"
 #include "../rt.h"
 #include "../settings.h"
@@ -84,6 +86,22 @@ uint32_t rt_persp_aspect(uint64_t proj) {
 // The game's cameras are widened (the 1.8.2 hooks above): its HUD, drawn through one, lands in the centred 16:9 part
 // of a wide final image (exec.c scissor_rect maps the HUD's scissors there).
 bool widescreen_ui_centred(void) { return widescreen_allowed() && g_wide != 1.0f && g_widened; }
+
+// The HUD out to the screen's edges: how far a pane of the game's 1280x720 layouts moves, from its centre x in
+// layout units (-640..640). The widened layout camera draws the layout in the middle 16:9 part; panes nearer its sides
+// than its middle (the hearts, the location name, the minimap and its gauges) move out by that part's distance to the
+// screen edge, the middle ones (dialogs, prompts) stay, a blend in between. Not in the menus (pause, map, title
+// screen), whose panes make up grids across the middle. Panes placed over things in the world (an enemy's health bar)
+// move the same way.
+float widescreen_hud_shift(float x) {
+    if (!widescreen_ui_centred() || framepace_in_menu()) return 0;
+    float ax = x < 0 ? -x : x, t = (ax - 180.0f) / (260.0f - 180.0f);
+    if (t <= 0) return 0;
+    if (t > 1) t = 1;
+    t = t * t * (3 - 2 * t);
+    float d = 640.0f * (g_wide - 1.0f) * t;
+    return x < 0 ? -d : d;
+}
 
 void widescreen_frame_end(uint64_t frame) { (void)frame; }
 
