@@ -65,10 +65,33 @@ Medições na mesma rodada (A/B):
   - memcpy dos constant buffers 12%;
   - `begin_pass` 9%.
 
+## Perfil por passe com widescreen (tarde de 23/10)
+
+Grande Platô, modo 60, widescreen 3200x1440, cena 1x (1600x720), `LARECOMP_GPUPROF_AT=1700`. Com as marcas de
+tempo o quadro mede ~26 ms de passes (mais que os ~17 ms sem elas):
+
+| Item | Tempo | Observação |
+| --- | --- | --- |
+| G-buffer (6 cores + profundidade) | 10,4 ms | 55 passes, ~2.460 draws; o grosso do quadro |
+| Passes de 1 cor em 1920x1080 (vão a 3200x1440) | ~3,4 ms | composição final; o último inclui a GPU parada até a próxima submissão |
+| Upscale da cena (SGSR 1, 1600x720 → 3200x1440) | 2,0 ms | |
+| Sombras (só profundidade) | 1,7 ms | 11 passes, 526 draws |
+| Decalques lidos no lugar (`f984e489`, `69c0a04e`) | ~0,9 ms | ~40 passes de 1 draw, ~17 µs cada (sysmem) |
+
+- O contador novo no log de fps (`fbcopy ... breaks N`) mostra ~80 quebras de passe por quadro para leituras no lugar.
+- **Conclusão:** tirar essas quebras ganharia menos de 1 ms (~3%). Não compensa o risco de um feedback loop dentro do
+  passe. O tempo está na geometria do G-buffer, no upscale e na composição na resolução de saída.
+
+## Compatibilidade com outras GPUs (23/10)
+
+Caminhos seguros (memória do jogo por cópias da CPU, cópias em vez de leitura no lugar, LRZ desligado), simulando
+uma GPU que não é Adreno 8xx: o mundo desenha certo, mas a **15 fps** contra 35 (5,5 GB/s de cópias). Por isso o
+Automático da "Compatibilidade do driver" só usa os caminhos seguros fora das Adreno 8xx.
+
 ## Próximos passos possíveis
 
-1. **Passes dos decalques sem quebrar o passe:** barreira dentro do passe com `VK_EXT_attachment_feedback_loop_layout`
-   e `VK_KHR_dynamic_rendering_local_read` (o Turnip tem os dois). Corta ~45–90 passes de um draw por quadro.
+1. **Resolução de saída menor no widescreen:** a composição final e o upscale rodam em 3200x1440; uma opção de saída
+   menor (com o HUD menos nítido) cortaria parte dos ~5 ms. Os passes de decalque (acima) não valem a pena.
 2. **Medir o clock da GPU** (contadores do `VK_KHR_performance_query` do Turnip), para separar trabalho de
    governador de frequência.
 3. **Geração de quadros (30 → 60)** para GPUs que não chegam a 60: ver `FRAMEGEN-AVALIACAO.md`.
