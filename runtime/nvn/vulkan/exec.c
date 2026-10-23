@@ -1097,6 +1097,25 @@ static bool rt_is_persistent(NvnTexture *t) {
     if (on < 0) on = !getenv("LARECOMP_WAIT_PERSISTENT") || atoi(getenv("LARECOMP_WAIT_PERSISTENT"));
     return on && t && (t->levels > 1 || (t->target != 1 && t->target != 5 && t->target != 7));  // (not 2D / 2D MS / rect)
 }
+// So is a target drawn into now and then - not in the frame before: the pause menu's background, the world captured
+// and blurred once as the menu opens (1280x720 -> 640x360 blur -> colour LUT -> 320x180), its shaders used for the
+// first time in that very frame. Skipped, their draws left it black for as long as the menu stayed open. A target drawn
+// into every frame redoes a skipped draw the next frame and keeps skipping (no hitch while shaders build). Only passes
+// without a depth target wait so (draw_): the 3D scene's (G-buffer, with depth) are new on the world's first frame after
+// a loading screen too, and all of their draws waiting there added ~0.4 s of shaders the first time - the menu's chain,
+// the LUT and post-processing have no depth. LARECOMP_WAIT_ONE_OFF=0: skip there too (as before).
+static bool rt_one_off(NvnTexture *t, uint64_t frame) {
+    static int on = -1;
+    if (on < 0) on = !getenv("LARECOMP_WAIT_ONE_OFF") || atoi(getenv("LARECOMP_WAIT_ONE_OFF"));
+    TexBackend *b = t ? (TexBackend *)t->backend : NULL;
+    if (!on || !t) return false;
+    if (!b) return true;  // (never drawn into yet)
+    if (b->rt_frame != frame + 1) {  // its first draw this frame: was it drawn into the frame before?
+        b->rt_oneoff = b->rt_frame != frame;
+        b->rt_frame = frame + 1;
+    }
+    return b->rt_oneoff;
+}
 
 // ================================================================== state
 typedef struct {
@@ -4648,15 +4667,23 @@ static void draw_(CmdRec *r, bool indexed) {
 #endif
     Prog *pr = get_program(st.program, &vkey, &fkey);
     bool keep = false;  // (a target built once and kept: wait for the shader and pipeline - wait_built)
-    {   // (the same targets as the previous draw: their answer again - reading 6 texture objects a draw showed up)
-        static NvnTexture *kc[8];
+    {   // (the same targets as the previous draw, same frame: their answer again - reading 6 texture objects a draw
+        // showed up)
+        static NvnTexture *kc[8], *kd;
         static int kn = -1;
         static bool kkeep;
-        if (kn != st.rt.ncolor || memcmp(kc, st.rt.color, sizeof kc)) {
+        static uint64_t kframe = ~0ull;
+        uint64_t frame = renderer_present_count();
+        if (kn != st.rt.ncolor || memcmp(kc, st.rt.color, sizeof kc) || kd != st.rt.depth || kframe != frame) {
             kn = st.rt.ncolor;
             memcpy(kc, st.rt.color, sizeof kc);
+            kd = st.rt.depth;
+            kframe = frame;
             kkeep = false;
-            for (int i = 0; i < st.rt.ncolor && !kkeep; i++) kkeep = rt_is_persistent(st.rt.color[i]);
+            for (int i = 0; i < st.rt.ncolor; i++) {  // (every target: rt_one_off records each one's frame)
+                bool once = rt_one_off(st.rt.color[i], frame);
+                kkeep |= rt_is_persistent(st.rt.color[i]) | (once && !st.rt.depth);
+            }
         }
         keep = kkeep;
     }
@@ -4759,6 +4786,40 @@ static void draw_(CmdRec *r, bool indexed) {
         if (st.ubuf[0][5].addr) widescreen_scene_ubo((const float *)(uintptr_t)st.ubuf[0][5].addr, st.ubuf[0][5].size);
     }
     if (g_debug_frame) debug_draw(pr, r, indexed);
+    {   // LARECOMP_LOG_RT=<w>x<h>[:<fmt hex>][+<w>x<h>[:<fmt>]...][,<max>[,<from frame>]]: draws into one color target of
+        // those guest sizes (and formats), described as in a debug frame, with the frame number (the pause menu's
+        // capture of the world and its blur)
+        static int nsz = -1, lw[4], lh[4], lf[4], left;
+        static long from;
+        if (nsz < 0) {
+            nsz = 0;
+            const char *e = getenv("LARECOMP_LOG_RT");
+            while (e && nsz < 4 && sscanf(e, "%dx%d", &lw[nsz], &lh[nsz]) == 2) {
+                const char *colon = strchr(e, ':'), *end = strpbrk(e, "+,");
+                lf[nsz] = colon && (!end || colon < end) ? (int)strtol(colon + 1, NULL, 16) : -1;
+                nsz++;
+                const char *plus = strchr(e, '+'), *comma = strchr(e, ',');
+                if (!plus || (comma && comma < plus)) break;
+                e = plus + 1;
+            }
+            const char *comma = e ? strchr(e, ',') : NULL;
+            if (comma) sscanf(comma + 1, "%d,%ld", &left, &from);
+            if (left <= 0) left = 40;
+        }
+        bool match = false;
+        for (int k = 0; k < nsz && st.rt.ncolor == 1 && st.rt.color[0]; k++)
+            match |= (int)st.rt.color[0]->width == lw[k] && (int)st.rt.color[0]->height == lh[k] &&
+                     (lf[k] < 0 || (int)st.rt.color[0]->format == lf[k]);
+        match &= (long)renderer_present_count() >= from;
+        static int rt3d = -1;  // (LARECOMP_LOG_RT3D=1: draws into 3D targets too - colour LUTs rendered slice by slice)
+        if (rt3d < 0) rt3d = getenv("LARECOMP_LOG_RT3D") != NULL;
+        if (rt3d && st.rt.ncolor >= 1 && st.rt.color[0] && st.rt.color[0]->target == 2) match = true;
+        if (match && left > 0 && !g_debug_frame) {
+            left--;
+            LOG("[logrt] frame %llu fs hash %016llx:\n", (unsigned long long)renderer_present_count(), (unsigned long long)g_cur_fs_hash);
+            debug_draw(pr, r, indexed);
+        }
+    }
     {   // LARECOMP_LOG_UI=<frame>: that frame's 2D-layout draws (nn::ui2d: projection in cb3[0..3], the pane's matrix in
         // cb3[4..6], its quad in cb3[33]) - where each pane is
         static long at = -2;
@@ -6213,9 +6274,14 @@ static void exec_list(uint64_t handle, int depth) {
         case CMD_CLEAR_COLOR: {
             snap_reason = "clear-color"; snapshots_invalidate(NULL);
             int index = (int)r->x[0];
-            if (getenv("LARECOMP_LOG_CLEARS") && index < st.rt.ncolor && st.rt.color[index])
-                LOG("[cclear] frame %llu idx %d %ux%u f%#x mask %#x\n", (unsigned long long)renderer_present_count(), index,
-                    st.rt.color[index]->width, st.rt.color[index]->height, st.rt.color[index]->format, (uint32_t)r->x[2]);
+            static long clears_from = -1;  // (LARECOMP_LOG_CLEARS=<from frame>)
+            if (clears_from < 0) clears_from = getenv("LARECOMP_LOG_CLEARS") ? atol(getenv("LARECOMP_LOG_CLEARS")) : 0x7fffffffL;
+            if ((long)renderer_present_count() >= clears_from && index < st.rt.ncolor && st.rt.color[index]) {
+                const float *c = x;
+                LOG("[cclear] frame %llu idx %d %ux%u f%#x @%llx mask %#x color %.3f %.3f %.3f %.3f\n",
+                    (unsigned long long)renderer_present_count(), index, st.rt.color[index]->width, st.rt.color[index]->height,
+                    st.rt.color[index]->format, (unsigned long long)st.rt.color[index]->addr, (uint32_t)r->x[2], c[0], c[1], c[2], c[3]);
+            }
             if (ct_on() && index < st.rt.ncolor && st.rt.color[index])
                 LOG("[ct] clear-color %p mask %#x sc %d %d %d %d\n", (void *)st.rt.color[index], (uint32_t)r->x[2], st.scissor[0][0], st.scissor[0][1],
                     st.scissor[0][2], st.scissor[0][3]);

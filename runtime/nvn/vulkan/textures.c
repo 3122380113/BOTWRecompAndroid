@@ -434,6 +434,8 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     if (!depthfmt && !(no_mut && (t->flags & 8)))
         flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;  // format views (NVN texture views, raw sRGB views)
     if (type == VK_IMAGE_TYPE_2D && layers >= 6 && tw == th && samples == 1) flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+    if (type == VK_IMAGE_TYPE_3D && (usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT))
+        flags |= VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;  // (its slices rendered to through 2D views: vk_view)
     VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .flags = flags, .imageType = type, .format = vf,
                             .extent = {tw, th, depth}, .mipLevels = levels, .arrayLayers = layers,
                             .samples = (VkSampleCountFlagBits)samples, .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = usage,
@@ -1052,9 +1054,17 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
     if (ly0 >= b->layers) ly0 = b->layers - 1;
     if (ly0 + nly > b->layers) nly = b->layers - ly0;
     if (render) {
-        VkImageViewType type = b->base_type == VK_IMAGE_VIEW_TYPE_3D ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
-        if (b->base_type == VK_IMAGE_VIEW_TYPE_3D) return VK_NULL_HANDLE;  // (3D render targets: not used by the game)
-        return vk_image_view(b, type, fmt, lv0, 1, ly0, 1, IDENTITY, b->aspect);
+        if (b->base_type == VK_IMAGE_VIEW_TYPE_3D) {
+            // A 3D target: one slice (the view's layer is its depth index at that level) as a 2D view - the image is
+            // made 2D_ARRAY_COMPATIBLE. BOTW draws its colour LUT so (8x8x8, the 8 slices as the 8 targets of one draw:
+            // the pause menu's background and its panels go through it - empty, they were black) and the mips of a
+            // 32x32x32 volume, slice by slice.
+            uint32_t d = b->depth >> lv0, z = v && (v->setmask & 2) ? v->min_layer : 0;
+            if (!d) d = 1;
+            if (z >= d) z = d - 1;
+            return vk_image_view(b, VK_IMAGE_VIEW_TYPE_2D, fmt, lv0, 1, z, 1, IDENTITY, b->aspect);
+        }
+        return vk_image_view(b, VK_IMAGE_VIEW_TYPE_2D, fmt, lv0, 1, ly0, 1, IDENTITY, b->aspect);
     }
     VkImageAspectFlags aspect = b->aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : b->aspect;
     {   // sampled formats the GPU can't filter (Maxwell filters them all): a linear sampler on them is undefined in Vulkan
