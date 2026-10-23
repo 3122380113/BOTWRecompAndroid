@@ -11,9 +11,10 @@
 // mAspect. Setting mAspect (and the dirty flags) each frame from the render thread doesn't hold (LARECOMP_CAM_PROJ:
 // the game sets 16:9 again before it builds the matrix), and a write watch on it caught nothing (as before: the placed
 // heap). rt_persp_update below, called where sead::PerspectiveProjection::doUpdateMatrix starts (tools/patches.py),
-// widens it: with LARECOMP_WIDESCREEN=1 the 3D scene fills a 20:9 screen unstretched (2026-10-23, Great Plateau). Still
-// wrong there: trees and grass dark, black specks in the air (likely the reduced screen buffers - 800x450, 400x225 -
-// left 16:9 while the scene widens), and the HUD laid out for 16:9 (the minimap cut at its right edge).
+// widens it, and getAspect (rt_persp_aspect) answers the wide aspect too - with the matrix alone, trees and grass came
+// out dark with black specks (the lighting asks for the aspect between the game's 16:9 and the rebuild). With
+// LARECOMP_WIDESCREEN=1 the 3D scene fills a 20:9 screen unstretched and lit right (2026-10-23, Great Plateau). The
+// HUD stays in the centred 16:9 part; still wrong there: the minimap's left half (and the gauges beside it) cut off.
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -55,6 +56,17 @@ void rt_persp_update(uint64_t proj) {
         static int n;
         if (ENV("LARECOMP_LOG_ASPECT") && n++ < 20) LOG("[widescreen] projection %llx: aspect %.4f\n", (unsigned long long)proj, *aspect);
     }
+}
+
+// sead::PerspectiveProjection::getAspect (1.8.2: 0x7000da13d8, tools/patches.py): the widened aspect for a 16:9 one,
+// also between the game setting 16:9 again and the next rebuild (rt_persp_update), so what asks the projection for its
+// aspect agrees with its matrix. The float's bits.
+uint32_t rt_persp_aspect(uint64_t proj) {
+    float a = *(const float *)(uintptr_t)(proj + 0xB0);
+    if (widescreen_allowed() && g_wide != 1.0f && a > 1.7767f && a < 1.7789f) a = 16.0f / 9.0f * g_wide;
+    uint32_t u;
+    memcpy(&u, &a, 4);
+    return u;
 }
 
 void widescreen_frame_end(uint64_t frame) { (void)frame; }

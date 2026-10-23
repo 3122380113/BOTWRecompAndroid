@@ -111,9 +111,19 @@ def _persp_matrix_182(gen, a):
             f'  /* {a:#x}: ldr s0, [x0, #0x98] (projection matrix: widescreen; tools/patches.py) */')
 
 
+# sead::PerspectiveProjection::getAspect (vtable entry 7): the widened aspect too (runtime/hle/widescreen.c
+# rt_persp_aspect), so the code asking for it agrees with the matrix.
+def _persp_get_aspect_182(gen, a):
+    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    assert w == 0xbd40b000, hex(w)  # ldr s0, [x0, #0xb0]
+    return ('{ extern uint32_t rt_persp_aspect(uint64_t); c->v[0] = rt_persp_aspect(c->x[0]); }'
+            f'  /* {a:#x}: ldr s0, [x0, #0xb0] (projection aspect: widescreen; tools/patches.py) */')
+
+
 PATCHES_182[0x7000d811fc] = _frame_wait_182
 PATCHES_182[0x70014092f4] = _vfr_ratio_182
 PATCHES_182[0x7000da13f4] = _persp_matrix_182
+PATCHES_182[0x7000da13d8] = _persp_get_aspect_182
 
 
 def patches_for(build_id):
