@@ -3082,10 +3082,10 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
     // snapshot: later CPU writes must not leak in. Shared by the draws of one submission binding the same range:
     // within a command list nothing writes guest memory (no inline UpdateUniformBuffer: that writes through below
     // and drops the shared copies).
-    {
-        int dk = (si->cbuf_dynamic >> k) & 1;
-        stat_cb_n[dk]++, stat_cb_bytes[dk] += size;
-    }
+    int dk = (si->cbuf_dynamic >> k) & 1;
+    stat_cb_n[dk]++, stat_cb_bytes[dk] += size;
+    if (dk && ct_on()) LOG("[ct] dyncbuf stage %d k %d addr %llx size %llx (bound %llx) fs %016llx\n", stage, k, (unsigned long long)r.addr,
+                           (unsigned long long)size, (unsigned long long)r.size, (unsigned long long)g_cur_fs_hash);
     return ubo_span(guest_copy(r.addr, size), size);
 }
 
@@ -6154,6 +6154,8 @@ static void exec_list(uint64_t handle, int depth) {
         case CMD_DRAW_ELEMENTS: draw(r, true); split_long_pass(); break;
         case CMD_UPDATE_UNIFORM_BUFFER: {
             uint64_t dst = r->x[0] + r->x[2], sz = r->x[3];
+            if (ct_on()) LOG("[ct] ubo-update %llx + %llx size %llx%s\n", (unsigned long long)r->x[0], (unsigned long long)r->x[2],
+                             (unsigned long long)sz, sz && memcmp((const void *)(uintptr_t)dst, x, sz) ? "" : " (same)");
             if (sz && memcmp((const void *)(uintptr_t)dst, x, sz)) {
                 memcpy((void *)(uintptr_t)dst, x, sz);
                 guest_copy_invalidate(dst, dst + sz);
