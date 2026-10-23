@@ -314,7 +314,7 @@ static int g_focus_frames;
 // The start screen's Settings opening: the controller's cursor starts on the first tab the first time in a session,
 // later on the tab that's selected
 void menu_tabs_focus(bool first_tab) { g_focus_tab = first_tab ? -1 : -100, g_focus_frames = 0; }
-int g_tab_request_ext = -1;
+int g_tab_request_ext = -2;  // (a test's tab: -1 Files / Prelaunch; -2 none)
 
 static void style_init(void) {
     ImGuiStyle &s = ImGui::GetStyle();
@@ -942,7 +942,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     // the pages as tabs along the top (an icon and the name, the open one underlined in cyan), the page (option rows
     // with their description on the right: option_rows.mm), and BACK / RESTORE DEFAULTS under it. The page ids stay
     // (LARECOMP_MENU_TAB, the controller's L / R).
-    if (g_tab_request_ext >= 0) { g_tab_request = g_tab_request_ext; g_tab_request_ext = -1; }
+    if (g_tab_request_ext != -2) { g_tab_request = g_tab_request_ext; g_tab_request_ext = -2; }
     for (int i = 0; i < ntabs; i++) if (tabs[i].id == g_tab_request && tabs[i].on) g_tab = tabs[i].id;
     bool available = false;
     for (int i = 0; i < ntabs; i++) available |= tabs[i].id == g_tab && tabs[i].on;
@@ -1056,6 +1056,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     ImGui::PushID(g_tab);
     settings_page(g_tab, scale, in_game, prelaunch);
     ImGui::PopID();
+    if (const char *t = getenv("LARECOMP_PAGE_SCROLL")) ImGui::SetScrollY(ImGui::GetScrollMaxY() * (float)atof(t));  // (test)
     ImGui::EndChild();
     {   // BACK on the left; RESTORE DEFAULTS on the right on Video and Audio (asks first)
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8 * scale);
@@ -1102,7 +1103,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     if (!tabs[cur].on) cur = 0;
     // L/R (or Q/E) switch tabs, skipping greyed-out ones (not while typing: Q / E are letters then, and the on-screen
     // keyboard has the controller)
-    if (g_tab_request_ext >= 0) { g_tab_request = g_tab_request_ext; g_tab_request_ext = -1; }
+    if (g_tab_request_ext != -2) { g_tab_request = g_tab_request_ext; g_tab_request_ext = -2; }
     bool any_popup = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId), typing = ui_text_busy();
     static int focused_tab = -99;  // the tab the controller's cursor is on (from the frame before; -99: none)
     if (!any_popup && !typing) {
