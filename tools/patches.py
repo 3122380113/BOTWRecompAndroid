@@ -101,8 +101,19 @@ def _vfr_ratio_182(gen, a):
             f'  /* {a:#x}: ldr w8, [x19, #0x78] (VFR: interval ratio; tools/patches.py) */')
 
 
+# sead::PerspectiveProjection::doUpdateMatrix (x0 = the projection; the vtable at 0x7001ba4438, entry 11): before it
+# reads near, far, tan and aspect, the runtime widens a 16:9 aspect to the output's shape (runtime/hle/widescreen.c
+# rt_persp_update: the main camera, whose aspect the game sets back to 16:9 before each rebuild).
+def _persp_matrix_182(gen, a):
+    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    assert w == 0xbd409800, hex(w)  # ldr s0, [x0, #0x98]
+    return ('{ extern void rt_persp_update(uint64_t); rt_persp_update(c->x[0]); c->v[0] = LD32(c->x[0] + 0x98); }'
+            f'  /* {a:#x}: ldr s0, [x0, #0x98] (projection matrix: widescreen; tools/patches.py) */')
+
+
 PATCHES_182[0x7000d811fc] = _frame_wait_182
 PATCHES_182[0x70014092f4] = _vfr_ratio_182
+PATCHES_182[0x7000da13f4] = _persp_matrix_182
 
 
 def patches_for(build_id):

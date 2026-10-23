@@ -10,8 +10,10 @@
 // save): +8 mDirty, +9 mDeviceDirty, +0xC mMatrix, +0x4C mDeviceMatrix, +0x98 near, far, fovy, sin, cos, tan, +0xB0
 // mAspect. Setting mAspect (and the dirty flags) each frame from the render thread doesn't hold (LARECOMP_CAM_PROJ:
 // the game sets 16:9 again before it builds the matrix), and a write watch on it caught nothing (as before: the placed
-// heap). Next: hook where sead stores the aspect or rebuilds the matrix (the vtable's updateMatrixImpl_), so culling
-// widens with it; then the HUD's orthographic projection, centred.
+// heap). rt_persp_update below, called where sead::PerspectiveProjection::doUpdateMatrix starts (tools/patches.py),
+// widens it: with LARECOMP_WIDESCREEN=1 the 3D scene fills a 20:9 screen unstretched (2026-10-23, Great Plateau). Still
+// wrong there: trees and grass dark, black specks in the air (likely the reduced screen buffers - 800x450, 400x225 -
+// left 16:9 while the scene widens), and the HUD laid out for 16:9 (the minimap cut at its right edge).
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -39,6 +41,20 @@ uint32_t rt_aspect_bits(int site) {
     uint32_t u;
     memcpy(&u, &a, 4);
     return u;
+}
+
+// sead::PerspectiveProjection::doUpdateMatrix (1.8.2: 0x7000da13f4, tools/patches.py), as it starts building a
+// projection's matrix: a 16:9 one takes the output's shape (mAspect at +0xB0) - the game sets 16:9 again before each
+// rebuild, so this is where the main camera (and its frustum's culling, from that matrix) widens.
+void rt_persp_update(uint64_t proj) {
+    if (!widescreen_allowed() || g_wide == 1.0f || !proj) return;
+    float *aspect = (float *)(uintptr_t)(proj + 0xB0);
+    float a = *aspect;
+    if (a > 1.7767f && a < 1.7789f) {
+        *aspect = 16.0f / 9.0f * g_wide;
+        static int n;
+        if (ENV("LARECOMP_LOG_ASPECT") && n++ < 20) LOG("[widescreen] projection %llx: aspect %.4f\n", (unsigned long long)proj, *aspect);
+    }
 }
 
 void widescreen_frame_end(uint64_t frame) { (void)frame; }
