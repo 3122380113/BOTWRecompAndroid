@@ -43,3 +43,14 @@ void opt_focus_first(bool on);
 
 // Android: call inside each scrollable child before drawing its controls.
 void ui_touch_scroll();
+
+// The Sheikah look's pieces (design/sheikah-settings-v1), for the menu's frame (menu.mm): a frame with cut corners
+// (outline / filled), a diamond, the Sheikah eye
+struct ImDrawList;
+struct ImVec2;
+void ui_sheikah_frame(ImDrawList *dl, ImVec2 a, ImVec2 b, unsigned int col, float cut, float thickness);
+void ui_sheikah_frame_filled(ImDrawList *dl, ImVec2 a, ImVec2 b, unsigned int col, float cut);
+void ui_sheikah_diamond(ImDrawList *dl, ImVec2 c, float r, unsigned int col, bool filled);
+void ui_sheikah_eye(ImDrawList *dl, ImVec2 p, float size, unsigned int col, float thickness);
+// a section's title in the Sheikah look: small capitals in gold, a line after it (opt_section; other pages' headings)
+void ui_sheikah_heading(const char *title, float scale);

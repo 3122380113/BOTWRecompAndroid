@@ -48,6 +48,9 @@ extern Settings g_settings;
 
 void settings_load(void);
 void settings_save(void);
+// The menu's RESTORE DEFAULTS: the Video and Audio options back to the defaults (the language, the controls, the touch
+// layout, mods and the one-time questions stay)
+void settings_reset_defaults(void);
 // The language code to serve the game ("es", "en-US", ...): the setting, or the host locale for LANG_AUTO
 const char *settings_language(void);
 // That code's name for the menu ("Spanish")

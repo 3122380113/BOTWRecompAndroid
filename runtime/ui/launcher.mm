@@ -960,6 +960,10 @@ static bool g_files_deleted;  // set here: the start screen goes back to setting
 static void prelaunch_tab(float sc) {
     const ImVec4 gold(0.93f, 0.76f, 0.33f, 1);
     auto heading = [&](const char *t) {
+#ifdef __ANDROID__  // (the Sheikah look of the menu's pages)
+        ui_sheikah_heading(t, sc);
+        return;
+#endif
         ImGui::PushFont(g_font_menu);
         ImGui::TextColored(gold, "%s", t);
         ImGui::PopFont();
@@ -1378,17 +1382,23 @@ extern "C" void launcher_run(const char *root) {
                                                           ImGui::GetWindowPos().y + ds.y), IM_COL32(0, 0, 0, 110));
                 ImVec2 wp = ImGui::GetWindowPos();
                 ImGui::SetCursorScreenPos(ImVec2(wp.x + (ds.x - w) * 0.5f, wp.y + (ds.y - h) * 0.5f));
+#ifdef __ANDROID__  // (the Sheikah look, menu.mm tabs_body: its own frame, title and BACK)
+                ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.035f, 0.065f, 0.075f, 0.94f));
+                ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 6 * sc);
+#else
                 ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.06f, 0.09f, 0.08f, 0.96f));
                 ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 14 * sc);
+#endif
                 ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(28 * sc, 24 * sc));
                 ImGui::BeginChild("##settings", ImVec2(w, h), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NavFlattened);
                 ImGui::PopStyleVar(2);
                 ImGui::PopStyleColor();
                 ImGui::PushFont(g_font_small);
+                bool back = false;
+#ifndef __ANDROID__
                 ImGui::PushFont(g_font_menu);
                 ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "Settings");
                 ImGui::PopFont();
-                bool back;
                 {  // close: a drawn X in the corner (B / Esc too)
                     float bx = 44 * sc;
                     ImGui::SameLine(ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x - bx);
@@ -1404,6 +1414,7 @@ extern "C" void launcher_run(const char *root) {
                     dl->AddLine(ImVec2(p.x + m, p.y + m), ImVec2(p.x + bx - m, p.y + bx - m), col, t);
                     dl->AddLine(ImVec2(p.x + bx - m, p.y + m), ImVec2(p.x + m, p.y + bx - m), col, t);
                 }
+#endif
                 bool popup = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);  // (before the pages run, like the menu)
                 menu_tabs_draw(sc, g_font_small, g_font_menu, false, prelaunch_tab);
 #ifdef __ANDROID__

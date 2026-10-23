@@ -110,8 +110,31 @@ const char *settings_language_name(void) {
     return "English";
 }
 
+static Settings g_defaults;  // (the defaults above, kept before the file overrides them: settings_reset_defaults)
+static bool g_have_defaults;
+
+void settings_reset_defaults(void) {
+    if (!g_have_defaults) return;
+    const Settings *d = &g_defaults;
+    g_settings.aspect = d->aspect;
+    g_settings.fullscreen = d->fullscreen;
+    g_settings.res_mode = d->res_mode;
+    g_settings.upscaler = d->upscaler;
+    g_settings.antialias = d->antialias;
+    g_settings.volume = d->volume;
+    g_settings.reverb = d->reverb;
+    g_settings.movie_audio = d->movie_audio;
+    g_settings.show_fps = d->show_fps;
+#ifdef __ANDROID__
+    g_settings.touch_controls = d->touch_controls;
+    g_settings.fps_mode = d->fps_mode;
+    g_settings.shader_int32 = d->shader_int32;
+#endif
+}
+
 void settings_load(void) {
     static bool loaded;
+    if (!g_have_defaults) g_defaults = g_settings, g_have_defaults = true;
     if (loaded) return;
     loaded = true;
     FILE *f = fopen(SETTINGS_FILE, "r");
