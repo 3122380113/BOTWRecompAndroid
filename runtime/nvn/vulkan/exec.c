@@ -2532,6 +2532,8 @@ static NvnTexture *feedback_tex[4];
 static VkImageView feedback_view[4];
 static TexBackend *feedback_snap[4];  // (the snapshot copy itself: array views of it are made at binding)
 static int nfeedback;
+static NvnTexture *inplace_tex[4];  // (targets this draw samples in place while writing them: resolve_feedback)
+static int ninplace;
 static uint64_t g_cur_fs_hash;
 static NvnTexture *snap_tex[8];
 static bool snap_ok[8];
@@ -2861,6 +2863,7 @@ static uint32_t draw_writes(const Prog *pr) {
 
 static void resolve_feedback(Prog *pr) {
     nfeedback = 0;
+    ninplace = 0;
     static int off = -1;
     if (off < 0) off = getenv("LARECOMP_NO_FEEDBACK") != NULL;
     if (off) return;
@@ -2895,14 +2898,24 @@ static void resolve_feedback(Prog *pr) {
                 // A color target the draw writes, sampled in place too (LARECOMP_FEEDBACK_COPY=1: copied, as before).
                 // BOTW's terrain decals (fs f984e489, in the G-buffer pass) read and write two of its targets, a
                 // barrier every one or two: 32 pairs of 1280x720 copies a frame on the Great Plateau, 11 of its 40 ms
-                // of GPU. In place, a pass that wrote the target already ends first - begin_pass's barrier makes those
-                // writes visible, as a copy had them - and those passes of one or two draws run in system memory on
-                // Turnip (~0.04 ms each). Only the writes before the game's last barrier (NVN's rule) left the ground
-                // dark: its draws don't fence every write they then read.
+                // of GPU. In place, where a copy was made the pass ends instead, if it wrote the target - begin_pass's
+                // barrier makes those writes visible, as the copy had them - and the draws that would have shared the
+                // copy (until a barrier, a change of targets or a write by a draw not reading it: the snapshot
+                // bookkeeping) share that pass. Those passes of a few draws run in system memory on Turnip (~0.02 ms).
+                // Only the writes before the game's last barrier (NVN's rule) left the ground dark: its draws don't
+                // fence every write they then read.
                 static int copy = -1;
                 if (copy < 0) copy = getenv("LARECOMP_FEEDBACK_COPY") != NULL;
                 if (!copy && bit && bit < 1u << 8) {
-                    if (in_pass && !st.rt_dirty && (pass_written & bit)) st.rt_dirty = true;
+                    int si = -1;
+                    for (int k = 0; k < 8; k++) if (snap_tex[k] == t) si = k;
+                    if (si < 0 || !snap_ok[si]) {
+                        if (in_pass && !st.rt_dirty && (pass_written & bit)) st.rt_dirty = true;
+                        if (si < 0) { static int rr; si = rr++ & 7; snap_tex[si] = t; }
+                        snap_ok[si] = true;
+                        snap_fb_dirty[si] = false;
+                    }
+                    if (ninplace < 4) inplace_tex[ninplace++] = t;
                     stat_feedback_reads++;
                     continue;
                 }
@@ -4660,6 +4673,7 @@ static void draw_(CmdRec *r, bool indexed) {
     if (st.rt.depth && st.ds[0] && st.ds[1]) {
         bool fb = false;
         for (int k = 0; k < nfeedback; k++) fb |= feedback_tex[k] == st.rt.depth;
+        for (int k = 0; k < ninplace; k++) fb |= inplace_tex[k] == st.rt.depth;
         if (fb) snapshots_mark_fb_dirty(st.rt.depth);
         else snapshots_invalidate(st.rt.depth);
     }
@@ -4669,6 +4683,7 @@ static void draw_(CmdRec *r, bool indexed) {
         if (st.rt.color[i] && ((pr->fi->out_mask >> (i * 4)) & 0xF) && ((st.channel_mask >> (i * 4)) & 0xF)) {
             bool fb = false;
             for (int k = 0; k < nfeedback; k++) fb |= feedback_tex[k] == st.rt.color[i];
+            for (int k = 0; k < ninplace; k++) fb |= inplace_tex[k] == st.rt.color[i];
             if (fb) snapshots_mark_fb_dirty(st.rt.color[i]);
             else snapshots_invalidate(st.rt.color[i]);
         }
