@@ -1740,9 +1740,22 @@ static VkRect2D scissor_rect(void) {
     pass_size(&w, &h);
     if (!w) return (VkRect2D){{0, 0}, {pass_w, pass_h}};
     int x = st.scissor[0][0], y = st.scissor[0][1], sw = st.scissor[0][2], sh = st.scissor[0][3];
-    if (vp_sx != 1 || vp_sy != 1 || vp_ox != 0 || vp_oy != 0) {
-        double x0 = floor(x * (double)vp_sx + vp_ox), y0 = floor(y * (double)vp_sy + vp_oy);
-        double x1 = ceil(((double)x + sw) * vp_sx + vp_ox), y1 = ceil(((double)y + sh) * vp_sy + vp_oy);
+    float sx = vp_sx, sy = vp_sy, ox = vp_ox, oy = vp_oy;
+    {   // Widescreen (1.8.2): the HUD's camera widens with the scene's (widescreen.c rt_persp_update), which puts the 16:9
+        // layout in the centred 16:9 part of the wide final image - a scissor of part of that image (the minimap's) goes
+        // there too: scaled straight across, it cut the minimap's left half off
+        extern bool widescreen_ui_centred(void);
+        NvnTexture *t0 = st.rt.ncolor ? st.rt.color[0] : NULL;
+        if (t0 && !ox && !oy && fabsf(sx - sy) > 0.01f * sy && !(x <= 0 && y <= 0 && x + sw >= (int)t0->width && y + sh >= (int)t0->height) &&
+            widescreen_ui_centred() && vk_texture_scale_group(t0) == RS_OUT) {
+            float u = fminf(sx, sy);
+            ox = ((float)w - t0->width * u) * 0.5f, oy = ((float)h - t0->height * u) * 0.5f;
+            sx = sy = u;
+        }
+    }
+    if (sx != 1 || sy != 1 || ox != 0 || oy != 0) {
+        double x0 = floor(x * (double)sx + ox), y0 = floor(y * (double)sy + oy);
+        double x1 = ceil(((double)x + sw) * sx + ox), y1 = ceil(((double)y + sh) * sy + oy);
         if (sw >= 16384) x1 = 1e9;
         if (sh >= 16384) y1 = 1e9;
         if (x1 > 1e9) x1 = 1e9;

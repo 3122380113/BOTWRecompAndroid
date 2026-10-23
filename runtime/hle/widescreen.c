@@ -1,20 +1,18 @@
-// Widescreen: what the renderers ask about the output's shape. BOTW draws a 16:9 view and nothing widens its main
-// camera yet, so a window of another shape gets the 16:9 image with bars (widescreen_allowed false; LARECOMP_WIDESCREEN=1
-// turns the wide render targets on for tests: the image then stretches). The renderers already set the wide factor
-// (output aspect / 16:9) each frame. Work in progress: 1.8.2's one 16:9 constant (main 0x158afc8, loaded at
-// 0x7001381c34) builds some cameras' projections, but not the main camera's (patched to rt_aspect_bits by hand in the
-// generated code for tests: the image still stretched); the main camera's aspect comes from elsewhere.
-// Found 2026-10-23 (LARECOMP_FIND_PROJ, vulkan/exec.c): the G-buffer's vertex shaders read the main camera's projection
-// from their first constant buffer (0x920 bytes, P at +0x70: 1.2063 2.1445 -1.0001 -2.0001 - fovy 50 degrees, 16:9,
-// near 1, far 25000). Its source is a sead::PerspectiveProjection (vtable 0x101ba4438; at 3df0c4598 on the Great Plateau
-// save): +8 mDirty, +9 mDeviceDirty, +0xC mMatrix, +0x4C mDeviceMatrix, +0x98 near, far, fovy, sin, cos, tan, +0xB0
-// mAspect. Setting mAspect (and the dirty flags) each frame from the render thread doesn't hold (LARECOMP_CAM_PROJ:
-// the game sets 16:9 again before it builds the matrix), and a write watch on it caught nothing (as before: the placed
-// heap). rt_persp_update below, called where sead::PerspectiveProjection::doUpdateMatrix starts (tools/patches.py),
-// widens it, and getAspect (rt_persp_aspect) answers the wide aspect too - with the matrix alone, trees and grass came
-// out dark with black specks (the lighting asks for the aspect between the game's 16:9 and the rebuild). With
-// LARECOMP_WIDESCREEN=1 the 3D scene fills a 20:9 screen unstretched and lit right (2026-10-23, Great Plateau). The
-// HUD stays in the centred 16:9 part; still wrong there: the minimap's left half (and the gauges beside it) cut off.
+// Widescreen: what the renderers ask about the output's shape. With Video > Aspect ratio "Unlocked", 1.8.2 fills a
+// window of another shape: its cameras' sead::PerspectiveProjection objects take the output's aspect where the game
+// rebuilds their matrix and where it asks for their aspect (rt_persp_update / rt_persp_aspect below, hooked into its
+// game code by tools/patches.py), so the view widens - and its culling with it. The HUD, drawn through such a camera
+// too, stays in the centred 16:9 part (vulkan/exec.c scissor_rect puts its scissors there). The renderers set the wide
+// factor (output aspect / 16:9) each frame. 1.0.0 and 1.6.0 have no hooks: 16:9 with bars (LARECOMP_WIDESCREEN=1
+// forces the wide targets there for tests: the image stretches); LARECOMP_NO_WIDESCREEN=1: never.
+// How the main camera was found (2026-10-23): LARECOMP_FIND_PROJ (vulkan/exec.c) found its projection in the G-buffer
+// vertex shaders' first constant buffer (0x920 bytes, P at +0x70: fovy 50 degrees, 16:9, near 1, far 25000), from a
+// sead::PerspectiveProjection (vtable 0x101ba4438): +8 mDirty, +9 mDeviceDirty, +0xC mMatrix, +0x4C mDeviceMatrix,
+// +0x98 near, far, fovy, sin, cos, tan, +0xB0 mAspect. The game sets 16:9 again before every rebuild (writing the field
+// from the render thread, LARECOMP_CAM_PROJ, didn't hold), and the lighting asks for the aspect in between (with the
+// matrix alone, trees came out dark with black specks). 1.8.2's one 16:9 constant (main 0x158afc8, read at
+// 0x7001381c34: rt_aspect_bits) is some other cameras', not the main one's.
+// Known: on the title screen the artwork reaches past the 16:9 part while its darker layer doesn't (a visible edge).
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -30,8 +28,11 @@ void widescreen_set_factor(float f) { g_wide = f; }
 float widescreen_factor(void) { return g_wide; }
 
 static bool g_allowed;  // (widescreen_set_allowed: tests)
+static volatile bool g_hooked;  // (the game code calls rt_persp_update: built with the hooks)
 bool widescreen_allowed(void) {
-    return (g_allowed || ENV("LARECOMP_WIDESCREEN")) && g_settings.aspect == ASPECT_UNLOCKED && !ENV("LARECOMP_NO_WIDESCREEN");
+    // (1.8.2 once its game code shows the hooks: one built before them would stretch the image - it stays 16:9)
+    bool game = g_game_version == 182 && g_hooked;
+    return (game || g_allowed || ENV("LARECOMP_WIDESCREEN")) && g_settings.aspect == ASPECT_UNLOCKED && !ENV("LARECOMP_NO_WIDESCREEN");
 }
 void widescreen_set_allowed(bool on) { g_allowed = on; }
 
@@ -47,14 +48,24 @@ uint32_t rt_aspect_bits(int site) {
 // sead::PerspectiveProjection::doUpdateMatrix (1.8.2: 0x7000da13f4, tools/patches.py), as it starts building a
 // projection's matrix: a 16:9 one takes the output's shape (mAspect at +0xB0) - the game sets 16:9 again before each
 // rebuild, so this is where the main camera (and its frustum's culling, from that matrix) widens.
+static volatile bool g_widened;  // (rt_persp_update has widened a camera)
+static volatile float g_applied;  // (the aspect it gave them: one left on a camera goes back to 16:9 once off again)
+static bool is_16_9(float a) { return a > 1.7767f && a < 1.7789f; }
 void rt_persp_update(uint64_t proj) {
-    if (!widescreen_allowed() || g_wide == 1.0f || !proj) return;
+    g_hooked = true;
+    if (!proj) return;
     float *aspect = (float *)(uintptr_t)(proj + 0xB0);
-    float a = *aspect;
-    if (a > 1.7767f && a < 1.7789f) {
-        *aspect = 16.0f / 9.0f * g_wide;
+    float a = *aspect, applied = g_applied;
+    if (applied != 0 && a == applied) a = 16.0f / 9.0f;  // (widened here before)
+    if (!is_16_9(a)) return;
+    bool on = widescreen_allowed() && g_wide != 1.0f;
+    float want = on ? 16.0f / 9.0f * g_wide : a;
+    if (*aspect != want) *aspect = want;
+    if (on) {
+        g_applied = want;
+        g_widened = true;
         static int n;
-        if (ENV("LARECOMP_LOG_ASPECT") && n++ < 20) LOG("[widescreen] projection %llx: aspect %.4f\n", (unsigned long long)proj, *aspect);
+        if (ENV("LARECOMP_LOG_ASPECT") && n++ < 20) LOG("[widescreen] projection %llx: aspect %.4f\n", (unsigned long long)proj, want);
     }
 }
 
@@ -62,12 +73,17 @@ void rt_persp_update(uint64_t proj) {
 // also between the game setting 16:9 again and the next rebuild (rt_persp_update), so what asks the projection for its
 // aspect agrees with its matrix. The float's bits.
 uint32_t rt_persp_aspect(uint64_t proj) {
-    float a = *(const float *)(uintptr_t)(proj + 0xB0);
-    if (widescreen_allowed() && g_wide != 1.0f && a > 1.7767f && a < 1.7789f) a = 16.0f / 9.0f * g_wide;
+    float a = *(const float *)(uintptr_t)(proj + 0xB0), applied = g_applied;
+    if (applied != 0 && a == applied) a = 16.0f / 9.0f;
+    if (widescreen_allowed() && g_wide != 1.0f && is_16_9(a)) a = 16.0f / 9.0f * g_wide;
     uint32_t u;
     memcpy(&u, &a, 4);
     return u;
 }
+
+// The game's cameras are widened (the 1.8.2 hooks above): its HUD, drawn through one, lands in the centred 16:9 part
+// of a wide final image (exec.c scissor_rect maps the HUD's scissors there).
+bool widescreen_ui_centred(void) { return widescreen_allowed() && g_wide != 1.0f && g_widened; }
 
 void widescreen_frame_end(uint64_t frame) { (void)frame; }
 
