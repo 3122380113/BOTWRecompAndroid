@@ -73,6 +73,11 @@ void output_scale(double dw, double dh, bool reshape_allowed, double now, double
     // the final image: the window's resolution, in units of the Switch's 1080 lines
     double h = fmax(reshape ? dh / 1080.0 : fit, 0.1);
     double sx = h * shape, sy = h;
+    {   // LARECOMP_OUT_LINES=<n> (a test): the final image at most n lines (1080: the Switch's), scaled to the window
+        static double out_lines = -1;
+        if (out_lines < 0) out_lines = getenv("LARECOMP_OUT_LINES") ? atof(getenv("LARECOMP_OUT_LINES")) : 0;
+        if (out_lines > 0 && sy * 1080.0 > out_lines) { double k = out_lines / (sy * 1080.0); sx *= k; sy *= k; }
+    }
     double cap = fmin(MAX_TEX / (1920.0 * sx), MAX_TEX / (1080.0 * sy));
     if (cap < 1.0) { sx *= cap; sy *= cap; }
     o->sx = sx; o->sy = sy; o->shape = shape;

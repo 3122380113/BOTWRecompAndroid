@@ -22,6 +22,8 @@
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
 static uint64_t stat_feedback_reads;  // (attachments sampled as they are: only read, resolve_feedback)
 static uint64_t stat_upload_bytes;
+static uint64_t stat_cb_bytes[2], stat_cb_n[2], stat_cb_copied;  // (LARECOMP_LOG_CBUF_BYTES: game constant buffers bound,
+                                                                 // fixed [0] / dynamically indexed [1], and bytes copied)
 static uint64_t stat_pipe_binds, stat_set_binds;  // (graphics draws: pipelines / descriptor sets bound)
 // LARECOMP_VK_PROF=1: render-thread time per category in the fps log (exec = whole command lists, draw = draw(),
 // sets = descriptor sets incl. cbuf copies, vtx = index scan + vertex copies, submit = vkQueueSubmit2)
@@ -293,9 +295,10 @@ void vk_pace_frame(void) {
         static uint64_t le, lu;
 #ifdef __ANDROID__
         extern int g_present_interval;
-        LOG("[pace] period %.2f blocked %.2f busy %.2f ms exec %.2f tex %.2f interval %d slow %d game %.2f render %.2f gpu %.2f\n",
+        extern int vk_ab(const char *what);
+        LOG("[pace] period %.2f blocked %.2f busy %.2f ms exec %.2f tex %.2f interval %d slow %d game %.2f render %.2f gpu %.2f ab %d\n",
             p / 1e6, wt / 1e6, busy, (cum_exec - le) / 1e6, (prof_up_cum - lu) / 1e6, g_present_interval, pace_slow,
-            game_busy, render_busy, g_pace_gpu_ms);
+            game_busy, render_busy, g_pace_gpu_ms, vk_ab(NULL));
 #else
         LOG("[pace] period %.2f blocked %.2f busy %.2f ms exec %.2f tex %.2f\n", p / 1e6, wt / 1e6, busy,
             (cum_exec - le) / 1e6, (prof_up_cum - lu) / 1e6);
@@ -982,6 +985,7 @@ static VkSpan guest_copy(uint64_t addr, uint64_t size) {
     if (gcopy[slot].seq == seq && gcopy[slot].addr == addr && gcopy[slot].size == size) return gcopy[slot].span;
     if (gcopy[slot].seq != seq && gcopy_nactive < GCOPY_TAB) gcopy_active[gcopy_nactive++] = (uint16_t)slot;
     VkSpan s = vk_transient_copy((const void *)(uintptr_t)addr, size, 256);
+    stat_cb_copied += size;
     gcopy[slot].addr = addr; gcopy[slot].size = size; gcopy[slot].seq = seq; gcopy[slot].span = s;
     return s;
 }
@@ -1166,6 +1170,12 @@ const char *renderer_stats(void) {
              atomic_exchange(&stat_compiles, 0), (double)stat_build_wait_ns / 1e6, (unsigned long long)stat_feedback_copies, (unsigned long long)stat_feedback_reads, (double)stat_upload_bytes / 1048576.0,
              (unsigned long long)stat_pipe_binds, (unsigned long long)stat_set_binds);
     stat_feedback_copies = stat_feedback_reads = stat_upload_bytes = stat_build_wait_ns = stat_pipe_binds = stat_set_binds = 0;
+    if (getenv("LARECOMP_LOG_CBUF_BYTES")) {
+        LOG("[cbuf] fixed %llu x %.1f KB, dynamic %llu x %.1f KB; copied %.1f MB\n", (unsigned long long)stat_cb_n[0],
+            stat_cb_n[0] ? stat_cb_bytes[0] / 1024.0 / stat_cb_n[0] : 0, (unsigned long long)stat_cb_n[1],
+            stat_cb_n[1] ? stat_cb_bytes[1] / 1024.0 / stat_cb_n[1] : 0, stat_cb_copied / 1048576.0);
+        stat_cb_bytes[0] = stat_cb_bytes[1] = stat_cb_n[0] = stat_cb_n[1] = stat_cb_copied = 0;
+    }
     {   // (GPU memory in use, every heap, and the game's textures with an image)
         VmaBudget bud[VK_MAX_MEMORY_HEAPS];
         vmaGetHeapBudgets(g_vk.vma, bud);
@@ -1587,7 +1597,8 @@ static void begin_pass(void) {
     VkCommandBuffer cb = vk_cmd();
     static int no_barrier = -1;  // (LARECOMP_VK_NO_PASS_BARRIER=1: none - unsafe, a measurement of what it costs)
     if (no_barrier < 0) no_barrier = getenv("LARECOMP_VK_NO_PASS_BARRIER") != NULL;
-    if (!no_barrier) vk_full_barrier(cb);  // passes, copies and dispatches see each other's results
+    extern int vk_ab(const char *what);
+    if (!no_barrier && vk_ab("nobarrier") != 1) vk_full_barrier(cb);  // passes, copies and dispatches see each other's results
     {
         NvnTexture *t0n = st.rt.ncolor ? st.rt.color[0] : NULL;
         dl_note("pass %d color %ux%u fmt %#x depth %p", st.rt.ncolor, t0n ? t0n->width : 0, t0n ? t0n->height : 0, t0n ? t0n->format : 0,
@@ -2911,7 +2922,8 @@ static void resolve_feedback(Prog *pr) {
                     extern bool vk_driver_is_turnip(void);
                     copy = getenv("LARECOMP_FEEDBACK_COPY") != NULL || (!vk_driver_is_turnip() && !getenv("LARECOMP_FEEDBACK_INPLACE"));
                 }
-                if (!copy && bit && bit < 1u << 8) {
+                extern int vk_ab(const char *what);
+                if (!copy && bit && bit < 1u << 8 && vk_ab("copy") != 1) {
                     int si = -1;
                     for (int k = 0; k < 8; k++) if (snap_tex[k] == t) si = k;
                     if (si < 0 || !snap_ok[si]) {
@@ -3070,6 +3082,10 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
     // snapshot: later CPU writes must not leak in. Shared by the draws of one submission binding the same range:
     // within a command list nothing writes guest memory (no inline UpdateUniformBuffer: that writes through below
     // and drops the shared copies).
+    {
+        int dk = (si->cbuf_dynamic >> k) & 1;
+        stat_cb_n[dk]++, stat_cb_bytes[dk] += size;
+    }
     return ubo_span(guest_copy(r.addr, size), size);
 }
 
@@ -3086,7 +3102,8 @@ static bool gmem_placed;  // (gmem_buf is the guest heap itself, usable as a uni
 static bool ubo_direct(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out) {
     static int on = -1;
     if (on < 0) on = getenv("LARECOMP_UBO_DIRECT") && atoi(getenv("LARECOMP_UBO_DIRECT"));
-    if (!on || !gmem_placed || addr < HEAP_BASE || addr + size > HEAP_BASE + gmem_size) return false;
+    extern int vk_ab(const char *what);
+    if (!(on || vk_ab("ubo") == 1) || !gmem_placed || addr < HEAP_BASE || addr + size > HEAP_BASE + gmem_size) return false;
     uint64_t off = addr - HEAP_BASE;
     if ((off & (g_vk.props.limits.minUniformBufferOffsetAlignment - 1)) || size > g_vk.props.limits.maxUniformBufferRange)
         return false;
@@ -5759,6 +5776,8 @@ static void scene_upscale(Prog *pr, CmdRec *r) {
     static int on = -1;
     if (on < 0) on = getenv("LARECOMP_SCENE_UPSCALE") ? atoi(getenv("LARECOMP_SCENE_UPSCALE")) : 1;
     int mode = g_settings.upscaler;
+    extern int vk_ab(const char *what);
+    if (vk_ab("sgsr") == 1) mode = UPSCALE_SGSR1;
     if (!on || (mode != UPSCALE_FSR1 && mode != UPSCALE_SGSR1)) return;
     NvnTexture *rt = st.rt.ncolor ? st.rt.color[0] : NULL;
     if (!rt || r->x[2] > 6 || !pr->fi->ntex || vk_texture_scale_group(rt) != RS_OUT) return;
@@ -5923,6 +5942,23 @@ void renderer_save_texture_tex(TexBackend *b, const char *path) {
 // LARECOMP_VK_SPLIT_US=<us> (Android, async; 3000 on Turnip): a pass translating that long without a submission is
 // ended and submitted after a draw, so the GPU starts on it while the rest is translated (the next draw reopens it,
 // loading its targets). BOTW's G-buffer is one pass of ~3250 draws, ~10 ms of translation the GPU waited for.
+// LARECOMP_AB=<frames>:<switch> (a measurement): the switch alternates every <frames> presented frames - on (1) in
+// the odd stretches - so both sides run in the same heat (back-to-back runs on a warm phone differed by more than the
+// change); LARECOMP_LOG_PACE tags each frame "ab 0/1". Switches: split (no long-pass split), ubo (constant buffers
+// read in place), sgsr (Snapdragon GSR 1 for the scene instead of the setting's upscaler), nobarrier (no barrier at
+// the start of a pass: unsafe, what they cost), copy (feedback copies instead of in-place reads). -1: not under test.
+int vk_ab(const char *what) {
+    static int n = -1;
+    static char w[32];
+    if (n < 0) {
+        const char *e = getenv("LARECOMP_AB"), *c = e ? strchr(e, ':') : NULL;
+        n = e ? atoi(e) : 0;
+        snprintf(w, sizeof w, "%s", c ? c + 1 : "");
+    }
+    if (n <= 0 || (what && strcmp(what, w))) return -1;
+    return (int)((renderer_present_count() / (uint64_t)n) & 1);
+}
+
 static void split_long_pass(void) {
 #ifdef __ANDROID__
     static long split = -1;
@@ -5933,7 +5969,7 @@ static void split_long_pass(void) {
     }
     extern bool vk_async_on(void);
     static unsigned n;  // (the clock every 32 draws: a clock read per draw showed up in the profile)
-    if (split > 0 && in_pass && !(++n & 31) && vk_async_on() && last_submit_ns &&
+    if (split > 0 && in_pass && !(++n & 31) && vk_ab("split") != 1 && vk_async_on() && last_submit_ns &&
         SDL_GetTicksNS() - last_submit_ns > (uint64_t)split * 1000)
         renderer_submit();
 #endif
