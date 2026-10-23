@@ -388,7 +388,9 @@ static const char *builtin_src(const char *name, int *stage) {
                "  tapf(ac, aw, vec2(1.0, 0.0) - pp, dir, len2, lob, clp, gC);\n"
                "  tapf(ac, aw, vec2(1.0, 2.0) - pp, dir, len2, lob, clp, oC);\n"
                "  tapf(ac, aw, vec2(0.0, 2.0) - pp, dir, len2, lob, clp, nC);\n"
-               "  o = vec4(min(mx, max(mn, ac / aw)), alpha);\n"
+               // (weights summing to ~0 on a saturated patch: NaN, and min / max of a NaN may give black - a black dash
+               // by a white rock in the scene at 50%; the nearest texel there)
+               "  o = vec4(aw > 1.0 / 65536.0 ? min(mx, max(mn, ac / aw)) : fC, alpha);\n"
                "}\n";
     }
     // Snapdragon Game Super Resolution 1 (sgsr/v1/include/glsl/sgsr1_shader_mobile_edge_direction.frag of
@@ -396,7 +398,10 @@ static const char *builtin_src(const char *name, int *stage) {
     // reserved. SPDX-License-Identifier: BSD-3-Clause), its default mode (RGBA, luma from green, no edge direction):
     // one pass, a bilinear sample sharpened where the 12 texels around it show an edge (Lanczos-2-like weights from
     // their deviation from the mean). a = (1 / input size, input size), b.xy = output size. Alpha: the bilinear
-    // sample's (the 3D scene's composite: exec.c scene_upscale), where SGSR writes 1.
+    // sample's (the 3D scene's composite: exec.c scene_upscale), where SGSR writes 1. Its gathers and its bilinear
+    // sample are texelFetch here (Vulkan's own rules: texel centers, (i0,j1) (i1,j1) (i1,j0) (i0,j0), clamp): on the 3D
+    // scene's A2B10G10R10 image textureGather and the sampler gave Turnip (Adreno 830) a blurred, speckled image, the
+    // same shader through the sampler was right on the RGBA8 final image.
     if (!strcmp(name, "sgsr1.frag")) {
         *stage = STAGE_FRAGMENT;
         return "#version 450\n"
@@ -404,6 +409,16 @@ static const char *builtin_src(const char *name, int *stage) {
                "layout(push_constant) uniform P { vec4 a; vec4 b; } pc;\n"
                "layout(location = 0) out vec4 o;\n"
                "const float EdgeThreshold = 8.0 / 255.0, EdgeSharpness = 2.0;\n"
+               "vec4 tx(ivec2 p) { return texelFetch(ps0, clamp(p, ivec2(0), ivec2(pc.a.zw) - 1), 0); }\n"
+               "vec4 bilinear(vec2 uv) {\n"
+               "  vec2 x = uv * pc.a.zw - 0.5, f = fract(x);\n"
+               "  ivec2 i = ivec2(floor(x));\n"
+               "  return mix(mix(tx(i), tx(i + ivec2(1, 0)), f.x), mix(tx(i + ivec2(0, 1)), tx(i + ivec2(1, 1)), f.x), f.y);\n"
+               "}\n"
+               "vec4 gatherG(vec2 uv) {\n"
+               "  ivec2 i = ivec2(floor(uv * pc.a.zw - 0.5));\n"
+               "  return vec4(tx(i + ivec2(0, 1)).g, tx(i + ivec2(1, 1)).g, tx(i + ivec2(1, 0)).g, tx(i).g);\n"
+               "}\n"
                "float fastLanczos2(float x) { float wA = x - 4.0; float wB = x * wA - wA; wA *= wA; return wB * wA; }\n"
                "vec2 weightY(float dx, float dy, float c, float std) {\n"
                "  float x = (dx * dx + dy * dy) * 0.55 + clamp(abs(c) * std, 0.0, 1.0);\n"
@@ -413,20 +428,20 @@ static const char *builtin_src(const char *name, int *stage) {
                "void main() {\n"
                "  vec4 vi = pc.a;\n"
                "  vec2 uv = gl_FragCoord.xy / pc.b.xy;\n"
-               "  vec4 color = textureLod(ps0, uv, 0.0);\n"
+               "  vec4 color = bilinear(uv);\n"
                "  float alpha = color.w;\n"
                "  vec2 imgCoord = uv * vi.zw + vec2(-0.5, 0.5);\n"
                "  vec2 imgCoordPixel = floor(imgCoord);\n"
                "  vec2 coord = imgCoordPixel * vi.xy;\n"
                "  vec2 pl = imgCoord - imgCoordPixel;\n"
-               "  vec4 left = textureGather(ps0, coord, 1);\n"
+               "  vec4 left = gatherG(coord);\n"
                "  float edgeVote = abs(left.z - left.y) + abs(color.y - left.y) + abs(color.y - left.z);\n"
                "  if (edgeVote > EdgeThreshold) {\n"
                "    coord.x += vi.x;\n"
-               "    vec4 right = textureGather(ps0, coord + vec2(vi.x, 0.0), 1);\n"
+               "    vec4 right = gatherG(coord + vec2(vi.x, 0.0));\n"
                "    vec4 upDown;\n"
-               "    upDown.xy = textureGather(ps0, coord + vec2(0.0, -vi.y), 1).wz;\n"
-               "    upDown.zw = textureGather(ps0, coord + vec2(0.0, vi.y), 1).yx;\n"
+               "    upDown.xy = gatherG(coord + vec2(0.0, -vi.y)).wz;\n"
+               "    upDown.zw = gatherG(coord + vec2(0.0, vi.y)).yx;\n"
                "    float mean = (left.y + left.z + right.x + right.w) * 0.25;\n"
                "    left -= vec4(mean); right -= vec4(mean); upDown -= vec4(mean);\n"
                "    color.w = color.y - mean;\n"
