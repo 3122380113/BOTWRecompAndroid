@@ -1564,6 +1564,22 @@ static void vk_end_pass_at(int line) {
     }
     for (int i = 0; i < wb_npass; i++) wb_queue(wb_pass[i]);
     wb_npass = 0;
+    {   // (diagnosis) LARECOMP_DEBUG_WAIT_PASSES=<first>-<last>: in debug frames, the GPU finishes the work so far
+        // after each of those passes (numbered from 0 each frame) - what the pass dumps do, without the dumps
+        static int wa = -2, wz;
+        if (wa == -2) {
+            wa = -1;
+            const char *e = getenv("LARECOMP_DEBUG_WAIT_PASSES");
+            if (e && sscanf(e, "%d-%d", &wa, &wz) != 2) wa = -1;
+        }
+        static uint64_t wframe = ~0ull;
+        static int wno;
+        if (g_debug_frame && wa >= 0) {
+            if (wframe != renderer_present_count()) wframe = renderer_present_count(), wno = 0;
+            if (wno >= wa && wno <= wz) renderer_flush();
+            wno++;
+        }
+    }
     // (the pass's own first color target: by now st.rt may already name the next pass's)
     static int nodump = -1;  // LARECOMP_DEBUG_NO_PASSES=1: the draw log alone (each dump waits for the GPU: timing changes)
     if (nodump < 0) nodump = getenv("LARECOMP_DEBUG_NO_PASSES") != NULL;

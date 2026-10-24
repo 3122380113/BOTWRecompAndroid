@@ -118,6 +118,16 @@ NVN(nvnDeviceGetCurrentTimestampInNanoseconds) {
     RET(plat_now_ns());
 }
 NVN(nvnDeviceGetTimestampInNanoseconds) {  // counter.timestamp: Switch GPU ticks (614.4 MHz, as the counters are written)
+    if (getenv("LARECOMP_LOG_TS_CALLERS")) {  // (diagnosis) each caller once: who times the GPU (dynamic resolution, 30/60)
+        static uint64_t seen[32];
+        static int nseen;
+        bool found = false;
+        for (int i = 0; i < nseen && !found; i++) found = seen[i] == c->x[30];
+        if (!found && nseen < 32) {
+            seen[nseen++] = c->x[30];
+            LOG("[nvn] GetTimestampInNanoseconds called from %llx\n", (unsigned long long)c->x[30]);
+        }
+    }
     RET((uint64_t)((unsigned __int128)G(uint64_t, A(1), 8) * 625 / 384));
 }
 NVN(nvnDeviceSetIntermediateShaderCache) { (void)c; }
