@@ -38,6 +38,7 @@ import android.util.Log;
 
 import org.libsdl.app.SDLActivity;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -182,7 +183,7 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
         if (top == null || top.length == 0) return;  // (an APK without it: android/deps/build_gen_deps.sh not run)
         String stamp;
         try (InputStream in = getAssets().open("gen.id")) {
-            stamp = "sha256:" + new String(in.readAllBytes(), java.nio.charset.StandardCharsets.US_ASCII).trim();
+            stamp = "sha256:" + new String(readAll(in), java.nio.charset.StandardCharsets.US_ASCII).trim();
         } catch (IOException missingFingerprint) {
             // Compatibility with APKs built before gen.id was introduced.
             try {
@@ -679,8 +680,16 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
 
     private static String readSmall(File f) throws IOException {
         try (InputStream in = new FileInputStream(f)) {
-            return new String(in.readAllBytes());
+            return new String(readAll(in));
         }
+    }
+
+    // (InputStream.readAllBytes is Android 13+: on 11 and 12 the app died at launch, issue #3)
+    private static byte[] readAll(InputStream in) throws IOException {
+        ByteArrayOutputStream o = new ByteArrayOutputStream();
+        byte[] buf = new byte[8192];
+        for (int n; (n = in.read(buf)) > 0; ) o.write(buf, 0, n);
+        return o.toByteArray();
     }
 
     private static File copy(InputStream in, File dst) throws IOException {
