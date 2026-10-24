@@ -112,7 +112,7 @@ static const struct { const char *name; uint32_t below; } COMPAT_EXT[] = {
     {VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE_EXTENSION_NAME, VK_API_VERSION_1_2},
 };
 #define N_COMPAT_EXT (sizeof COMPAT_EXT / sizeof *COMPAT_EXT)
-static char g_compat_missing[128];  // (the first a rejected GPU lacked: the fatal message names it)
+static char g_compat_missing[640];  // (what a rejected GPU lacked: the fatal message names it all)
 
 // Whether a device below 1.3 has every extension it needs (missing ones logged)
 static bool compat_ok(VkPhysicalDevice pd, uint32_t api) {
@@ -125,10 +125,12 @@ static bool compat_ok(VkPhysicalDevice pd, uint32_t api) {
     VkExtensionProperties *ep = calloc(ne ? ne : 1, sizeof *ep);
     vkEnumerateDeviceExtensionProperties(pd, NULL, &ne, ep);
     bool ok = true;
+    g_compat_missing[0] = 0;  // (every one missing, so a report names them all at once)
     for (size_t i = 0; i < N_COMPAT_EXT; i++)
         if (api < COMPAT_EXT[i].below && !has_ext(ep, ne, COMPAT_EXT[i].name)) {
             LOG("[vk-cap]   missing %s\n", COMPAT_EXT[i].name);
-            if (ok) snprintf(g_compat_missing, sizeof g_compat_missing, "%s", COMPAT_EXT[i].name);
+            size_t l = strlen(g_compat_missing);
+            snprintf(g_compat_missing + l, sizeof g_compat_missing - l, "%s%s", l ? ", " : "", COMPAT_EXT[i].name);
             ok = false;
         }
     free(ep);
