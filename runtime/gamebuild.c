@@ -465,10 +465,17 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
     snprintf(tmp, sizeof tmp, "%s" SEP "%s.tmp", work, GAMELIB_NAME);
 #ifdef __ANDROID__
     // the library in internal storage, next to "the executable" where runtime/gamelib.c finds it (external storage is
-    // mounted noexec: dlopen refuses it) - the temporary file there too (a rename can't cross the two)
+    // mounted noexec: dlopen refuses it) - the temporary file there too (a rename can't cross the two). 1.6.0's and
+    // 1.8.2's in their own place there (paths.c rt_version_game_lib).
     {
-        char exe[1100];
-        if (plat_exe_path(exe, sizeof exe)) {
+        char exe[1100], own[1024];
+        if (rt_version_game_lib(rt_game_dir_version(game_dir), own, sizeof own)) {
+            snprintf(lib, sizeof lib, "%s", own);
+            snprintf(tmp, sizeof tmp, "%s.tmp", own);
+            snprintf(exe, sizeof exe, "%s", own);
+            char *sl = strrchr(exe, '/');
+            if (sl) *sl = 0, mkdir(exe, 0755);
+        } else if (plat_exe_path(exe, sizeof exe)) {
             char *sl = strrchr(exe, '/');
             if (sl) *sl = 0;
             snprintf(lib, sizeof lib, "%s/%s", exe, GAMELIB_NAME);

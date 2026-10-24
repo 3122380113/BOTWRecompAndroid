@@ -1,8 +1,10 @@
 // Start screen, shown before the game boots (from LAS Recomp's, styled after Dusklight's launcher): PLAY, SETTINGS,
 // QUIT, game-files status at the lower left. Nothing of the game ships with BOTWRecompAndroid: on first launch the user picks
-// the folder with their own game files (v1.0.0), we check the main module's build id, copy the files and build the
-// game's data image; PLAY stays disabled until that worked. The background uses the bundled artwork, with a frame
-// from the user's game files as a fallback for packages without the artwork.
+// the folder with their own game files (v1.0.0, 1.6.0 or 1.8.2), we tell the version by the main module's build id,
+// copy the files into that version's folder (runtime/paths.h) and build the game's data image; PLAY stays disabled
+// until that worked. A version set up beside the one running becomes the one played: the app starts again in its
+// folder (Game Files page / Settings > Prelaunch: the versions set up, to switch between). The background uses the
+// bundled artwork, with a frame from the user's game files as a fallback for packages without the artwork.
 //
 // Skipped with --play, LARECOMP_NO_LAUNCHER=1, or any scripted test run (LARECOMP_INPUT): tests boot straight in.
 // The in-game menu's "Title screen" comes back here without leaving the process (runtime/main.c reboots the game).
@@ -46,6 +48,7 @@ extern "C" {
 #include "romfs_build.h"
 #include "settings.h"
 #include "input_bind.h"
+int game_version_of_build(const uint8_t id[8]);  // runtime/loader.c: 100, 160, 182; 0 another one
 void controls_bindings_draw(float scale);  // ui/controls_ui.mm
 void ui_window_init(void);
 SDL_Window *ui_window(void);
@@ -86,7 +89,6 @@ static void save_png(id<MTLTexture> tex, const char *path) {
 }
 #endif
 
-static const uint8_t BUILD_ID[8] = {0x20, 0x94, 0xf1, 0x52, 0x83, 0x66, 0x83, 0xa3};  // Breath of the Wild v1.0.0 main
 // The release tag this build is (also names the release files; Makefile / tools/bundle_macos.sh / make_dmg.sh read
 // it): beta_<n> until 1.0, then v<major>.<minor>.<patch>.
 #define LARECOMP_VERSION "alpha_0"
@@ -172,15 +174,25 @@ static bool file_exists(const std::string &p) {
     return stat(p.c_str(), &st) == 0;
 }
 
-// The copied game files alone ("" = there), without the game code built from them
-static std::string check_copied_files(const std::string &root) {
-    FILE *f = fopen((root + "/exefs/main").c_str(), "rb");
-    if (!f) return "No game files";
+// The game version of a main module (game_version_of_build: 100, 160, 182; 0 another one), -1 when it isn't there
+static int main_version(const std::string &main_path) {
+    FILE *f = fopen(main_path.c_str(), "rb");
+    if (!f) return -1;
     uint8_t id[8] = {0};
     fseek(f, 0x40, SEEK_SET);
     size_t n = fread(id, 1, 8, f);
     fclose(f);
-    if (n != 8 || memcmp(id, BUILD_ID, 8)) return "Wrong game version (needs v1.0.0)";
+    return n == 8 ? game_version_of_build(id) : 0;
+}
+
+static const char *version_name(int v) { return v == 182 ? "1.8.2" : v == 160 ? "1.6.0" : "1.0.0"; }
+
+// The copied game files alone ("" = there), without the game code built from them: of a version this app runs, the
+// one whose folder root is (runtime/paths.h)
+static std::string check_copied_files(const std::string &root) {
+    int v = main_version(root + "/exefs/main"), want = rt_game_dir_version(root.c_str());
+    if (v < 0) return "No game files";
+    if (!v || (want && v != want)) return "Wrong game version (needs v1.0.0, v1.6.0 or v1.8.2)";
     // (the game reads its data through romfs.bin alone: on Android it's built straight from the picked folder, and romfs/
     // holds only the movies, opened by path)
     if (!file_exists(root + "/romfs.bin")) return "Game data missing";
@@ -190,8 +202,25 @@ static std::string check_copied_files(const std::string &root) {
 // "" = ready to play, else what is wrong
 static std::string check_game_files(const std::string &root) {
     std::string why = check_copied_files(root);
-    if (why.empty() && !gamelib_present(root.c_str())) return "Game code not built yet";
+    if (why.empty() && !gamelib_present(root.c_str())) return "The game code needs building";
     return why;
+}
+
+// The game versions this app runs, and which of them are set up (their copied files there; checked again once a second)
+static const int k_versions[] = {100, 160, 182};
+enum { N_VERSIONS = 3 };
+static bool version_set_up(int i) {
+    static bool set_up[N_VERSIONS];
+    static double next;
+    double now = ImGui::GetTime();
+    if (now >= next) {
+        next = now + 1.0;
+        for (int k = 0; k < N_VERSIONS; k++) {
+            char r[1024];
+            set_up[k] = rt_version_root(k_versions[k], r, sizeof r) && check_copied_files(std::string(r) + "/extracted").empty();
+        }
+    }
+    return set_up[i];
 }
 
 // ------------------------------------------------------------------ setup (background thread)
@@ -200,6 +229,8 @@ static std::string check_game_files(const std::string &root) {
 // (runtime/romfs_build.c).
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static std::string g_src;           // the picked folder
+static std::string g_dest;          // the setup's: the picked files' version's extracted/ ("": this run's, g_root)
+static int g_set_up_version;        // a setup that worked: the version it set up (another than this run's: a restart into it)
 static std::string g_job;           // current setup step / result for the status line
 static std::string g_job_hint;      // a failure: what to do about it (shown under it)
 static bool g_busy, g_job_failed;
@@ -224,7 +255,7 @@ static void set_failure(int k) {
         "Choose the folder that holds the game files.",
         "Choose the folder that holds the game files.",
         "Make sure there's about 30 GB free and try again.",
-        "BOTWRecompAndroid needs version 1.0.0 of the game, without updates.",
+        "BOTWRecompAndroid runs versions 1.0.0, 1.6.0 and 1.8.2 of the game.",
         "Some files are missing. Choose the folder again; if it happens again, dump the game again.",
         "Make sure there's about 2 GB free and try again. If it keeps happening, report it on GitHub."};
     if (k >= 1 && k <= 6) set_job(head[k], true, hint[k]);
@@ -257,16 +288,6 @@ static void find_game(const std::string &dir, int depth, std::string &exefs, std
     for (auto &s : sub) find_game(s, depth + 1, exefs, romfs, unusable);
 }
 
-static bool build_id_ok(const std::string &main_path) {
-    FILE *f = fopen(main_path.c_str(), "rb");
-    if (!f) return false;
-    uint8_t id[8] = {0};
-    fseek(f, 0x40, SEEK_SET);
-    size_t n = fread(id, 1, 8, f);
-    fclose(f);
-    return n == 8 && !memcmp(id, BUILD_ID, 8);
-}
-
 // progress (the overlay's bar): the romfs copy, then the image build - each about the size of romfs/ (Android: exefs/
 // copied, then the image read straight from the picked romfs/ - one pass)
 static std::atomic<unsigned long long> g_done, g_total;
@@ -286,13 +307,13 @@ static float extract_progress(void) {
     return f < 0 ? 0 : f > 0.99f ? 0.99f : f;
 }
 
-// Builds the game code from the copied files (a few minutes); false = failed (the job line says so)
-static bool build_game_code(void) {
+// Builds the game code from the copied files in dir (a few minutes); false = failed (the job line says so)
+static bool build_game_code(const std::string &dir) {
     int cores = SDL_GetNumLogicalCPUCores(), ram_gb = SDL_GetSystemRAM() / 1024;
     GameBuildOpts o = {build_progress, cores < ram_gb - 2 ? cores : ram_gb - 2 > 1 ? ram_gb - 2 : 1};
     char why[256] = "";
     g_build_frac = 0;
-    bool ok = gamebuild_run(g_root.c_str(), &o, why, sizeof why);
+    bool ok = gamebuild_run(dir.c_str(), &o, why, sizeof why);
     if (!ok) {
         fprintf(stderr, "[launcher] game code: %s\n", why);
         set_failure(FAIL_BUILD);
@@ -300,68 +321,86 @@ static bool build_game_code(void) {
     return ok;
 }
 
+// The setup's folder: the picked files' version's extracted/ (g_dest), else this run's
+static std::string setup_dest(void) {
+    pthread_mutex_lock(&g_lock);
+    std::string d = g_dest.empty() ? g_root : g_dest;
+    pthread_mutex_unlock(&g_lock);
+    return d;
+}
+
 static void *extract_thread(void *) {
-    std::string src;
+    std::string src, dest = setup_dest();
     pthread_mutex_lock(&g_lock);
     src = g_src;
     pthread_mutex_unlock(&g_lock);
     g_done = 0, g_total = 0, g_phase_base = 0, g_build_frac = -1, g_copy_skipped = false;
     std::string exefs, romfs;
     bool unusable = false;  // (game packages rather than its files)
+    bool ok = false;
 #ifdef __ANDROID__
     extern std::atomic<bool> g_android_imported;
     if (g_android_imported.exchange(false)) {  // (the activity copied exefs/ and built romfs.bin: below) the code
-        if (!build_game_code()) goto done;
+        if (!build_game_code(dest)) goto done;
         goto check;
     }
 #endif
-    if (src.empty() && check_copied_files(g_root).empty()) {  // copied already (an update needs new game code)
+    if (src.empty() && check_copied_files(dest).empty()) {  // copied already (an update needs new game code)
         g_copy_skipped = true;
-        if (!build_game_code()) goto done;
+        if (!build_game_code(dest)) goto done;
         goto check;
     }
     set_job("Looking for the game files...");
     find_game(src, 0, exefs, romfs, unusable);
     if (exefs.empty() || romfs.empty()) { set_failure(unusable ? FAIL_UNUSABLE : FAIL_NOT_FOUND); goto done; }
-    if (!build_id_ok(exefs + "/main")) { set_failure(FAIL_VERSION); goto done; }
+    {   // into that version's own folder (runtime/paths.h)
+        int v = main_version(exefs + "/main");
+        char vr[1024];
+        if (v <= 0 || !rt_version_root(v, vr, sizeof vr)) { set_failure(FAIL_VERSION); goto done; }
+        mkdir(vr, 0755);
+        dest = std::string(vr) + "/extracted";
+    }
     {
         // (the picked folder can't be BOTWRecompAndroid's own copy: setting up again deletes that first)
         char a[4096], b[4096];
-        mkdir(g_root.c_str(), 0755);
-        if (realpath(exefs.c_str(), a) && realpath(g_root.c_str(), b) && !strncmp(a, b, strlen(b)) &&
+        mkdir(dest.c_str(), 0755);
+        if (realpath(exefs.c_str(), a) && realpath(dest.c_str(), b) && !strncmp(a, b, strlen(b)) &&
             (a[strlen(b)] == '/' || a[strlen(b)] == '\\' || !a[strlen(b)])) {
             set_failure(FAIL_NOT_FOUND);
             goto done;
         }
-        rt_remove_game_files(g_root.c_str());  // (an earlier or interrupted setup's; removes the folder too)
-        mkdir(g_root.c_str(), 0755);
+        rt_remove_game_files(dest.c_str());  // (an earlier or interrupted setup's; removes the folder too)
+        mkdir(dest.c_str(), 0755);
         unsigned long long rbytes = romfs_dir_bytes(romfs.c_str());
         g_total = 2 * rbytes;
         set_job("Copying the game files...");
-        if (!romfs_copy_tree(exefs.c_str(), (g_root + "/exefs").c_str(), NULL) ||
-            !romfs_copy_tree(romfs.c_str(), (g_root + "/romfs").c_str(), setup_progress)) {
+        if (!romfs_copy_tree(exefs.c_str(), (dest + "/exefs").c_str(), NULL) ||
+            !romfs_copy_tree(romfs.c_str(), (dest + "/romfs").c_str(), setup_progress)) {
             set_failure(FAIL_COPY);
             goto done;
         }
         g_phase_base = rbytes, g_done = rbytes;
         set_job("Building the game data image...");
         char why[256] = "";
-        if (!romfs_build((g_root + "/romfs").c_str(), (g_root + "/romfs.bin").c_str(), setup_progress, why, sizeof why)) {
+        if (!romfs_build((dest + "/romfs").c_str(), (dest + "/romfs.bin").c_str(), setup_progress, why, sizeof why)) {
             fprintf(stderr, "[launcher] romfs image: %s\n", why);
             set_failure(FAIL_COPY);
             goto done;
         }
-        if (!build_game_code()) goto done;
+        if (!build_game_code(dest)) goto done;
     }
 check:
     {
-        std::string why = check_game_files(g_root);
-        if (why.empty()) set_job("Game files ready.");
+        std::string why = check_game_files(dest);
+        ok = why.empty();
+        if (ok) set_job("Game files ready.");
         else set_failure(why.find("version") != std::string::npos ? FAIL_VERSION : FAIL_MISSING);
     }
 done:
     pthread_mutex_lock(&g_lock);
     g_busy = false;
+    g_set_up_version = ok ? rt_game_dir_version(dest.c_str()) : 0;
+    g_dest.clear();
     pthread_mutex_unlock(&g_lock);
     return NULL;
 }
@@ -369,8 +408,9 @@ done:
 #ifdef __ANDROID__
 // ------------------------------------------------------------------ Android: the system's pickers (SAF)
 // Android has no POSIX path to a folder the player picks: BOTWRecompAndroidActivity opens the system's folder picker, finds
-// exefs/ and romfs/ in the picked folder (a few levels down too, as find_game), checks the game version with
-// nativeBuildIdOk, copies exefs/ into <g_root> and builds romfs.bin straight from the picked romfs/ (nativeBuildRomfs:
+// exefs/ and romfs/ in the picked folder (a few levels down too, as find_game), tells the game version with
+// nativeGameVersion, copies exefs/ into that version's folder (nativeImportBegin: g_dest) and builds romfs.bin straight
+// from the picked romfs/ (nativeBuildRomfs:
 // no copy of its ~15 GB first; only the movies, opened by path, stay loose - LASRecompAndroid's), then the setup goes
 // on as on the desktop with the game code (runtime/gamebuild.c, on the phone itself). The Vulkan driver is
 // picked the same way (a Turnip .zip, copied to the drivers folder the activity loads from at start).
@@ -431,24 +471,34 @@ extern "C" JNIEXPORT void JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidAc
     if (g_settings.log_file) android_log_file(true);  // (the file moves to the folder, with this run's lines so far)
 }
 
-extern "C" JNIEXPORT jboolean JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeBuildIdOk(JNIEnv *env, jclass, jbyteArray head) {
-    if (env->GetArrayLength(head) < 0x48) return JNI_FALSE;
+// The game version of the picked main module's first bytes (game_version_of_build: 0 = not one this app runs)
+extern "C" JNIEXPORT jint JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeGameVersion(JNIEnv *env, jclass, jbyteArray head) {
+    if (env->GetArrayLength(head) < 0x48) return 0;
     jbyte b[8];
     env->GetByteArrayRegion(head, 0x40, 8, b);
-    return memcmp(b, BUILD_ID, 8) == 0 ? JNI_TRUE : JNI_FALSE;
+    return game_version_of_build((const uint8_t *)b);
 }
 
-extern "C" JNIEXPORT void JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeImportBegin(JNIEnv *env, jclass, jstring name) {
+// The import of that version's files begins: its own extracted/ (runtime/paths.h), emptied of an earlier setup - its
+// path back, for the activity to copy exefs/ into
+extern "C" JNIEXPORT jstring JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeImportBegin(JNIEnv *env, jclass, jstring name,
+                                                                                                         jint version) {
     const char *n = env->GetStringUTFChars(name, NULL);
+    char vr[1024] = "";
+    bool own = rt_version_root(version, vr, sizeof vr);
+    std::string dest = own ? std::string(vr) + "/extracted" : g_root;
     pthread_mutex_lock(&g_lock);
     g_busy = true;
     g_src = n ? n : "";
+    g_dest = dest;
     pthread_mutex_unlock(&g_lock);
     if (n) env->ReleaseStringUTFChars(name, n);
-    rt_remove_game_files(g_root.c_str());  // (an earlier or interrupted setup's)
-    mkdir(g_root.c_str(), 0755);
+    rt_remove_game_files(dest.c_str());  // (an earlier or interrupted setup's)
+    if (own) mkdir(vr, 0755);
+    mkdir(dest.c_str(), 0755);
     g_done = 0, g_total = 0, g_phase_base = 0, g_build_frac = -1, g_copy_skipped = false;
     set_job("Copying the game files...");
+    return env->NewStringUTF(dest.c_str());
 }
 
 extern "C" JNIEXPORT void JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeImportProgress(JNIEnv *, jclass, jlong done, jlong total) {
@@ -495,9 +545,9 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_botwrecompandroid_BOTWRecompAndroi
     set_job("Building the game data image...");
     g_phase_base = g_done;  // (exefs/ copied: the image's bytes follow)
     char why[256] = "";
-    std::string romfs = g_root + "/romfs";
+    std::string dest = setup_dest(), romfs = dest + "/romfs";
     mkdir(romfs.c_str(), 0755);
-    bool ok = romfs_build_entries(entries.data(), n, romfs_jni_open, &j, (g_root + "/romfs.bin").c_str(),
+    bool ok = romfs_build_entries(entries.data(), n, romfs_jni_open, &j, (dest + "/romfs.bin").c_str(),
                                   romfs.c_str(), keep_loose, setup_progress, why, sizeof why);
     if (ok) return NULL;
     fprintf(stderr, "[launcher] romfs image: %s\n", why);
@@ -550,6 +600,7 @@ extern "C" JNIEXPORT void JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidAc
     }
     pthread_mutex_lock(&g_lock);
     g_busy = false;
+    g_dest.clear();
     pthread_mutex_unlock(&g_lock);
     if (result == 1) return;
     set_failure(result == 2 ? FAIL_NOT_FOUND : result == 3 ? FAIL_UNUSABLE : result == 4 ? FAIL_VERSION : FAIL_COPY);
@@ -1001,8 +1052,51 @@ static void reveal_folder(const std::string &dir) {
     SDL_OpenURL(url.c_str());
 }
 
+// Another game version from the next start on (runtime/paths.h). Android starts again in it at once (launcher_run, after
+// a moment for the line saying so); the desktop asks for a restart.
+static int g_switching_to;  // (Android: the version the app is about to start again in)
+static double g_switch_at;
+static void switch_to_version(int v) {
+    if (!rt_select_game_version(v)) {
+        set_job("Couldn't switch the game version", true, "BOTWRecompAndroid can't write to its data folder.");
+        return;
+    }
+#ifdef __ANDROID__
+    g_switching_to = v;
+    g_switch_at = ImGui::GetTime() + 0.6;
+#else
+    set_job(std::string(tr("Restart BOTWRecompAndroid to play version")) + " " + version_name(v) + ".");
+#endif
+}
+
+// The Game Files page's game versions: the one running, the others set up (choosing one starts the app again in it),
+// the ones not set up yet greyed - the files folder below sets them up. focus: the running one takes the cursor.
+static void version_rows(bool busy, bool focus) {
+    static const char *const notes[N_VERSIONS] = {
+        "The game's first release, without updates.",
+        "An update of the game.",
+        "The game's last update, the only one in Brazilian Portuguese. 60 fps and widescreen (Video settings) work in "
+        "this one."};
+    opt_section("Game version");
+    int cur = rt_game_version();
+    for (int i = 0; i < N_VERSIONS; i++) {
+        int v = k_versions[i];
+        bool set_up = version_set_up(i);
+        std::string label = std::string(tr("Version")) + " " + version_name(v);
+        std::string desc = std::string(tr(notes[i])) + "\n\n" +
+                           tr(!set_up ? "Not set up yet: choose the folder with this version's game files below."
+                                      : "Which version PLAY starts. Each one keeps its own game files, saves and settings; "
+                                        "1.6.0 and 1.8.2 start from a copy of 1.0.0's saves and settings. Choosing another "
+                                        "one starts BOTWRecompAndroid again with it.");
+        if (busy || g_switching_to || (!set_up && v != cur)) opt_disable_next();
+        if (opt_radio(label.c_str(), v == cur, desc.c_str()) && v != cur && set_up) switch_to_version(v);
+        if (focus && v == cur) ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
+    }
+}
+
 static SDL_Window *g_launcher_win;
 static bool g_files_deleted;  // set here: the start screen goes back to setting the game files up
+static bool g_open_files;     // Settings > Prelaunch: the Game Files page (versions, setup) instead
 static void prelaunch_tab(float sc) {
     const ImVec4 gold(0.93f, 0.76f, 0.33f, 1);
     auto heading = [&](const char *t) {
@@ -1129,6 +1223,11 @@ static void prelaunch_tab(float sc) {
     ImGui::Spacing();
 #endif
     heading("Game files");
+    ImGui::Text(tr("Game version: %s"), version_name(rt_game_version()));
+    ImGui::PushTextWrapPos(0);
+    ImGui::TextDisabled("%s", tr("Versions 1.0.0, 1.6.0 and 1.8.2 can be set up side by side, each with its own saves."));
+    ImGui::PopTextWrapPos();
+    if (ImGui::Button(tr("Versions and setup"))) g_open_files = true;
     static double gb = -1;
     if (gb < 0) gb = rt_game_files_size(g_root.c_str()) / 1e9;
 #ifdef __ANDROID__
@@ -1312,6 +1411,19 @@ extern "C" void launcher_run(const char *root) {
             status = check_game_files(g_root);
             if (!status.empty()) { g_bg = 0; bind_capture_cancel(); settings_save(); page = SETUP; }
         }
+        if (g_open_files) {  // (Settings > Prelaunch: Versions and setup)
+            g_open_files = false;
+            bind_capture_cancel();
+            settings_save();
+            page = SETUP;
+        }
+#ifdef __ANDROID__
+        if (g_switching_to && ImGui::GetTime() >= g_switch_at) {  // another game version: the app again, in its folder
+            g_switch_at = 1e30;
+            settings_save();
+            android_call("restartApp");
+        }
+#endif
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             if (page == SETTINGS && bind_capture_event(&e)) continue;  // (waiting for a new binding: controls_ui.mm)
@@ -1324,8 +1436,13 @@ extern "C" void launcher_run(const char *root) {
         pthread_mutex_unlock(&g_lock);
         static bool was_busy;
         if (was_busy && !busy) {
+            pthread_mutex_lock(&g_lock);
+            int set_up = g_set_up_version;
+            g_set_up_version = 0;
+            pthread_mutex_unlock(&g_lock);
+            if (set_up && set_up != rt_game_version()) switch_to_version(set_up);  // (set up beside this one: played now)
             status = check_game_files(g_root);
-            if (status.empty()) { load_background(dev); page = MAIN; }
+            if (status.empty() && !g_switching_to) { load_background(dev); page = MAIN; }
         }
         was_busy = busy;
 
@@ -1617,36 +1734,39 @@ extern "C" void launcher_run(const char *root) {
                     dl->AddLine(ImVec2(x, cy), ImVec2(x + u * 0.35f, cy + u * 0.35f), g, fs * 0.11f);
                     dl->AddLine(ImVec2(x + u * 0.35f, cy + u * 0.35f), ImVec2(x + u, cy - u * 0.4f), g, fs * 0.11f);
                 };
-                std::string src_d = tr("The folder with your own game folders (exefs/romfs) of The Legend of Zelda: Breath "
-                                       "of the Wild for Nintendo Switch, version 1.0.0. The game isn't included with BOTWRecompAndroid.");
+                std::string src_d = tr("The folder with your own game folders (exefs/romfs) of The Legend of Zelda: Breath of "
+                                       "the Wild for Nintendo Switch: version 1.0.0, 1.6.0 or 1.8.2 (the one in Brazilian "
+                                       "Portuguese). The version is told from the files, and each one is set up in a place of "
+                                       "its own, beside the others. The game isn't included with BOTWRecompAndroid.");
                 if (!src.empty()) src_d += std::string(tr("\n\nChosen: ")) + src;
                 // the step that's running / its result, under the rows and in the Set up row's explanation
                 const std::string &job_line = job;
-                std::string ex_d = tr("Copies the game files BOTWRecompAndroid needs and recompiles the game from them. This only "
-                                      "needs to be done once and may take a while. Your own files aren't changed.");
+                bool copied = check_copied_files(g_root).empty();  // (here, the game code to build again: an app update)
+                std::string ex_d = tr(copied ? "The game files are already here: this builds the game code from them again, as "
+                                               "BOTWRecompAndroid needs after an update. It may take a while."
+                                             : "Copies the game files BOTWRecompAndroid needs and recompiles the game from them. "
+                                               "This only needs to be done once and may take a while. Your own files aren't changed.");
                 if (!job.empty()) ex_d += "\n\n" + std::string(tr(job.c_str())) + (job_hint.empty() ? "" : ".\n" + std::string(tr(job_hint.c_str())));
 
                 // the controller's cursor starts on the first row (not the X), a few frames while the window lays out
                 static int seen_frame = -10, focus_first;  // (not drawn last frame: the window has just opened)
                 if (seen_frame != ImGui::GetFrameCount() - 1) focus_first = 4;
                 seen_frame = ImGui::GetFrameCount();
-                auto first_row = [&] {
-                    if (focus_first > 0 && focus_first--) ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
-                };
                 opt_begin("##files", sc);
-                if (!ready) {
-                    opt_section("Your copy of the game");
-                    if (busy) opt_disable_next();
+                version_rows(busy, focus_first > 0 && focus_first--);
+                // the folder: this version's files when they aren't set up, else another version's (or this one's again)
+                opt_section("Your copy of the game");
+                if (busy) opt_disable_next();
 #ifdef __ANDROID__
-                    if (opt_action("Game files folder", src_v.c_str(), src_d.c_str(), true)) android_call("pickGameFolder");
+                if (opt_action("Game files folder", src_v.c_str(), src_d.c_str(), true)) android_call("pickGameFolder");
 #else
-                    if (opt_action("Game files folder", src_v.c_str(), src_d.c_str(), true))
-                        SDL_ShowOpenFolderDialog(picked, NULL, win, NULL, false);
+                if (opt_action("Game files folder", src_v.c_str(), src_d.c_str(), true))
+                    SDL_ShowOpenFolderDialog(picked, NULL, win, NULL, false);
 #endif
-                    check_left_of_value(src_v);
-                    first_row();
+                check_left_of_value(src_v);
+                if (!ready || !src.empty()) {  // (Android: picking the folder sets it up at once)
                     opt_section("Set up");
-                    if (busy || (src.empty() && !check_copied_files(g_root).empty())) opt_disable_next();
+                    if (busy || (src.empty() && !copied)) opt_disable_next();
                     if (opt_action("Set up game files", busy ? "Working..." : "", ex_d.c_str(), true)) {
                         pthread_mutex_lock(&g_lock);
                         g_busy = true;
@@ -1656,7 +1776,8 @@ extern "C" void launcher_run(const char *root) {
                         pthread_detach(t);
                     }
                     files_gb = -1;  // (re-measured after a setup)
-                } else {
+                }
+                if (ready) {
                     // DELETE: frees BOTWRecompAndroid's copy (runtime/paths.c removes only what the setup made, only inside
                     // the data root). Saves, settings and the user's own files stay.
                     if (files_gb < 0) files_gb = rt_game_files_size(g_root.c_str()) / 1e9;
@@ -1668,7 +1789,6 @@ extern "C" void launcher_run(const char *root) {
                                        "Saves and settings are kept, and your own game files aren't touched: you can "
                                        "set the game files up again from them.", true))
                             g_confirm_delete = true;
-                        first_row();
                     } else {
                         if (opt_action("Yes, delete them", gb, "Deletes the extracted game files now.", true)) {
                             bool ok = rt_remove_game_files(g_root.c_str());
@@ -1744,6 +1864,17 @@ extern "C" void launcher_run(const char *root) {
                 }
             }
 
+            if (g_switching_to) {  // (Android) starting again in another game version: everything dimmed, saying so
+                ImDrawList *fg = ImGui::GetForegroundDrawList();
+                ImVec2 o = ImGui::GetMainViewport()->Pos;
+                fg->AddRectFilled(o, ImVec2(o.x + ds.x, o.y + ds.y), IM_COL32(0, 0, 0, 170));
+                std::string t = std::string(tr("Starting version")) + " " + version_name(g_switching_to) + "...";
+                float tfs = g_font_menu->FontSize * 0.75f;
+                ImVec2 ts = g_font_menu->CalcTextSizeA(tfs, FLT_MAX, 0, t.c_str());
+                fg->AddText(g_font_menu, tfs, ImVec2(o.x + (ds.x - ts.x) * 0.5f, o.y + (ds.y - ts.y) * 0.5f),
+                            IM_COL32(236, 194, 84, 255), t.c_str());
+            }
+
             // status (lower left) and version (lower right) - not under the Settings / Game Files windows
             if (page == MAIN) {
             ImGui::PushFont(g_font_small);
@@ -1759,7 +1890,7 @@ extern "C" void launcher_run(const char *root) {
                 }
                 ImGui::TextColored(ImVec4(0.45f, 0.95f, 0.55f, 1), "%s", tr("Game files ready."));
                 ImGui::SetCursorPosX(x0);
-                ImGui::TextColored(ImVec4(0.66f, 0.76f, 0.98f, 1), "Nintendo Switch  \xc2\xb7  v1.0.0");
+                ImGui::TextColored(ImVec4(0.66f, 0.76f, 0.98f, 1), "Nintendo Switch  \xc2\xb7  v%s", version_name(rt_game_version()));
             } else {
                 ImGui::TextColored(ImVec4(1, 0.72f, 0.4f, 1), "!  %s", tr(busy ? "Setting up the game files..." : status.c_str()));
                 ImGui::SetCursorPosX(x0);

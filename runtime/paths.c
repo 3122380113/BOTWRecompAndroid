@@ -78,6 +78,100 @@ static void fail(const char *msg) {
 static bool g_dev;  // the data root is the starting folder because it has extracted/ (a source checkout)
 bool rt_dev_mode(void) { return g_dev; }
 
+// ---- game versions (paths.h): 1.0.0 in the data root, 1.6.0 / 1.8.2 in its v160 / v182
+static char g_main[1024];   // 1.0.0's data root, which the others' folders are in
+static int g_version = 100;  // whose folder the data root is
+
+#define VERSION_FILE "game_version.txt"
+
+// The one the start screen chose (game_version.txt in the main root; none = 1.0.0)
+static int selected_version(const char *main_root) {
+    char p[1100];
+    snprintf(p, sizeof p, "%s" SEP VERSION_FILE, main_root);
+    FILE *f = fopen(p, "rb");
+    int v = 100;
+    if (f) {
+        if (fscanf(f, "%d", &v) != 1) v = 100;
+        fclose(f);
+    }
+    return v == 160 || v == 182 ? v : 100;
+}
+
+static bool copy_file(const char *from, const char *to) {
+    FILE *in = fopen(from, "rb");
+    if (!in) return false;
+    FILE *out = fopen(to, "wb");
+    bool ok = out != NULL;
+    char buf[1 << 16];
+    for (size_t n; ok && (n = fread(buf, 1, sizeof buf, in)) > 0;) ok = fwrite(buf, 1, n, out) == n;
+    fclose(in);
+    if (out) ok &= fclose(out) == 0;
+    if (!ok) remove(to);
+    return ok;
+}
+
+// The data root is a version's own folder (cwd): its settings start as 1.0.0's (once), its saves as 1.0.0's (fs.c copies
+// them when the game first opens one: LARECOMP_SAVE_SEED)
+static void version_seed(void) {
+    char from[1100];
+    snprintf(from, sizeof from, "%s" SEP "botwrecompandroid.ini", g_main);
+    if (!exists("botwrecompandroid.ini") && copy_file(from, "botwrecompandroid.ini"))
+        fprintf(stderr, "[paths] settings: a copy of 1.0.0's\n");
+    if (getenv("LARECOMP_SAVE_SEED")) return;
+    snprintf(from, sizeof from, "%s" SEP "save", g_main);
+#ifdef _WIN32
+    _putenv_s("LARECOMP_SAVE_SEED", from);
+#else
+    setenv("LARECOMP_SAVE_SEED", from, 1);
+#endif
+}
+
+int rt_game_version(void) { return g_version; }
+
+bool rt_version_root(int v, char *out, size_t n) {
+    if (v == 100) return (size_t)snprintf(out, n, "%s", g_main) < n;
+    if (v == 160 || v == 182) return (size_t)snprintf(out, n, "%s" SEP "v%d", g_main, v) < n;
+    return false;
+}
+
+bool rt_select_game_version(int v) {
+    char p[1100];
+    snprintf(p, sizeof p, "%s" SEP VERSION_FILE, g_main);
+    FILE *f = fopen(p, "wb");
+    if (!f) return false;
+    fprintf(f, "%d\n", v);
+    return fclose(f) == 0;
+}
+
+int rt_game_dir_version(const char *game_dir) {
+    char got[1100];
+    if (!game_dir || !*game_dir) return 0;
+    if (!resolve(game_dir, got, sizeof got)) {  // (not there yet: as given, made absolute)
+        bool abs = game_dir[0] == '/' || game_dir[0] == '\\' || game_dir[1] == ':';
+        if (abs) snprintf(got, sizeof got, "%s", game_dir);
+        else snprintf(got, sizeof got, "%s" SEP "%s", g_root, game_dir);
+    }
+    static const int versions[] = {100, 160, 182};
+    for (int i = 0; i < 3; i++) {
+        char r[1024], want[1100];
+        if (!rt_version_root(versions[i], r, sizeof r)) continue;
+        snprintf(want, sizeof want, "%s" SEP "extracted", r);
+        if (path_eq(want, got)) return versions[i];
+    }
+    return 0;
+}
+
+bool rt_version_game_lib(int v, char *out, size_t n) {
+    if (v != 160 && v != 182) return false;
+#ifdef __ANDROID__
+    const char *in = SDL_GetAndroidInternalStoragePath();
+    return in && (size_t)snprintf(out, n, "%s/v%d/%s", in, v, GAMELIB_NAME) < n;
+#else
+    char r[1024];
+    return rt_version_root(v, r, sizeof r) && (size_t)snprintf(out, n, "%s" SEP "extracted" SEP "%s", r, GAMELIB_NAME) < n;
+#endif
+}
+
 void rt_paths_init(void) {
     if (!getcwd(g_start, sizeof g_start)) g_start[0] = 0;
     if (plat_exe_path(g_exe_dir, sizeof g_exe_dir)) {
@@ -106,6 +200,11 @@ void rt_paths_init(void) {
         snprintf(root, sizeof root, "%s/Library/Application Support/" RT_BUNDLE_ID, home && *home ? home : "/tmp");
 #endif
     }
+    if (!(env && *env)) {  // the game version the start screen chose: 1.6.0 / 1.8.2 in their own folder
+        int v = selected_version(root);
+        size_t l = strlen(root);
+        if (v != 100) snprintf(root + l, sizeof root - l, SEP "v%d", v);
+    }
     mkdirs(root);
     char msg[1400];
     if (!is_dir(root) || !writable(root) || chdir(root) != 0) {
@@ -119,7 +218,17 @@ void rt_paths_init(void) {
         fail(msg);
     }
     if (!getcwd(g_root, sizeof g_root)) snprintf(g_root, sizeof g_root, "%s", root);
-    fprintf(stderr, "[paths] data: %s\n", g_root);
+    // a version's own folder by its name (v160 / v182, chosen or LARECOMP_DATA_ROOT's), in 1.0.0's root
+    const char *base = strrchr(g_root, '/'), *bs = strrchr(g_root, '\\');
+    if (bs > base) base = bs;
+    snprintf(g_main, sizeof g_main, "%s", g_root);
+    g_version = 100;
+    if (base && (!strcmp(base + 1, "v160") || !strcmp(base + 1, "v182"))) {
+        g_version = atoi(base + 2);
+        snprintf(g_main, sizeof g_main, "%.*s", (int)(base - g_root), g_root);
+        version_seed();
+    }
+    fprintf(stderr, "[paths] data: %s (game version %d)\n", g_root, g_version);
 }
 
 const char *rt_data_root(void) { return g_root; }
@@ -145,12 +254,13 @@ bool rt_resource(const char *name, const char *dev_rel, char *out, size_t n) {
 static const char *const GAME_FILES[] = {"exefs", "romfs", "romfs.bin", GAMELIB_NAME, GAMELIB_NAME ".id", ".gamebuild",
                                          ".extract", "extract.log", "xci_secure", "nso_raw", "update_pfs", ".DS_Store"};
 
-// game_dir must be <data root>/extracted, a real folder (a dev worktree's symlinked extracted/ is refused)
+// game_dir must be <data root>/extracted or a game version's (set up from another version's start screen), a real
+// folder (a dev worktree's symlinked extracted/ is refused)
 static bool game_dir_ok(const char *game_dir) {
     char want[1100], got[1100];
     snprintf(want, sizeof want, "%s" SEP "extracted", g_root);
     if (!g_root[0] || is_link(game_dir) || !resolve(game_dir, got, sizeof got)) return false;
-    return path_eq(want, got);
+    return path_eq(want, got) || rt_game_dir_version(game_dir) != 0;
 }
 
 bool rt_remove_game_file(const char *game_dir, const char *name) {

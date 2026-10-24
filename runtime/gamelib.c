@@ -34,11 +34,59 @@ static bool exists(const char *p) {
     return f != NULL;
 }
 
+#ifdef __ANDROID__
+#include <sys/stat.h>
+static bool copy_to(const char *from, const char *to) {
+    FILE *in = fopen(from, "rb");
+    if (!in) return false;
+    char tmp[1200];
+    snprintf(tmp, sizeof tmp, "%s.tmp", to);
+    FILE *out = fopen(tmp, "wb");
+    bool ok = out != NULL;
+    static char buf[1 << 20];
+    for (size_t n; ok && (n = fread(buf, 1, sizeof buf, in)) > 0;) ok = fwrite(buf, 1, n, out) == n;
+    fclose(in);
+    if (out) ok &= fclose(out) == 0;
+    ok = ok && rename(tmp, to) == 0;
+    if (!ok) remove(tmp);
+    return ok;
+}
+
+// A 1.6.0 / 1.8.2 library in that version's extracted/ (put there over adb: android/push_game.sh) newer than the one in
+// internal storage, or another size, is copied in with its id - as BOTWRecompAndroidActivity does 1.0.0's. Once per
+// process: a copy that fails isn't tried again every frame.
+static void sync_from_game_dir(const char *game_dir, const char *lib) {
+    char src[1100], dir[1100];
+    snprintf(src, sizeof src, "%s/%s", game_dir, GAMELIB_NAME);
+    struct stat s, d;
+    if (stat(src, &s) != 0 || (stat(lib, &d) == 0 && d.st_size == s.st_size && d.st_mtime >= s.st_mtime)) return;
+    static char tried[1100];
+    if (!strcmp(tried, lib)) return;
+    snprintf(tried, sizeof tried, "%s", lib);
+    snprintf(dir, sizeof dir, "%s", lib);
+    char *sl = strrchr(dir, '/');
+    if (sl) *sl = 0, mkdir(dir, 0755);
+    char sid[1200], did[1200];
+    snprintf(sid, sizeof sid, "%s.id", src);
+    snprintf(did, sizeof did, "%s.id", lib);
+    bool ok = copy_to(src, lib) && copy_to(sid, did);
+    LOG("[gamelib] %s -> %s: %s\n", src, lib, ok ? "copied" : "copy failed");
+}
+#endif
+
 // The places to look, in order (gamelib.h). Returns how many were filled.
 static int candidates(const char *game_dir, char out[3][1100]) {
     int n = 0;
     const char *env = getenv("LARECOMP_GAME_LIB");
     if (env && *env) snprintf(out[n++], 1100, "%s", env);
+    char own[1024];
+    if (game_dir && rt_version_game_lib(rt_game_dir_version(game_dir), own, sizeof own)) {  // 1.6.0 / 1.8.2: only their
+#ifdef __ANDROID__                                                                         //  own, never 1.0.0's
+        sync_from_game_dir(game_dir, own);
+#endif
+        snprintf(out[n++], 1100, "%s", own);
+        return n;
+    }
     char exe_side[1024];
     if (rt_resource(GAMELIB_NAME, NULL, exe_side, sizeof exe_side) && exists(exe_side))
         snprintf(out[n++], 1100, "%s", exe_side);

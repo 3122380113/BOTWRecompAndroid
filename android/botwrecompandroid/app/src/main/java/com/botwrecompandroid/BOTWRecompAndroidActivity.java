@@ -10,8 +10,9 @@
 //   zig's headers) unpacked to <internal files>/gen once per app version, named in LARECOMP_GEN_DIR; its programs
 //   (libpymain.so, libzig.so) are in nativeLibraryDir;
 // - the system's pickers for the start screen (runtime/ui/launcher.mm): the game files folder (exefs/ and romfs/ are
-//   found in it; exefs/ is copied to <external files>/extracted and romfs.bin built there straight from romfs/) and
-//   the Vulkan driver (a .zip copied to the drivers folder).
+//   found in it; exefs/ is copied to its version's extracted/ - <external files>/extracted for 1.0.0, v160/ and v182/
+//   inside it for the others, runtime/paths.h - and romfs.bin built there straight from romfs/) and the Vulkan driver
+//   (a .zip copied to the drivers folder).
 // The data root (game files, saves, settings) is <external files>: /sdcard/Android/data/com.botwrecomp.android/files.
 // While in front it reports the battery and thermal state once a second for the performance overlay
 // (runtime/ui/perf_overlay.mm): apps can't read those in /sys.
@@ -63,8 +64,8 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
 
     private static native void nativeDeviceStats(float battTempC, float battPct, float watts, int thermal, float headroom);
     // the start screen (runtime/ui/launcher.mm)
-    private static native boolean nativeBuildIdOk(byte[] head);
-    private static native void nativeImportBegin(String name);
+    private static native int nativeGameVersion(byte[] head);
+    private static native String nativeImportBegin(String name, int version);
     private static native void nativeImportProgress(long done, long total);
     private static native void nativeImportDone(int result);
     private native String nativeBuildRomfs(String[] paths, long[] sizes);
@@ -519,7 +520,8 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
                 int got = 0;
                 for (int r; got < head.length && (r = in.read(head, got, head.length - got)) > 0; ) got += r;
             }
-            if (!nativeBuildIdOk(head)) {
+            int version = nativeGameVersion(head);  // (1.0.0, 1.6.0, 1.8.2: each set up in its own folder)
+            if (version == 0) {
                 nativeImportDone(4);
                 return;
             }
@@ -531,8 +533,7 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
             long romfsBytes = 0;
             for (Doc d : romfsFiles) romfsBytes = Math.addExact(romfsBytes, d.size);
             String name = DocumentsContract.getTreeDocumentId(tree);
-            nativeImportBegin(name.substring(name.lastIndexOf(':') + 1));
-            File games = new File(getExternalFilesDir(null), "extracted");
+            File games = new File(nativeImportBegin(name.substring(name.lastIndexOf(':') + 1), version));
             copied = reported = 0;
             total = Math.addExact(romfsBytes, treeBytes(tree, exefs));
             copyTree(tree, exefs, new File(games, "exefs"));
