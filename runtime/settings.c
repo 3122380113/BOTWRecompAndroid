@@ -36,6 +36,7 @@ Settings g_settings = {
 #ifdef __ANDROID__
     .show_fps = true,  // (the performance overlay, ui/perf_overlay.mm: on until turned off in the menu)
     .touch_controls = true,
+    .overlay_pos = {-1, -1},
     .touch_pos = {{-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1},
                   {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}},
     .touch_scale = 1.0f,
@@ -151,6 +152,7 @@ void settings_reset_defaults(void) {
     g_settings.show_fps = d->show_fps;
 #ifdef __ANDROID__
     g_settings.touch_controls = d->touch_controls;
+    g_settings.overlay_style = d->overlay_style;
     g_settings.fps_mode = d->fps_mode;
     g_settings.shader_int32 = d->shader_int32;
 #endif
@@ -184,6 +186,10 @@ void settings_load(void) {
         else if (!strcmp(key, "reverb")) g_settings.reverb = atoi(val) != 0;
         else if (!strcmp(key, "movie_audio")) g_settings.movie_audio = atoi(val) != 0;
         else if (!strcmp(key, "show_fps")) g_settings.show_fps = atoi(val) != 0;
+#ifdef __ANDROID__
+        else if (!strcmp(key, "overlay")) g_settings.overlay_style = !strcmp(val, "compact");
+        else if (!strcmp(key, "overlay_pos")) sscanf(val, "%f,%f", &g_settings.overlay_pos[0], &g_settings.overlay_pos[1]);
+#endif
 #ifdef __ANDROID__
         else if (!strcmp(key, "touch_controls")) g_settings.touch_controls = atoi(val) != 0;
         else if (!strcmp(key, "frame_rate")) g_settings.fps_mode = !strcmp(val, "30") ? 1 : !strcmp(val, "60") ? 2 : 0;
@@ -248,6 +254,10 @@ void settings_save(void) {
     fprintf(f, "reverb = %d\n", g_settings.reverb);
     fprintf(f, "movie_audio = %d\n", g_settings.movie_audio);
     fprintf(f, "show_fps = %d\n", g_settings.show_fps);
+#ifdef __ANDROID__
+    fprintf(f, "overlay = %s\n", g_settings.overlay_style == 1 ? "compact" : "full");
+    fprintf(f, "overlay_pos = %.4f,%.4f\n", g_settings.overlay_pos[0], g_settings.overlay_pos[1]);
+#endif
 #ifdef __ANDROID__
     fprintf(f, "touch_controls = %d\n", g_settings.touch_controls);
     fprintf(f, "frame_rate = %s\n", g_settings.fps_mode == 1 ? "30" : g_settings.fps_mode == 2 ? "60" : "auto");

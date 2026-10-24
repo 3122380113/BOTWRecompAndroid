@@ -2,15 +2,18 @@
 // emulators show: frame rate and frame time with a graph, CPU clusters and this app's CPU share, the GPU and its driver
 // and how much of the time the CPU waits on it (apps can't read the GPU's own load), memory, temperatures, battery
 // power and Android's thermal state (runtime/platform/android.c plat_device_stats; the battery and thermal state come
-// from the activity, BOTWRecompAndroidActivity.reportDeviceStats).
+// from the activity, BOTWRecompAndroidActivity.reportDeviceStats). Full, or compact (one line); a finger drags it
+// anywhere on the screen (ui/touch_controls.mm, g_settings.overlay_pos) - LASRecompAndroid's.
 #ifdef __ANDROID__
 #include <SDL3/SDL.h>
+#include <math.h>
 #include <stdio.h>
 
 #include "imgui.h"
 
 extern "C" {
 #include "platform.h"
+#include "../settings.h"
 uint64_t vk_cum_wait_ns(void);  // vulkan/exec.c
 const char *vk_gpu_desc(void);  // vulkan/device.c
 }
@@ -21,8 +24,24 @@ static ImVec4 grade(float v, float good, float ok) {  // green / yellow / red
     return v >= good ? ImVec4(0.45f, 0.95f, 0.45f, 1) : v >= ok ? ImVec4(1.0f, 0.85f, 0.3f, 1) : ImVec4(1.0f, 0.4f, 0.35f, 1);
 }
 
+// Where it was last drawn (pixels: x, y, w, h): ui/touch_controls.mm drags it with a finger (g_settings.overlay_pos)
+float g_perf_rect[4];
+
+static void place(ImVec2 display, float scale) {  // its saved place, kept on the screen at its last size
+    ImVec2 p(16 * scale, 16 * scale);
+    if (g_settings.overlay_pos[0] >= 0 && g_settings.overlay_pos[1] >= 0)
+        p = ImVec2(g_settings.overlay_pos[0] * display.x, g_settings.overlay_pos[1] * display.y);
+    p.x = fminf(fmaxf(p.x, 0), fmaxf(display.x - g_perf_rect[2], 0));
+    p.y = fminf(fmaxf(p.y, 0), fmaxf(display.y - g_perf_rect[3], 0));
+    ImGui::SetNextWindowPos(p);
+}
+
+static void record(void) {
+    ImVec2 p = ImGui::GetWindowPos(), z = ImGui::GetWindowSize();
+    g_perf_rect[0] = p.x, g_perf_rect[1] = p.y, g_perf_rect[2] = z.x, g_perf_rect[3] = z.y;
+}
+
 void perf_overlay_draw(ImVec2 display, float scale) {
-    (void)display;
     // frame times: this runs once per presented frame
     static float ft[FT_N];
     static int nft, head;
@@ -60,8 +79,27 @@ void perf_overlay_draw(ImVec2 display, float scale) {
         plat_device_stats(&ds);
     }
 
-    ImGui::SetNextWindowPos(ImVec2(16 * scale, 16 * scale));
+    place(display, scale);
     ImGui::SetNextWindowBgAlpha(0.55f);
+    if (g_settings.overlay_style == 1) {  // compact: one line - FPS, the app's RAM, the SoC's and the battery's temperature
+        ImGui::Begin("##perf", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
+                                         ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing);
+        ImGui::SetWindowFontScale(0.62f);
+        ImGui::TextColored(grade(fps, 55, 28), "FPS %.0f", fps);
+        ImGui::SameLine();
+        ImGui::Text("  RAM %u MB", ds.rss_mb);
+        if (ds.soc_temp_c > 0) {
+            ImGui::SameLine();
+            ImGui::TextColored(grade(100 - ds.soc_temp_c, 35, 20), "  SoC %.0f\xc2\xb0" "C", ds.soc_temp_c);
+        }
+        if (ds.batt_temp_c > 0) {
+            ImGui::SameLine();
+            ImGui::TextColored(grade(100 - ds.batt_temp_c, 60, 55), "  Bat %.0f\xc2\xb0" "C", ds.batt_temp_c);
+        }
+        record();
+        ImGui::End();
+        return;
+    }
     ImGui::Begin("##perf", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
                                      ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing);
     ImGui::SetWindowFontScale(0.62f);
@@ -129,6 +167,7 @@ void perf_overlay_draw(ImVec2 display, float scale) {
             ImGui::TextDisabled("(headroom %.2f)", ds.headroom);
         }
     }
+    record();
     ImGui::End();
 }
 #endif

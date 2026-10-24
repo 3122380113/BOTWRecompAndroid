@@ -523,7 +523,20 @@ static void tab_display(void) {
         g_want_fullscreen_apply.store(true);
     }
 #endif
+#ifdef __ANDROID__
+    opt_toggle("Show FPS", &g_settings.show_fps, false,
+               "Shows the performance overlay: the frame rate and how the phone is doing. Drag it with a finger to move it.");
+    {   // (ui/perf_overlay.mm; LASRecompAndroid's)
+        static const char *styles[] = {"Full", "Compact"};
+        if (!g_settings.show_fps) opt_disable_next();
+        opt_choice("Overlay style", &g_settings.overlay_style, styles, 2, 0,
+                   "Full: frame rate and frame times, CPU, GPU, memory, temperatures and power. Compact: one line - FPS, "
+                   "the app's RAM, the SoC's and the battery's temperature. Either one can be dragged anywhere on the "
+                   "screen with a finger.");
+    }
+#else
     opt_toggle("Show FPS", &g_settings.show_fps, false, "Shows the frame rate in the top right corner.");
+#endif
 #ifdef __ANDROID__
     opt_toggle("Touch controls", &g_settings.touch_controls, false,
                "On-screen buttons and stick while no controller is connected. The back button opens this menu.");
