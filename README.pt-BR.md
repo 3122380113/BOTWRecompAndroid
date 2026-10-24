@@ -60,17 +60,6 @@ android/push_game.sh Dump/01007EF00011E000           # arquivos e código do jog
 android/run_boot.sh 120                               # abre o jogo, log em android/out/boot.log
 ```
 
-## Conferindo o dump
-
-Coloque o dump em `Dump/<title id>/` (`Dump/01007EF00011E000/exefs` e `.../romfs`; a pasta é ignorada pelo git) e
-rode, com Python e o pacote `lz4`:
-
-```bash
-cd tools && python botw_dump.py
-```
-
-O script confere cada módulo, identifica a versão do jogo pelo build id do `main` e conta o romfs.
-
 ## Créditos
 
 - [peiikai](https://github.com/peiikai), pelo [LAS Recomp](https://github.com/peiikai/LASRecomp), o recompilador e o

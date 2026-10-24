@@ -60,17 +60,6 @@ android/push_game.sh Dump/01007EF00011E000           # game files and game code 
 android/run_boot.sh 120                               # start the game, log to android/out/boot.log
 ```
 
-## Checking your dump
-
-Put the dump in `Dump/<title id>/` (`Dump/01007EF00011E000/exefs` and `.../romfs`; the folder is ignored by git),
-then, with Python and the `lz4` package:
-
-```bash
-cd tools && python botw_dump.py
-```
-
-It checks every module, identifies the game version from the build id of `main` and counts the romfs.
-
 ## Credits
 
 - [peiikai](https://github.com/peiikai) for [LAS Recomp](https://github.com/peiikai/LASRecomp), the recompiler and
