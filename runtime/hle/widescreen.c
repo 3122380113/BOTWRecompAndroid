@@ -77,6 +77,19 @@ void rt_persp_update(uint64_t proj) {
     g_hooked = true;
     if (!proj || !widescreen_allowed() || g_shape <= 1.001f) return;
     float *aspect = (float *)(uintptr_t)(proj + 0xB0);
+    if (ENV("LARECOMP_LOG_ASPECT")) {  // (each projection rebuilt, once: near, far, fovy, aspect)
+        static uint64_t seen[256];
+        static int nseen;
+        bool found = false;
+        for (int i = 0; i < nseen && !found; i++) found = seen[i] == proj;
+        if (!found && nseen < 256) {
+            seen[nseen++] = proj;
+            extern uint64_t renderer_present_count(void);
+            const float *p = (const float *)(uintptr_t)(proj + 0x98);
+            LOG("[widescreen] frame %llu: projection %llx near %.2f far %.0f fovy %.1f deg aspect %.4f\n",
+                (unsigned long long)renderer_present_count(), (unsigned long long)proj, p[0], p[1], p[2] * 57.29578f, *aspect);
+        }
+    }
     if (!is_16_9(*aspect)) return;
     *aspect = 16.0f / 9.0f * g_shape;
     g_widened = true;

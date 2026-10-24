@@ -1598,8 +1598,16 @@ static void begin_pass(void) {
     if (in_pass && !st.rt_dirty) return;
     pipeline_dirty = true;
     vk_end_pass();
-    if (st.rt.depth && st.rt.ncolor >= 3 && st.rt.color[0] && vk_texture_scale_group(st.rt.color[0]) == RS_SCENE)
+    if (st.rt.depth && st.rt.ncolor >= 3 && st.rt.color[0] && vk_texture_scale_group(st.rt.color[0]) == RS_SCENE) {
         g_scene_frame = renderer_present_count();
+        static float last_w, last_h;  // (LARECOMP_LOG_SCENE=1: the game's dynamic resolution, the G-buffer's size)
+        static int log_scene = -1;
+        if (log_scene < 0) log_scene = getenv("LARECOMP_LOG_SCENE") != NULL;
+        if (log_scene && (st.viewport[0][2] != last_w || st.viewport[0][3] != last_h))
+            LOG("[scene] frame %llu: viewport %.0f x %.0f of %u x %u\n", (unsigned long long)g_scene_frame, st.viewport[0][2],
+                st.viewport[0][3], st.rt.color[0]->width, st.rt.color[0]->height);
+        last_w = st.viewport[0][2], last_h = st.viewport[0][3];
+    }
 #ifdef __ANDROID__
     {   // LARECOMP_VK_ASYNC: the GPU starts on a frame while the render thread still translates the rest of it - a
         // submission at a pass boundary (no pass split: on a tiler that would store and reload its tiles) once
@@ -6476,10 +6484,17 @@ static void exec_list(uint64_t handle, int depth) {
             if (mode == 0 || mode == 2) out[1] = pace_end_counter(prev_out, out, out[1]);
             prev_out = out;
             {   // (test) LARECOMP_TEST_COUNTER_DELAY_MS=<ms>: stall the host after a frame's first counter - a slow CPU
+                // (LARECOMP_TEST_SLOW_AT=<frame>:<count>: only those presented frames, 40 ms unless the delay is set:
+                // the game's dynamic resolution drops at a known frame)
                 static double delay = -1;
-                static uint64_t delayed_frame = ~0ull;
-                if (delay < 0) delay = getenv("LARECOMP_TEST_COUNTER_DELAY_MS") ? atof(getenv("LARECOMP_TEST_COUNTER_DELAY_MS")) : 0;
-                if (delay > 0 && vk_frame_counter() != delayed_frame) {
+                static uint64_t delayed_frame = ~0ull, slow_at, slow_n;
+                if (delay < 0) {
+                    delay = getenv("LARECOMP_TEST_COUNTER_DELAY_MS") ? atof(getenv("LARECOMP_TEST_COUNTER_DELAY_MS")) : 0;
+                    const char *e = getenv("LARECOMP_TEST_SLOW_AT");
+                    if (e && sscanf(e, "%llu:%llu", (unsigned long long *)&slow_at, (unsigned long long *)&slow_n) == 2 && delay <= 0) delay = 40;
+                }
+                bool in_window = !slow_n || (renderer_present_count() >= slow_at && renderer_present_count() < slow_at + slow_n);
+                if (delay > 0 && in_window && vk_frame_counter() != delayed_frame) {
                     delayed_frame = vk_frame_counter();
                     SDL_DelayPrecise((Uint64)(delay * 1e6));
                 }

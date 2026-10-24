@@ -1056,6 +1056,12 @@ void backend_present(NvnTexture *t) {
         OutScale os;
         extern void widescreen_set_shape(float f);  // (the window's: the game's cameras widen from the start)
         widescreen_set_shape((float)((dw / dh) / (16.0 / 9.0)));
+        {
+            static double last_dw, last_dh;
+            if (dw != last_dw || dh != last_dh)
+                LOG("[widescreen] frame %llu: window %.0f x %.0f\n", (unsigned long long)total_frames, dw, dh);
+            last_dw = dw, last_dh = dh;
+        }
         output_scale(dw, dh, widescreen_allowed(), SDL_GetTicksNS() / 1e9, -1, &os);
 #ifdef __ANDROID__
         static int matrix_trace = -1;
