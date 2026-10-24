@@ -3157,6 +3157,29 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
     if ((si->cbuf_dynamic & (1u << k)) && r.size) size = r.size > 0x10000 ? 0x10000 : r.size;
     if (size > r.size && r.size) size = r.size;
     if (size < 16) size = 16;
+    if (g_debug_frame && getenv("LARECOMP_DUMP_CBUF_FS")) {
+        // (diagnosis) LARECOMP_DUMP_CBUF_FS=<fs hash>+<fs hash>...: in debug frames, every constant buffer of those
+        // fragment shaders' draws, as floats (the first 0x400 bytes)
+        static uint64_t want[16];
+        static int nwant = -1;
+        if (nwant < 0) {
+            nwant = 0;
+            for (const char *e = getenv("LARECOMP_DUMP_CBUF_FS"); *e && nwant < 16;) {
+                want[nwant++] = strtoull(e, (char **)&e, 16);
+                while (*e == '+' || *e == ',') e++;
+            }
+        }
+        bool hit = false;
+        for (int i = 0; i < nwant; i++) hit |= want[i] == g_cur_fs_hash;
+        if (hit) {
+            const float *f = (const float *)(uintptr_t)r.addr;
+            uint64_t n = size < 0x400 ? size / 4 : 0x100;
+            LOG("[cbdump] frame %llu fs %016llx stage %d cb%d size %llx:", (unsigned long long)renderer_present_count(),
+                (unsigned long long)g_cur_fs_hash, stage, k, (unsigned long long)size);
+            for (uint64_t i = 0; i < n; i++) LOG(" %g", f[i]);
+            LOG("\n");
+        }
+    }
     {   // LARECOMP_LOG_CBUF=<fs hash>: the first floats of the draws of that fragment shader get in cb3 (its stage's
         // first game buffer), as copied - a race with the game's writes shows here without a debug frame's timing
         static uint64_t want = ~0ull;
@@ -5513,11 +5536,14 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
             b && b->scalable ? " scalable" : "", b && b->presented ? " presented" : "");
         {   // LARECOMP_DUMP_SAMPLED=<w>x<h>:<hex nvn format>: that sampled texture's every layer, level 0, raw (once a
             // debug frame, after the current pass: build/sampled_<w>x<h>_L<layer>.raw)
+            // (<w>x<h>:<format>@<hex address>: only the one at that address)
             static int dw = -1, dh, df;
-            if (dw < 0) { dw = 0; const char *e = getenv("LARECOMP_DUMP_SAMPLED"); if (e) sscanf(e, "%dx%d:%x", &dw, &dh, &df); }
+            static unsigned long long da;
+            if (dw < 0) { dw = 0; const char *e = getenv("LARECOMP_DUMP_SAMPLED"); if (e) sscanf(e, "%dx%d:%x@%llx", &dw, &dh, &df, &da); }
             extern TexBackend *g_dump_sampled;
             static uint64_t dumped_frame = ~0ull;
-            if (dw && b && (int)t->width == dw && (int)t->height == dh && (int)t->format == df && dumped_frame != renderer_present_count()) {
+            if (dw && b && (int)t->width == dw && (int)t->height == dh && (int)t->format == df && (!da || t->addr == da) &&
+                dumped_frame != renderer_present_count()) {
                 dumped_frame = renderer_present_count();
                 g_dump_sampled = b;
             }
