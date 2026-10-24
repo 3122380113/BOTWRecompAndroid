@@ -1762,6 +1762,9 @@ static void pass_size(int *w, int *h) {
     *h = (int)lroundf(*h * pass_sy);
 }
 
+static bool g_wide_backdrop;  // (this draw is a layout pane showing a target widened to the window: cbuf_info, scissor_rect)
+static bool g_off_layout;  // (this draw is a menu layout's pane placed past the 16:9 screen's sides: scissor_rect)
+
 static VkRect2D scissor_rect(void) {
     int w, h;
     pass_size(&w, &h);
@@ -1797,6 +1800,21 @@ static VkRect2D scissor_rect(void) {
     if (y < 0) { sh += y; y = 0; }
     if (w > (int)pass_w) w = (int)pass_w;
     if (h > (int)pass_h) h = (int)pass_h;
+    {   // ... and in the menus (pause, map) the panes placed past the 16:9 screen's sides stay in that part: pieces of
+        // their layouts it never shows (a black box right of the inventory's item description). Panes placed inside it
+        // may reach past it (the bars across the top and bottom)
+        extern bool widescreen_ui_centred(void);
+        extern bool framepace_in_menu(void);
+        extern float widescreen_factor(void);
+        NvnTexture *t0 = st.rt.ncolor ? st.rt.color[0] : NULL;
+        float g = widescreen_factor();
+        if (t0 && g_off_layout && g > 1.001f && widescreen_ui_centred() && framepace_in_menu() &&
+            vk_texture_scale_group(t0) == RS_OUT) {
+            int b0 = (int)floorf(w * (1 - 1 / g) * 0.5f), b1 = w - b0;
+            if (x < b0) { sw -= b0 - x; x = b0; }
+            if (x + sw > b1) sw = b1 - x;
+        }
+    }
     if (x >= w || y >= h) { x = y = 0; sw = sh = 0; }
     if (x + sw > w) sw = w - x;
     if (y + sh > h) sh = h - y;
@@ -3140,6 +3158,13 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
             LOG("[cbuf] %llx: %.3f %.3f %.3f %.3f + %.3f %.3f %.3f %.3f\n", (unsigned long long)r.addr, f[0], f[1], f[2],
                 f[3], f[4], f[5], f[6], f[7]);
         }
+        if (want && g_cur_fs_hash == want && k == 3 && stage == 0) {  // (and the vertex stage's, 40 floats)
+            const float *f = (const float *)(uintptr_t)r.addr;
+            char line[640];
+            int n = 0;
+            for (int i = 0; i < 40 && i * 4 < (int)size; i++) n += snprintf(line + n, sizeof line - n, "%s%.3f", i % 4 ? " " : " | ", f[i]);
+            LOG("[cbuf] vs %llx size %llx:%s\n", (unsigned long long)r.addr, (unsigned long long)size, line);
+        }
     }
 #ifdef __ANDROID__
     {
@@ -3163,7 +3188,25 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
         if (widescreen_ui_centred() && t0 && vk_texture_scale_group(t0) == RS_OUT && f[12] == 0 && f[13] == 0 && f[14] == -1.0f &&
             f[1] == 0 && f[2] == 0) {
             float g = widescreen_factor();
-            if (size >= 0x230 && f[15] == 0 && f[0] > 0 && fabsf(f[5] / f[0] - 16.0f / 9.0f * g) < 0.01f) {
+            extern bool framepace_in_menu(void);
+            if (g_debug_frame && size >= 0x230 && f[15] == 0)
+                LOG("[pane] fs %016llx x %.1f y %.1f m %.3f %.3f proj %.3f %.3f wide %d\n", (unsigned long long)g_cur_fs_hash, f[19],
+                    f[23], f[16], f[21], f[0], f[5], g_wide_backdrop);
+            if (size >= 0x230 && f[15] == 0 && f[0] > 0 && fabsf(f[5] / f[0] - 16.0f / 9.0f * g) < 0.01f && g_wide_backdrop &&
+                fabsf(f[19]) < 1.0f && g_cur_fs_hash == 0xd4fa32dabc35066cull) {
+                // (the blurred world: nn::ui2d's textured pane shader, centred - not the 3D Link beside the inventory,
+                // a picture of a widened target too)
+                VkSpan c = vk_transient_copy(f, size, 256);  // (the pane's x row, about the layout's middle)
+                for (int i = 16; i < 20; i++) ((float *)c.ptr)[i] *= g;
+                return ubo_span(c, size);
+            } else if (size >= 0x230 && f[15] == 0 && f[0] > 0 && g > 1.001f && fabsf(f[5] / f[0] - 16.0f / 9.0f) < 0.01f &&
+                       framepace_in_menu()) {
+                // A menu layout drawn through a camera of its own left at 16:9 (the inventory's cursor) would land
+                // g times farther from the middle than the rest: its projection's x row as the widened camera's
+                VkSpan c = vk_transient_copy(f, size, 256);
+                for (int i = 0; i < 4; i++) ((float *)c.ptr)[i] /= g;
+                return ubo_span(c, size);
+            } else if (size >= 0x230 && f[15] == 0 && f[0] > 0 && fabsf(f[5] / f[0] - 16.0f / 9.0f * g) < 0.01f) {
                 float d = widescreen_hud_shift(f[19]);
                 if (d != 0) {
                     VkSpan c = vk_transient_copy(f, size, 256);
@@ -4741,6 +4784,25 @@ static void draw_(CmdRec *r, bool indexed) {
         for (int i = 0; i < nskip; i++) if (last_hash == skip[i]) { stat_skipped++; return; }
         if (g_debug_frame && getenv("LARECOMP_LOG_FSHASH")) LOG("[fshash] fs=%llx hash %016llx\n", (unsigned long long)fs, (unsigned long long)last_hash);
         g_cur_fs_hash = last_hash;
+        {   // Widescreen: a menu's layout pane that shows a picture of the world (the blurred world behind the pause
+            // menu: a copy of the scene, a target widened to the window's shape) widens with it - drawn in the middle
+            // 16:9 part, its sides were black
+            extern bool widescreen_ui_centred(void);
+            g_wide_backdrop = false;
+            NvnTexture *rt = st.rt.ncolor ? st.rt.color[0] : NULL, *t;
+            float sx, sy;
+            if (widescreen_ui_centred() && rt && vk_texture_scale_group(rt) == RS_OUT && pr->fi && pr->fi->ntex &&
+                (t = shader_texture_object(1, &pr->fi->tex[0])) && t->target == 1) {
+                renderer_texture_scale(t, &sx, &sy);
+                g_wide_backdrop = sx > sy * 1.01f;
+            }
+            g_off_layout = false;  // (nn::ui2d's pane: its x at cb3[19], in layout units from the middle)
+            const Range *u = &st.ubuf[0][0];
+            if (widescreen_ui_centred() && rt && vk_texture_scale_group(rt) == RS_OUT && u->addr && u->size >= 0x230) {
+                const float *f = (const float *)(uintptr_t)u->addr;
+                g_off_layout = f[12] == 0 && f[13] == 0 && f[14] == -1.0f && f[15] == 0 && fabsf(f[19]) > 640.0f;
+            }
+        }
         {   // LARECOMP_LOG_FSHASH_FROM=<frame>: each fragment shader drawn from that frame on, once (with its target)
             static long from = -2;
             if (from == -2) from = getenv("LARECOMP_LOG_FSHASH_FROM") ? atol(getenv("LARECOMP_LOG_FSHASH_FROM")) : -1;
