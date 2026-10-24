@@ -1,4 +1,5 @@
 // IPC message parsing/serialization and session management.
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -42,16 +43,28 @@ Service *service_lookup(const char *name) {
 
 void ipc_return_object(IpcResp *resp, Service *s) { resp->objects[resp->nobjects++] = s; }
 
+// The services' references and the domains' object tables: the game's threads make requests at the same time, on
+// sessions that share a domain (CloneCurrentObject: the file system's). Unlocked, two files opened at once took the
+// same object id, and closing one took the other's away: "domain object missing", and the SDK aborted the game
+// (svcBreak while loading, 2026-10-24).
+static pthread_mutex_t g_obj_lock = PTHREAD_MUTEX_INITIALIZER;
+
 static uint32_t session_new(Service *s) {
     KSession *k = calloc(1, sizeof *k);
     k->obj.type = KOBJ_SESSION;
     k->svc = s;
+    pthread_mutex_lock(&g_obj_lock);
     s->refs++;
+    pthread_mutex_unlock(&g_obj_lock);
     return kernel_new_handle(&k->obj);
 }
 
 static void service_release(Service *s) {
-    if (s && --s->refs == 0 && s->on_close) s->on_close(s);
+    if (!s) return;
+    pthread_mutex_lock(&g_obj_lock);
+    bool last = --s->refs == 0;
+    pthread_mutex_unlock(&g_obj_lock);
+    if (last && s->on_close) s->on_close(s);
 }
 
 uint32_t ipc_connect_named_port(const char *name) {
@@ -188,8 +201,10 @@ int ipc_handle_request(Cpu *c, uint32_t handle) {
             req.domain_obj = *(uint32_t *)(payload + 4);
             if (dcmd == 2) {  // close object
                 if (req.domain_obj < 256) {
+                    pthread_mutex_lock(&g_obj_lock);
                     Service *o = sess->domain->objs[req.domain_obj];
                     sess->domain->objs[req.domain_obj] = NULL;
+                    pthread_mutex_unlock(&g_obj_lock);
                     service_release(o);
                 }
                 goto write_response;
@@ -207,11 +222,15 @@ int ipc_handle_request(Cpu *c, uint32_t handle) {
         req.data = payload + 16;
         req.data_size = raw_words * 4 > 32 ? raw_words * 4 - 32 : 0;
         Service *target = sess->svc;
-        if (sess->domain) {
+        if (sess->domain) {  // (held while it handles the request: another thread may close it meanwhile)
+            pthread_mutex_lock(&g_obj_lock);
             target = req.domain_obj < 256 ? sess->domain->objs[req.domain_obj] : NULL;
+            if (target) target->refs++;
+            pthread_mutex_unlock(&g_obj_lock);
             if (!target) { LOG("[ipc] domain object %u missing\n", req.domain_obj); return 0xE401; }
         }
         target->handler(target, &req, &resp);
+        if (sess->domain) service_release(target);
     } else if (req.type == 5 || req.type == 7) {  // control
         req.cmd = *(uint32_t *)(payload + 8);
         LOG("[ipc] control %u on %s (handle %x)\n", req.cmd, sess->svc->name, handle);
@@ -245,10 +264,15 @@ write_response:;
     int ndomain_out = 0;
     for (int i = 0; i < resp.nobjects; i++) {
         if (dom) {
+            pthread_mutex_lock(&g_obj_lock);
             int id = 1;
             while (id < 256 && sess->domain->objs[id]) id++;
-            sess->domain->objs[id] = resp.objects[i];
-            resp.objects[i]->refs++;
+            if (id < 256) {
+                sess->domain->objs[id] = resp.objects[i];
+                resp.objects[i]->refs++;
+            }
+            pthread_mutex_unlock(&g_obj_lock);
+            if (id >= 256) LOG("[ipc] domain full: object dropped\n");
             domain_out[ndomain_out++] = id;
         } else {
             resp.move_handles[resp.nmove++] = session_new(resp.objects[i]);

@@ -1054,6 +1054,16 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
     }
     case 0x26:  // Break
         if (x[0] & 0x80000000u) { LOG("[kernel] Break notification %llx\n", x[0]); x[0] = R_OK; break; }
+        {   // what failed: the 4-byte info is the Result an abort carries; the callers by the frame pointers
+            if (x[2] == 4 && x[1] >= GUEST_LO && x[1] + 4 <= GUEST_HI)
+                LOG("[kernel] svcBreak: result %#x (module %u, description %u)\n", *u32p(x[1]), *u32p(x[1]) & 0x1FF,
+                    (*u32p(x[1]) >> 9) & 0x1FFF);
+            LOG("[kernel] svcBreak: lr %llx, callers", (unsigned long long)x[30]);
+            uint64_t fp = x[29];
+            for (int i = 0; i < 12 && fp >= GUEST_LO && fp + 16 <= GUEST_HI; i++, fp = *(uint64_t *)(uintptr_t)fp)
+                LOG(" %llx", (unsigned long long)*(uint64_t *)(uintptr_t)(fp + 8));
+            LOG("\n");
+        }
         FATAL("svcBreak(reason=%llx, info=%llx, size=%llx) at %llx\n", x[0], x[1], x[2], pc);
     case 0x27: debug_string(x[0], x[1]); x[0] = R_OK; break;
     case 0x29: {  // GetInfo(_, id0, handle, id1)
