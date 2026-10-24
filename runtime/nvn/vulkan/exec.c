@@ -2634,7 +2634,24 @@ static NvnTexEntry *shader_texture_entry(int stage, ShaderTexture *st_) {
 }
 
 // The 3D scene upscaled for this draw (scene_upscale): sampled instead of the scene texture, at its scale.
-static struct { NvnTexture *t; VkImageView view; float sx, sy; } scene_up;
+static struct { NvnTexture *t; TexBackend *img; VkImageView view; float sx, sy; } scene_up;
+
+// That upscaled image seen through the game's own swizzle for the scene texture. BOTW's quick menu (weapons, shields)
+// draws its 1280x720 copy of the world full-screen like a scene composite, through a view forcing alpha to one; the
+// copy's alpha is 0, so the plain view drew it transparent - a black background.
+static VkImageView scene_up_view(const NvnTexEntry *e) {
+    const uint8_t *s = e->has_view && (e->view.setmask & 8) ? e->view.swizzle : e->tex->swizzle;
+    uint8_t c[4];
+    for (int i = 0; i < 4; i++) c[i] = s[i] <= 5 ? s[i] : (uint8_t)(2 + i);
+    if (!(c[0] || c[1] || c[2] || c[3])) c[0] = 2, c[1] = 3, c[2] = 4, c[3] = 5;  // (never set: identity)
+    if (vk_format_alpha_one(e->tex->format))
+        for (int i = 0; i < 4; i++) if (c[i] == 5) c[i] = 1;
+    if (c[0] == 2 && c[1] == 3 && c[2] == 4 && c[3] == 5) return scene_up.view;
+    // NVN swizzle 0 zero, 1 one, 2..5 r,g,b,a == VkComponentSwizzle - 1
+    VkComponentMapping sw = {(VkComponentSwizzle)(c[0] + 1), (VkComponentSwizzle)(c[1] + 1), (VkComponentSwizzle)(c[2] + 1),
+                             (VkComponentSwizzle)(c[3] + 1)};
+    return vk_image_view(scene_up.img, VK_IMAGE_VIEW_TYPE_2D, scene_up.img->format, 0, 1, 0, 1, sw, VK_IMAGE_ASPECT_COLOR_BIT);
+}
 static void scene_upscale(Prog *pr, CmdRec *r);
 
 static NvnTexture *shader_texture_object(int stage, ShaderTexture *st_) {
@@ -4248,7 +4265,7 @@ static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo
                 memo[ms].type = (uint8_t)st_->type; memo[ms].has_view = e->has_view; memo[ms].view = view;
             }
             renderer_texture_scale(e->tex, &sc[0], &sc[1]);
-            if (e->tex == scene_up.t && stage == 1) { view = scene_up.view; sc[0] = scene_up.sx; sc[1] = scene_up.sy; }
+            if (e->tex == scene_up.t && stage == 1) { view = scene_up_view(e); sc[0] = scene_up.sx; sc[1] = scene_up.sy; }
             wh[0] = e->tex->width; wh[1] = e->tex->height;
             for (int k = 0; k < nfeedback; k++)
                 if (e->tex == feedback_tex[k] && is_attachment_entry(e) && (st_->type == TEXTYPE_2D || st_->type == TEXTYPE_2D_ARRAY)) {
@@ -5421,8 +5438,9 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
                 st.tpool ? st.tpool->count : -1, stx->type);
             continue;
         }
-        LOG("[draw]   tex%d: %p %ux%u f%#x lv %u -> %ux%u scale %.4f %.4f%s\n", i, (void *)t, t->width, t->height, t->format,
-            b ? b->levels : 0, b ? b->width : 0, b ? b->height : 0, b ? b->sx : 0, b ? b->sy : 0, b && b->scalable ? " scalable" : "");
+        LOG("[draw]   tex%d: %p %ux%u f%#x @%llx lv %u -> %ux%u scale %.4f %.4f%s%s\n", i, (void *)t, t->width, t->height, t->format,
+            (unsigned long long)t->addr, b ? b->levels : 0, b ? b->width : 0, b ? b->height : 0, b ? b->sx : 0, b ? b->sy : 0,
+            b && b->scalable ? " scalable" : "", b && b->presented ? " presented" : "");
         {   // LARECOMP_DUMP_SAMPLED=<w>x<h>:<hex nvn format>: that sampled texture's every layer, level 0, raw (once a
             // debug frame, after the current pass: build/sampled_<w>x<h>_L<layer>.raw)
             static int dw = -1, dh, df;
@@ -6007,6 +6025,7 @@ static void scene_upscale(Prog *pr, CmdRec *r) {
         }
         vk_full_barrier(cb);
         scene_up.t = t;
+        scene_up.img = o;
         scene_up.view = post_view(o);
         scene_up.sx = (float)ow / (float)t->width;
         scene_up.sy = (float)oh / (float)t->height;

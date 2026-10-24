@@ -228,6 +228,10 @@ void rt_paths_init(void) {
         snprintf(g_main, sizeof g_main, "%.*s", (int)(base - g_root), g_root);
         version_seed();
     }
+    // (tests: screenshots and debug frames go to build/, which a new data root doesn't have yet)
+    if (getenv("LARECOMP_DEBUG_FRAME") || getenv("LARECOMP_SHOT_AT") || getenv("LARECOMP_SCREENSHOT_EVERY") ||
+        getenv("LARECOMP_SAVE_MSL") || getenv("LARECOMP_LAUNCHER_SHOT"))
+        mkdirs("build" SEP "frames");
     fprintf(stderr, "[paths] data: %s (game version %d)\n", g_root, g_version);
 }
 
