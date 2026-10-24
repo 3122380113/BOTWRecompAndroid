@@ -6401,7 +6401,14 @@ static void exec_list(uint64_t handle, int depth) {
                 if (bad++ < 5) LOG("[nvn] ReportCounter record %p: destination %p is not guest memory, skipped\n", (void *)r, (void *)out);
                 break;
             }
-            out[0] = 0;
+            // Type 1 is SAMPLES_PASSED, the game's occlusion test: a count of 0 told it everything it tested was
+            // hidden, and what it thinks hidden it stops animating (birds, smoke and mist far off, frozen in the sky
+            // until Link moved). It grows by a lot at every report, so any two give a difference: always visible.
+            // (LARECOMP_SAMPLES_PASSED=0: zero, as before)
+            static int samples = -1;
+            static uint64_t samples_n;
+            if (samples < 0) samples = !getenv("LARECOMP_SAMPLES_PASSED") || atoi(getenv("LARECOMP_SAMPLES_PASSED")) != 0;
+            out[0] = type == 1 && samples ? (samples_n += 1u << 20) : 0;
             out[1] = mode == 1 ? frame_ts : mode == 3 ? SDL_GetTicksNS() : ns_to_gpu_ticks(plat_now_ns());  // (3 legacy: ns, the old bug)
             static uint64_t *prev_out;  // (frame pacing: the pair's start)
             if (mode == 0 || mode == 2) out[1] = pace_end_counter(prev_out, out, out[1]);
