@@ -20,6 +20,7 @@ package com.botwrecompandroid;
 
 import android.app.Activity;
 import android.content.ContentResolver;
+import android.content.Context;
 import android.content.Intent;
 import android.database.Cursor;
 import android.net.Uri;
@@ -583,30 +584,31 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
         nativeImportDone(result);
     }
 
-    // A driver package (.zip, or a bare .so) into <external files>/drivers, in place of any there (customDriver loads
-    // it at the next start)
     private void importDriver(Uri f) {
+        nativeDriverPicked(installDriver(this, f));
+    }
+
+    // A driver package (.zip, or a bare .so) into <external files>/drivers, in place of any there (customDriver loads
+    // it at the next start). Its name, or "" (not a driver package, or the copy failed). Also DriverPickActivity's.
+    static String installDriver(Context ctx, Uri f) {
         String name = "driver.zip";
-        try (Cursor c = getContentResolver().query(f, new String[] {OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+        try (Cursor c = ctx.getContentResolver().query(f, new String[] {OpenableColumns.DISPLAY_NAME}, null, null, null)) {
             if (c != null && c.moveToFirst() && !c.isNull(0)) name = c.getString(0);
         } catch (Exception ignored) {
         }
         String low = name.toLowerCase();
-        if (!low.endsWith(".zip") && !low.endsWith(".so")) {
-            nativeDriverPicked("");
-            return;
-        }
+        if (!low.endsWith(".zip") && !low.endsWith(".so")) return "";
         try {
-            File dir = new File(getExternalFilesDir(null), "drivers");
+            File dir = new File(ctx.getExternalFilesDir(null), "drivers");
             deleteTree(dir);
             dir.mkdirs();
-            try (InputStream in = getContentResolver().openInputStream(f)) {
+            try (InputStream in = ctx.getContentResolver().openInputStream(f)) {
                 copy(in, new File(dir, name));
             }
-            nativeDriverPicked(name);
+            return name;
         } catch (Exception e) {
             Log.e(TAG, "driver: " + e);
-            nativeDriverPicked("");
+            return "";
         }
     }
 

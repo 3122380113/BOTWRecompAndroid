@@ -44,5 +44,12 @@
             <!-- the app icon's long-press shortcut: back to the system driver (res/xml/shortcuts.xml) -->
             <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
         </activity>
+        <!-- the long-press "Choose driver" shortcut: a driver package picked before the game starts (no window of its
+             own: the system's file picker, then the app again) -->
+        <activity
+            android:name=".DriverPickActivity"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true"
+            android:exported="true" />
     </application>
 </manifest>

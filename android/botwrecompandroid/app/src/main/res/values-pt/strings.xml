@@ -4,4 +4,7 @@
     <string name="shortcut_watch_map_long">Configurar o minimapa no relógio</string>
     <string name="shortcut_system_driver">Driver do sistema</string>
     <string name="shortcut_system_driver_long">Abrir com o driver do sistema</string>
+    <string name="shortcut_pick_driver">Escolher driver</string>
+    <string name="shortcut_pick_driver_long">Escolher um driver Vulkan (.zip)</string>
+    <string name="driver_not_a_package">Não é um pacote de driver (.zip ou .so): o driver não mudou.</string>
 </resources>

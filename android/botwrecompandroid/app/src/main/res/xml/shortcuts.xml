@@ -1,7 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Long-press the app icon: back to the system's Vulkan driver without opening the app first (a custom driver that
-     draws garbage, or never draws, leaves Settings out of reach). BOTWRecompAndroidActivity.SYSTEM_DRIVER. -->
+     draws garbage, or never draws, leaves Settings out of reach). BOTWRecompAndroidActivity.SYSTEM_DRIVER. And a driver
+     package chosen before the game starts (a system driver too old for the game stops the app before the start
+     screen): DriverPickActivity. -->
 <shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="pick_driver"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_pick_driver"
+        android:shortcutLongLabel="@string/shortcut_pick_driver_long">
+        <intent
+            android:action="com.botwrecompandroid.action.PICK_DRIVER"
+            android:targetPackage="com.botwrecomp.android"
+            android:targetClass="com.botwrecompandroid.DriverPickActivity" />
+    </shortcut>
     <shortcut
         android:shortcutId="watch_map"
         android:enabled="true"

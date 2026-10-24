@@ -113,6 +113,10 @@ static const struct { const char *name; uint32_t below; bool optional; } COMPAT_
     {VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE_EXTENSION_NAME, VK_API_VERSION_1_2},
 };
 #define N_COMPAT_EXT (sizeof COMPAT_EXT / sizeof *COMPAT_EXT)
+// (the fatal messages below: this check stops the app before the start screen, where Settings > Prelaunch > Choose
+// driver is - the app icon's long-press shortcut reaches it, DriverPickActivity.java)
+#define DRIVER_HINT "Another driver may have it - on Adreno GPUs, a Turnip driver: long-press the app icon, then Choose " \
+                    "driver. "
 static char g_compat_missing[640];  // (what a rejected GPU lacked: the fatal message names it all)
 
 // Whether a device below 1.3 has every extension it needs (missing ones logged)
@@ -212,10 +216,11 @@ static void pick_device(void) {
         if (score > best_score) { best_score = score; best = (int)i; best_queue = present_queue; }
     }
     if (best < 0 && have_api)
-        FATAL("No Vulkan GPU has a graphics+compute queue that can present to the screen. Check the selected driver.\n");
+        FATAL("No Vulkan GPU has a graphics+compute queue that can present to the screen. Check the selected driver "
+              "(long-press the app icon: Choose driver, or System driver).\n");
     if (best < 0)
         FATAL("This phone's Vulkan driver is too old for the game: it needs Vulkan 1.3, or 1.1 / 1.2 with extensions "
-              "(missing: %s). Check the selected driver and report your phone model and Android version.\n",
+              "(missing: %s). " DRIVER_HINT "Otherwise, report your phone model and Android version.\n",
               g_compat_missing[0] ? g_compat_missing : "Vulkan 1.1");
     g_vk.phys = pd[best];
     free(pd);
@@ -428,8 +433,8 @@ static void create_device(void) {
             q_eds.extendedDynamicState, q_eds2.extendedDynamicState2, q_dr.dynamicRendering, q_s2.synchronization2,
             q_dem.shaderDemoteToHelperInvocation, q_term.shaderTerminateInvocation);
         if (!q_eds.extendedDynamicState || !q_eds2.extendedDynamicState2)
-            FATAL("Vulkan driver on %s lacks a feature required by this renderer: extendedDynamicState%s.\n"
-                  "Include this message, phone model and app version in your bug report.\n",
+            FATAL("Vulkan driver on %s lacks a feature required by this renderer: extendedDynamicState%s. " DRIVER_HINT
+                  "\nInclude this message, phone model and app version in your bug report.\n",
                   g_vk.props.deviceName, q_eds.extendedDynamicState ? "2" : "");
     }
 #ifdef __ANDROID__
@@ -469,7 +474,7 @@ static void create_device(void) {
             (unsigned long long)g_vk.props.limits.minStorageBufferOffsetAlignment, types);
     }
     const char *missing = vk_missing_backend_feature(&h11, &h12, &h13);
-    if (missing) FATAL("Vulkan driver on %s lacks a feature required by this renderer: %s.\n"
+    if (missing) FATAL("Vulkan driver on %s lacks a feature required by this renderer: %s. " DRIVER_HINT "\n"
                        "Driver: %s. Include this message, phone model and app version in your bug report.\n",
                        g_vk.props.deviceName, missing, driver.driverName);
 #endif
