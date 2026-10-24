@@ -96,10 +96,11 @@ static bool has_ext(VkExtensionProperties *e, uint32_t n, const char *name) {
 // extensions. The backend then runs exactly its 1.3 code: the extensions' functions take the core names' place
 // (compat_aliases, volk's pointers) and their structures are the same. `below`: the version from which it is core.
 // After LASRecomp-Android-Plus by Nycolazs (MIT, runtime/nvn/vulkan/device.c COMPAT_EXT / compat_ok / compat_aliases).
-static const struct { const char *name; uint32_t below; } COMPAT_EXT[] = {
-    {VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME, VK_API_VERSION_1_3},
-    {VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME, VK_API_VERSION_1_2},  // (dynamic rendering needs these two)
-    {VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME, VK_API_VERSION_1_2},
+// optional: without it the backend still runs (dynamic rendering: classic render passes instead, rpcompat.c)
+static const struct { const char *name; uint32_t below; bool optional; } COMPAT_EXT[] = {
+    {VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME, VK_API_VERSION_1_3, true},
+    {VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME, VK_API_VERSION_1_2, true},  // (dynamic rendering needs these two)
+    {VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME, VK_API_VERSION_1_2, true},
     {VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME, VK_API_VERSION_1_3},
     {VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME, VK_API_VERSION_1_3},
     {VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME, VK_API_VERSION_1_3},
@@ -128,7 +129,8 @@ static bool compat_ok(VkPhysicalDevice pd, uint32_t api) {
     g_compat_missing[0] = 0;  // (every one missing, so a report names them all at once)
     for (size_t i = 0; i < N_COMPAT_EXT; i++)
         if (api < COMPAT_EXT[i].below && !has_ext(ep, ne, COMPAT_EXT[i].name)) {
-            LOG("[vk-cap]   missing %s\n", COMPAT_EXT[i].name);
+            LOG("[vk-cap]   missing %s%s\n", COMPAT_EXT[i].name, COMPAT_EXT[i].optional ? " (optional)" : "");
+            if (COMPAT_EXT[i].optional) continue;
             size_t l = strlen(g_compat_missing);
             snprintf(g_compat_missing + l, sizeof g_compat_missing - l, "%s%s", l ? ", " : "", COMPAT_EXT[i].name);
             ok = false;
@@ -318,8 +320,12 @@ static void create_device(void) {
     uint32_t n_ext = 0;
     ext[n_ext++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
 #ifdef __ANDROID__
-    for (size_t i = 0; i < N_COMPAT_EXT; i++)  // (below 1.3: pick_device checked they're all there)
-        if (g_vk.api < COMPAT_EXT[i].below) ext[n_ext++] = COMPAT_EXT[i].name;
+    // (dynamic rendering: core in 1.3, below it its extension and the two it needs - the three or none)
+    bool dr_ext = g_vk.api >= VK_API_VERSION_1_3 || (has_ext(ep, ne, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME) &&
+                                                     has_ext(ep, ne, VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME) &&
+                                                     has_ext(ep, ne, VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME));
+    for (size_t i = 0; i < N_COMPAT_EXT; i++)  // (below 1.3: pick_device checked the others are all there)
+        if (g_vk.api < COMPAT_EXT[i].below && (!COMPAT_EXT[i].optional || dr_ext)) ext[n_ext++] = COMPAT_EXT[i].name;
     // (VkPhysicalDeviceDriverProperties: core from 1.2, before that its own extension, only queried)
     bool driver_props = g_vk.api >= VK_API_VERSION_1_2 || has_ext(ep, ne, VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME);
 #endif
@@ -426,6 +432,16 @@ static void create_device(void) {
                   "Include this message, phone model and app version in your bug report.\n",
                   g_vk.props.deviceName, q_eds.extendedDynamicState ? "2" : "");
     }
+#ifdef __ANDROID__
+    // Dynamic rendering where the driver has it; without, classic render passes (rpcompat.c).
+    // LARECOMP_NO_DYNAMIC_RENDERING=1: render passes on any driver (to test that path).
+    g_vk.dyn_render = dr_ext && h13.dynamicRendering &&
+                      !(getenv("LARECOMP_NO_DYNAMIC_RENDERING") && atoi(getenv("LARECOMP_NO_DYNAMIC_RENDERING")));
+    if (!g_vk.dyn_render)
+        LOG("[vk] no dynamic rendering (%s): classic render passes\n", dr_ext && h13.dynamicRendering ? "switched off" : "the driver lacks it");
+#else
+    g_vk.dyn_render = true;
+#endif
     VkPhysicalDeviceDriverProperties driver = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
     VkPhysicalDeviceProperties2 properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
                                               .pNext = driver_props ? &driver : NULL};
@@ -464,7 +480,7 @@ static void create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT, .customBorderColors = VK_TRUE,
         .customBorderColorWithoutFormat = VK_TRUE, .pNext = g_vk.divisor ? &div : NULL};
     VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
-                                            .dynamicRendering = VK_TRUE, .synchronization2 = VK_TRUE,
+                                            .dynamicRendering = g_vk.dyn_render, .synchronization2 = VK_TRUE,
                                             .shaderDemoteToHelperInvocation = VK_TRUE, .shaderTerminateInvocation = VK_TRUE,
                                             .maintenance4 = VK_TRUE,
                                             .pNext = g_vk.custom_border ? (void *)&cbc : g_vk.divisor ? (void *)&div : NULL};
@@ -488,9 +504,9 @@ static void create_device(void) {
     // Below 1.3: the same features through the extensions' structures (1.2: its own 11 / 12 ones and the 1.3
     // extensions'; 1.1: the extensions' for both), ahead of the optional ones f13 led to
     VkPhysicalDeviceDynamicRenderingFeaturesKHR e_dr = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR,
-                                                        .dynamicRendering = VK_TRUE, .pNext = f13.pNext};
+                                                        .dynamicRendering = g_vk.dyn_render, .pNext = f13.pNext};
     VkPhysicalDeviceSynchronization2FeaturesKHR e_s2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR,
-                                                        .synchronization2 = VK_TRUE, .pNext = &e_dr};
+                                                        .synchronization2 = VK_TRUE, .pNext = dr_ext ? (void *)&e_dr : e_dr.pNext};
     VkPhysicalDeviceExtendedDynamicStateFeaturesEXT e_eds = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT, .extendedDynamicState = VK_TRUE,
         .pNext = &e_s2};
@@ -738,7 +754,7 @@ static void create_swapchain(void) {
         .compositeAlpha = alpha, .presentMode = present_mode(), .clipped = VK_TRUE,
         .oldSwapchain = old};
     VK_CHECK(vkCreateSwapchainKHR(g_vk.dev, &ci, NULL, &g_vk.swapchain));
-    for (uint32_t i = 0; i < g_vk.sc_count; i++) vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
+    for (uint32_t i = 0; i < g_vk.sc_count; i++) vk_rp_forget_view(g_vk.sc_views[i]), vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
     if (old) vkDestroySwapchainKHR(g_vk.dev, old, NULL);
     g_vk.sc_format = sf.format;
     g_vk.sc_extent = ext;
@@ -785,7 +801,7 @@ static bool android_surface_ready(void) {  // false: no window to draw into now
     if (!aw) { surface_lost = true; return false; }
     if (aw == surface_aw && !surface_lost) return true;
     vkDeviceWaitIdle(g_vk.dev);
-    for (uint32_t i = 0; i < g_vk.sc_count; i++) vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
+    for (uint32_t i = 0; i < g_vk.sc_count; i++) vk_rp_forget_view(g_vk.sc_views[i]), vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
     g_vk.sc_count = 0;
     if (g_vk.swapchain) vkDestroySwapchainKHR(g_vk.dev, g_vk.swapchain, NULL);
     g_vk.swapchain = VK_NULL_HANDLE;
@@ -873,7 +889,7 @@ bool vk_frame_begin(const float clear[4]) {
                                     .clearValue.color.float32 = {clear[0], clear[1], clear[2], clear[3]}};
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, g_vk.sc_extent}, .layerCount = 1,
                           .colorAttachmentCount = 1, .pColorAttachments = &ca};
-    vkCmdBeginRendering(cb, &ri);
+    vk_begin_rendering(cb, &ri, &g_vk.sc_format, VK_FORMAT_UNDEFINED, VK_SAMPLE_COUNT_1_BIT);
     VkViewport vp = {0, 0, (float)g_vk.sc_extent.width, (float)g_vk.sc_extent.height, 0, 1};
     VkRect2D sc = {{0, 0}, g_vk.sc_extent};
     vkCmdSetViewport(cb, 0, 1, &vp);
@@ -885,7 +901,7 @@ bool vk_frame_begin(const float clear[4]) {
 // Passes of their own between vk_frame_begin and vk_frame_end (exec.c post passes): end the window image's
 // rendering, and begin it again keeping what was drawn.
 void vk_frame_suspend(void) {
-    if (cur_frame.ok) vkCmdEndRendering(vk_cmd());
+    if (cur_frame.ok) vk_end_rendering(vk_cmd());
 }
 void vk_frame_resume(void) {
     if (!cur_frame.ok) return;
@@ -895,7 +911,7 @@ void vk_frame_resume(void) {
                                     .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, g_vk.sc_extent}, .layerCount = 1,
                           .colorAttachmentCount = 1, .pColorAttachments = &ca};
-    vkCmdBeginRendering(cb, &ri);
+    vk_begin_rendering(cb, &ri, &g_vk.sc_format, VK_FORMAT_UNDEFINED, VK_SAMPLE_COUNT_1_BIT);
     VkViewport vp = {0, 0, (float)g_vk.sc_extent.width, (float)g_vk.sc_extent.height, 0, 1};
     VkRect2D sc = {{0, 0}, g_vk.sc_extent};
     vkCmdSetViewport(cb, 0, 1, &vp);
@@ -923,7 +939,7 @@ void vk_frame_end(const char *shot_path) {
         shot_path = NULL;
     }
     VkCommandBuffer cb = vk_cmd();
-    vkCmdEndRendering(cb);
+    vk_end_rendering(cb);
     VkSpan shot = {0};
     if (shot_path) save_window_image(cb, &shot);
     image_barrier(cb, g_vk.sc_images[cur_frame.image], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);

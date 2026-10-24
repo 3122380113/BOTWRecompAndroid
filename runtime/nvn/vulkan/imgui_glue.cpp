@@ -27,10 +27,12 @@ extern "C" bool vk_imgui_backend_init(void) {
     ii.ImageCount = (g_vk.sc_count > 3 ? g_vk.sc_count : 3) + 1;  // vertex buffers rotate per image: cover frames in flight
     ii.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
     ii.PipelineCache = g_vk.pcache;
-    ii.UseDynamicRendering = true;
+    ii.UseDynamicRendering = g_vk.dyn_render;
     ii.PipelineRenderingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR;
     ii.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
     ii.PipelineRenderingCreateInfo.pColorAttachmentFormats = &g_vk.sc_format;
+    if (!g_vk.dyn_render)  // (no dynamic rendering: the window image's render pass, rpcompat.c)
+        ii.RenderPass = vk_rp_compat(1, &g_vk.sc_format, VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED, VK_SAMPLE_COUNT_1_BIT);
     bool ok = ImGui_ImplVulkan_Init(&ii);
     if (!ok) LOG("[vk] ImGui Vulkan backend init failed\n");
     return ok;

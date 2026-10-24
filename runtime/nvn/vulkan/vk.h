@@ -43,6 +43,7 @@ typedef struct {
     VkSemaphore timeline;      // value = last completed submission number
     VkCommandPool pool;        // render thread only
     bool custom_border, divisor, host_import, shader_int64;
+    bool dyn_render;              // VK_KHR_dynamic_rendering in use; without it, classic render passes (rpcompat.c)
 #ifdef __ANDROID__
     bool map_placed;              // VK_EXT_map_memory_placed: the guest heap mapped as GPU memory (exec.c vk_heap_place)
     uint64_t placed_align;
@@ -59,6 +60,16 @@ typedef struct {
     VkImageView sc_views[8];
 } VkG;
 extern VkG g_vk;
+
+// ---- rendering: dynamic rendering, or classic render passes without it (rpcompat.c)
+// colors / ds_format: the attachments' view formats (VK_FORMAT_UNDEFINED: an unused slot), as the pipelines get them
+void vk_begin_rendering(VkCommandBuffer cb, const VkRenderingInfo *ri, const VkFormat *colors, VkFormat ds_format,
+                        VkSampleCountFlagBits samples);
+void vk_end_rendering(VkCommandBuffer cb);
+// A render pass a pipeline is made against (VK_NULL_HANDLE with dynamic rendering: VkPipelineRenderingCreateInfo then)
+VkRenderPass vk_rp_compat(uint32_t ncolor, const VkFormat *colors, VkFormat depth, VkFormat stencil, VkSampleCountFlagBits samples);
+void vk_rp_forget_view(VkImageView v);  // (a view destroyed: the framebuffers holding it go)
+void vk_rp_collect(uint64_t done_seq);
 
 // ---- submissions (exec.c)
 // Work is recorded into the current command buffer; uploads go into a separate one that runs first.
