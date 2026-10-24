@@ -340,8 +340,10 @@ static void *extract_thread(void *) {
     bool ok = false;
 #ifdef __ANDROID__
     extern std::atomic<bool> g_android_imported;
-    if (g_android_imported.exchange(false)) {  // (the activity copied exefs/ and built romfs.bin: below) the code
-        if (!build_game_code(dest)) goto done;
+    if (g_android_imported.exchange(false)) {  // (the activity copied exefs/ and built romfs.bin: below) the code -
+        // unless the picked folder brought it built already for this app (its id: runtime/gamelib.c)
+        if (gamelib_present(dest.c_str())) fprintf(stderr, "[launcher] game code from the picked folder\n");
+        else if (!build_game_code(dest)) goto done;
         goto check;
     }
 #endif

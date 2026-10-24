@@ -426,10 +426,19 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
     // levels below it (as runtime/ui/launcher.mm find_game)
     private Doc exefs, romfs;
     private boolean packages;
+    // A game code built already (botwgame.so with its .id, and .game: the game version it's for - a package made on a
+    // PC from the same files), used instead of building it on the phone when it's for this version and this app
+    private Doc preLib, preId, preGame;
 
     private void find(Uri tree, Doc dir, int depth) {
         if (depth > 4 || (exefs != null && romfs != null)) return;
         List<Doc> kids = children(tree, dir.id);
+        if (preLib == null && named(kids, "botwgame.so") != null && named(kids, "botwgame.so.id") != null &&
+            named(kids, "botwgame.so.game") != null) {
+            preLib = named(kids, "botwgame.so");
+            preId = named(kids, "botwgame.so.id");
+            preGame = named(kids, "botwgame.so.game");
+        }
         if (exefs == null && named(kids, "main") != null && named(kids, "main.npdm") != null) exefs = dir;
         Doc rc = named(kids, "Pack");
         if (romfs == null && rc != null && rc.dir) romfs = dir;
@@ -501,10 +510,21 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
         }
     }
 
+    private String readText(Uri tree, Doc d) {
+        try (InputStream in = getContentResolver().openInputStream(DocumentsContract.buildDocumentUriUsingTree(tree, d.id))) {
+            byte[] b = new byte[64];
+            int n = in.read(b);
+            return n > 0 ? new String(b, 0, n, java.nio.charset.StandardCharsets.UTF_8) : "";
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
     private void importGame(Uri tree) {
         int result;
         try {
             exefs = romfs = null;
+            preLib = preId = preGame = null;
             packages = false;
             Doc root = new Doc();
             root.id = DocumentsContract.getTreeDocumentId(tree);
@@ -537,6 +557,12 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
             copied = reported = 0;
             total = Math.addExact(romfsBytes, treeBytes(tree, exefs));
             copyTree(tree, exefs, new File(games, "exefs"));
+            if (preLib != null && Integer.toString(version).equals(readText(tree, preGame).trim())) {
+                // (the native side checks its id against this app's and builds it on the phone when they differ)
+                copyDoc(tree, preId, new File(games, "botwgame.so.id"));
+                copyDoc(tree, preLib, new File(games, "botwgame.so"));
+                Log.i(TAG, "game code from the picked folder: " + preLib.size + " bytes");
+            }
             nativeImportProgress(copied, total);
             long[] sizes = new long[romfsFiles.size()];
             for (int i = 0; i < sizes.length; i++) sizes[i] = romfsFiles.get(i).size;

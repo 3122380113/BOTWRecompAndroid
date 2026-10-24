@@ -11,6 +11,7 @@
 #endif
 
 #include "paths.h"
+#include "platform.h"
 #include "rt.h"
 
 static const GameLibTables *g_tables;
@@ -87,6 +88,16 @@ static int candidates(const char *game_dir, char out[3][1100]) {
         snprintf(out[n++], 1100, "%s", own);
         return n;
     }
+#ifdef __ANDROID__
+    {   // 1.0.0's next to "the executable" (the activity copies it there at start; one set up just now, here)
+        char exe[1024];
+        if (game_dir && rt_game_dir_version(game_dir) == 100 && plat_exe_path(exe, sizeof exe) && strrchr(exe, '/')) {
+            *strrchr(exe, '/') = 0;
+            snprintf(own, sizeof own, "%s/%s", exe, GAMELIB_NAME);
+            sync_from_game_dir(game_dir, own);
+        }
+    }
+#endif
     char exe_side[1024];
     if (rt_resource(GAMELIB_NAME, NULL, exe_side, sizeof exe_side) && exists(exe_side))
         snprintf(out[n++], 1100, "%s", exe_side);
