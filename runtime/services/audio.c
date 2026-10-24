@@ -689,7 +689,12 @@ static void *renderer_tick(void *arg) {
     return NULL;
 }
 
-static void update_voice(Renderer *r, Voice *v, const uint8_t *p, uint8_t *out) {
+// A VoiceInParameter. v2: REV15's VoiceInParameter2 (0x188 bytes): its two biquad filters take float coefficients,
+// 0x18 bytes each instead of 0xC, so everything after them is 0x18 further on. Read as the old one, BOTW 1.8.2's
+// voices past the first came out garbage (sample formats 61, 72, 221...): most of its sounds never played, and a
+// voiced line that never ends holds its text - the new game stuck at Zelda's "Now, go..." (2026-10-24).
+static void update_voice(Renderer *r, Voice *v, const uint8_t *p, uint8_t *out, bool v2) {
+    const int d = v2 ? 0x18 : 0;
     uint8_t is_new = p[8];
     if (is_new) {
         memset(v, 0, sizeof *v);
@@ -711,28 +716,32 @@ static void update_voice(Renderer *r, Voice *v, const uint8_t *p, uint8_t *out) 
     v->chans = ch > 6 ? 6 : (uint8_t)ch;
     memcpy(&v->pitch, p + 28, 4);
     memcpy(&v->volume, p + 32, 4);
-    memcpy(&v->wb_count, p + 60, 4);
-    memcpy(&v->ds_addr, p + 72, 8);
-    memcpy(&v->mix_id, p + 88, 4);
-    memcpy(&v->splitter_id, p + 92, 4);
-    memcpy(v->chan_ids, p + 320, 24);
-    v->flush += p[345];
-    memcpy(&v->behaviour, p + 348, 2);
-    if (p[344]) v->drop = 0;
-    for (int f = 0; f < 2; f++) {  // BiquadFilterParameter: enable, reserved, s16 numerator[3], denominator[2] (Q14)
-        const uint8_t *b = p + 36 + f * 12;
+    memcpy(&v->wb_count, p + 60 + d, 4);
+    memcpy(&v->ds_addr, p + 72 + d, 8);
+    memcpy(&v->mix_id, p + 88 + d, 4);
+    memcpy(&v->splitter_id, p + 92 + d, 4);
+    memcpy(v->chan_ids, p + 320 + d, 24);
+    v->flush += p[345 + d];
+    memcpy(&v->behaviour, p + 348 + d, 2);
+    if (p[344 + d]) v->drop = 0;
+    for (int f = 0; f < 2; f++) {
+        // BiquadFilterParameter: enable, reserved, s16 numerator[3], denominator[2] (Q14); v2: enable, 3 reserved,
+        // float numerator[3], denominator[2]
+        const uint8_t *b = p + 36 + f * (v2 ? 0x18 : 0xC);
+        float k[5];
+        if (v2) memcpy(k, b + 4, 20);
+        else {
+            int16_t c[5];
+            memcpy(c, b + 2, 10);
+            for (int i = 0; i < 5; i++) k[i] = c[i] / 16384.0f;
+        }
         if (b[0] && !v->bq_on[f]) {
             v->bq_reset[f] = 1;
-            if (getenv("LARECOMP_AUDIO_LOG")) {
-                int16_t k[5];
-                memcpy(k, b + 2, 10);
-                LOG("[audren] v%ld biquad%d on: %d %d %d / %d %d\n", (long)(v - r->voice), f, k[0], k[1], k[2], k[3], k[4]);
-            }
+            if (getenv("LARECOMP_AUDIO_LOG"))
+                LOG("[audren] v%ld biquad%d on: %.4f %.4f %.4f / %.4f %.4f\n", (long)(v - r->voice), f, k[0], k[1], k[2], k[3], k[4]);
         }
         v->bq_on[f] = b[0];
-        int16_t c[5];
-        memcpy(c, b + 2, 10);
-        for (int k = 0; k < 5; k++) v->bq[f][k] = c[k] / 16384.0f;
+        memcpy(v->bq[f], k, sizeof k);
     }
     if (v->splitter_id != 0xFFFFFFFF && v->mix_id < 0) {
         static int warned;
@@ -742,7 +751,7 @@ static void update_voice(Renderer *r, Voice *v, const uint8_t *p, uint8_t *out) 
     if (is_new)
         for (int c = 0; c < v->chans; c++) memset(r->chst[v->chan_ids[c] % r->voices].valid, 0, WB_COUNT);
     for (int i = 0; i < WB_COUNT; i++) {
-        const uint8_t *w = p + 96 + i * 0x38;
+        const uint8_t *w = p + 96 + d + i * 0x38;
         WaveBuf *wb = &v->wb[i];
         if (!cs0->valid[i] && wb->sent) wb->addr = 0;
         if (!w[26]) {  // !SentToServer: a new buffer for the DSP
@@ -786,7 +795,7 @@ static void update_voice(Renderer *r, Voice *v, const uint8_t *p, uint8_t *out) 
                     (long)(v - r->voice), i, v->fmt, v->rate, v->chans, v->pitch, v->volume, v->mix_id, v->chan_ids[0],
                     (unsigned long long)wb->addr, (unsigned long long)wb->size, wb->start, wb->end, wb->loop,
                     wb->loop_count, wb->eos, (unsigned long long)wb->ctx, (unsigned long long)v->ds_addr);
-            if (vlog && v->ds_addr) {
+            if (vlog && v->ds_addr && in_guest(v->ds_addr, 38)) {
                 const int16_t *k = (const int16_t *)(uintptr_t)v->ds_addr;
                 LOG("[audren]   coefs v%ld:", (long)(v - r->voice));
                 for (int j = 0; j < 19; j++) LOG(" %d", k[j]);
@@ -847,7 +856,10 @@ static void request_update(Renderer *r, IpcReq *req, IpcResp *resp) {
             LOG("[audren] dumped %s (%llu bytes, rev %08x)\n", path, (unsigned long long)in->size, r->revision);
         }
     }
-    uint32_t npools = pools_sz / 0x20, nvoices = voices_sz / 0x170, neffects = effects_sz / 0xC0;
+    // (a voice's parameters: 0x188 bytes from REV15 - VoiceInParameter2, update_voice - 0x170 before)
+    bool voice2 = (r->revision >> 24) - '0' >= 15 && voices_sz == r->voices * 0x188u;
+    uint32_t vstride = voice2 ? 0x188 : 0x170;
+    uint32_t npools = pools_sz / 0x20, nvoices = voices_sz / vstride, neffects = effects_sz / 0xC0;
     uint32_t nchans = chans_sz / 0x70, nsinks = sinks_sz / 0x140;
     if (nvoices > r->voices) nvoices = r->voices;
     if (nchans > r->voices) nchans = r->voices;
@@ -878,8 +890,8 @@ static void request_update(Renderer *r, IpcReq *req, IpcResp *resp) {
     oh[3] = r->voices * 0x10;
     for (uint32_t i = 0; i < r->voices; i++) r->voice[i].in_use = 0;
     for (uint32_t i = 0; i < nvoices && o + 0x10 <= out->size; i++, o += 0x10) {
-        const uint8_t *v = vin + i * 0x170;
-        if (v[9]) update_voice(r, &r->voice[i], v, op + o);
+        const uint8_t *v = vin + i * vstride;
+        if (v[9]) update_voice(r, &r->voice[i], v, op + o, voice2);
     }
     // effects (not processed): report them as enabled/disabled per request
     const uint8_t *ein = vin + voices_sz;
