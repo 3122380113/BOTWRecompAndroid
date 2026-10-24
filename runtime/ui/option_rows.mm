@@ -215,7 +215,9 @@ static int row(const char *label, const std::string &value, bool changed, const 
     if (clicked && !off) {
         float mx = io.MousePos.x;
         bool on_value = mx >= vx0;
-        if (!touch || was_sel || on_value || value.empty()) {  // (a finger on a label just picks the row)
+        // (a finger on a label just picks the row, and so does the first one on a value that steps: it shows the row's
+        // arrows - stepping on, it went right only, as if the chevron were the only way)
+        if (!touch || was_sel || (on_value && !arrows) || value.empty()) {
             step = 2;
             if (arrows && (was_sel || !touch)) {
                 if (mx <= lax + aw + pad) step = -1;
