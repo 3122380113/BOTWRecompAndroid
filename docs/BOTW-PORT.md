@@ -640,6 +640,27 @@ Medição no planalto (2026-10-21, save do usuário perto da igreja, POCO F7 Ult
 
 - Distribuição do APK Android, sem nada do jogo.
 
+## Fila de funcionalidades
+
+Pedidos ainda não começados, o mais recente no fim.
+
+- **Arquivos do jogo no cartão SD** (pedido no Reddit, 2026-10-24: o BOTW ocupa o armazenamento interno inteiro de
+  muita gente). Hoje a configuração copia o jogo para a pasta de dados do app no armazenamento interno
+  (`/sdcard/Android/data/com.botwrecomp.android/files`), e os saves ficam lá; escolher o SD como origem só importa de
+  lá. Caminho provável:
+  - `getExternalFilesDirs(null)` dá a pasta do app em cada volume, inclusive no SD removível, sem permissão extra. A
+    configuração escolheria o volume e passaria essa raiz de dados ao runtime (`LARECOMP_DATA_ROOT`, que
+    `android/run_ver.sh` já usa).
+  - O `romfs.bin` tem ~15 GB: SD em FAT32 (no máximo 4 GB por arquivo) não serve, só exFAT. Conferir o espaço e o
+    sistema de arquivos antes de copiar.
+  - O código do jogo (`botwgame.so`) continua indo para o armazenamento interno (o Android não carrega código do SD);
+    só os dados mudam de lugar.
+  - SD é mais lento que UFS, e o romfs é lido no lugar: medir o carregamento e se há travadas ao andar pelo mundo.
+  - Desinstalar o app apaga essa pasta no SD também. Com o cartão fora, o app deve avisar, em vez de dar os arquivos
+    do jogo como faltando.
+  - Quem pediu lembrou que um dos projetos LAS faz isso. O LASRecompAndroid não faz; falta conferir o
+    LASRecomp-Android-Plus (Nycolazs).
+
 ## Regras
 
 - Nada da Nintendo no repositório: nem o dump, nem código gerado, nem assets (ver `CONTRIBUTING.md`).
