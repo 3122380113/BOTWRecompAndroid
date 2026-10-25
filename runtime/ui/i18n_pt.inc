@@ -416,6 +416,8 @@
  "O código do jogo não foi gerado"},
 {"The game code needs building",
  "O código do jogo precisa ser compilado"},
+{"The game data (romfs) and the game code (exefs) are from different versions. Choose a folder where both come from the same version.",
+ "Os dados do jogo (romfs) e o código do jogo (exefs) são de versões diferentes. Escolha uma pasta em que os dois sejam da mesma versão."},
 {"The game files are already here: this builds the game code from them again, as BOTWRecompAndroid needs after an update. It may take a while.",
  "Os arquivos do jogo já estão aqui: isso compila de novo o código do jogo a partir deles, como o BOTWRecompAndroid precisa depois de uma atualização. Pode demorar."},
 {"The game runs on the system's driver, lighting included. On Adreno GPUs, Mesa's Turnip driver runs it faster: choose a Turnip driver package (.zip, as for adrenotools).",
