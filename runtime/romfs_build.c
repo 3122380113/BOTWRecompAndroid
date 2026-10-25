@@ -185,6 +185,37 @@ static bool copy_data(FILE *out, const File *f, const Source *src, uint8_t *buf,
 static bool write_image(Dir *root, const Source *src, const char *out_path, void (*progress)(uint64_t, uint64_t),
                         char *why, size_t why_size);
 
+// (an image cut short - a copy that stopped - kept its header, and the game's SDK aborted at start with FS 2002-4281:
+// svcBreak, no word of the game data; RedMagic 11 Air, 2026-10-24)
+bool romfs_image_ok(const char *path, char *why, size_t why_size) {
+    struct stat st;
+    uint64_t h[10];  // size, dir hash, dir meta, file hash, file meta (offset, size each), data offset
+    FILE *f = fopen(path, "rb");
+    bool read = f && fread(h, sizeof h, 1, f) == 1;
+    if (f) fclose(f);
+    if (!f || stat(path, &st) != 0) {
+        if (why) snprintf(why, why_size, "can't open it (%s)", strerror(errno));
+        return false;
+    }
+    if (!read || h[0] != 0x50) {
+        if (why) snprintf(why, why_size, "its header is damaged");
+        return false;
+    }
+    uint64_t end = h[9];
+    for (int i = 1; i < 9; i += 2) {
+        if (h[i] > (1ull << 40) || h[i + 1] > (1ull << 40)) {
+            if (why) snprintf(why, why_size, "its header is damaged");
+            return false;
+        }
+        if (h[i] + h[i + 1] > end) end = h[i] + h[i + 1];
+    }
+    if ((uint64_t)st.st_size < end) {
+        if (why) snprintf(why, why_size, "it has %.2f of its %.2f GB", st.st_size / 1e9, end / 1e9);
+        return false;
+    }
+    return true;
+}
+
 bool romfs_build(const char *dir, const char *out_path, void (*progress)(uint64_t, uint64_t), char *why, size_t why_size) {
     Dir *root = scan(dir, "", NULL, 0);
     if (!root) {

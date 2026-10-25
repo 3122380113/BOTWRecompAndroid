@@ -26,6 +26,10 @@ bool romfs_build_entries(const RomfsEntry *entries, int n, int (*open_fd)(void *
                          const char *out, const char *keep_dir, bool (*keep)(const char *rel),
                          void (*progress)(uint64_t done, uint64_t total), char *why, size_t why_size);
 
+// Whether the image at `path` is whole: its header, and the file as long as the tables the header points at (they
+// end the image, so a copy cut short loses them while its header still looks right). false = why says what's wrong.
+bool romfs_image_ok(const char *path, char *why, size_t why_size);
+
 // Bytes of file data under dir (the image is about this plus its tables).
 uint64_t romfs_dir_bytes(const char *dir);
 

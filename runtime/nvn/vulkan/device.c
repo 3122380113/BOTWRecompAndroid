@@ -1572,6 +1572,20 @@ const char *vk_gpu_desc(void) {
     return s;
 }
 
+// The driver as it names itself, for the start screen's Vulkan driver section ("turnip Mesa driver - Mesa 26.3.0-devel
+// (git-a995eaeda4)"; Qualcomm's: its build and date): which build runs, whatever its package was called
+const char *vk_driver_desc(void) {
+    static char s[240];
+    if (s[0] || !g_vk.phys) return s;
+    VkPhysicalDeviceDriverProperties d = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+    VkPhysicalDeviceProperties2 p = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &d};
+    vkGetPhysicalDeviceProperties2(g_vk.phys, &p);
+    snprintf(s, sizeof s, "%s%s%s", d.driverName, d.driverName[0] && d.driverInfo[0] ? " - " : "", d.driverInfo);
+    for (char *c = s; *c; c++)
+        if (*c == '\n' || *c == '\r') *c = ' ';  // (Qualcomm's info: build, date, compiler, a line each)
+    return s;
+}
+
 // Qualcomm's own driver (not Turnip): its shader compiler crashed on the structured control flow (vulkan/exec.c)
 bool vk_driver_is_qualcomm(void) {
     static int q = -1;

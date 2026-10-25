@@ -10,6 +10,7 @@
 #include "../mods.h"
 #include "../hle.h"
 #include "../ipc.h"
+#include "../romfs_build.h"
 
 #define FS_PATH_NOT_FOUND MAKE_RESULT(2, 1)
 #define FS_PATH_EXISTS MAKE_RESULT(2, 2)
@@ -394,6 +395,10 @@ static Service *open_romfs_storage(void) {
         snprintf(path, sizeof path, "%s.bin", g_romfs_dir);  // extracted/romfs.bin
         romfs_fd = open(path, O_RDONLY);
         if (romfs_fd < 0) FATAL("cannot open %s (set up the game files on the start screen)\n", path);
+        char why[128];
+        if (!romfs_image_ok(path, why, sizeof why))  // (else the game's SDK aborts on it with an svcBreak, nothing said)
+            FATAL("The game data (romfs.bin) is incomplete or damaged: %s. Set up the game files again (Settings > Files > "
+                  "Set up game files), or copy romfs.bin again whole.\n", why);
         rom_index(romfs_fd);
     }
     Storage *st = calloc(1, sizeof *st);

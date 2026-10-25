@@ -164,6 +164,8 @@
  "Completo: taxa e tempos de quadro, CPU, GPU, memória, temperaturas e consumo. Resumido: uma linha - FPS, a RAM do app e as temperaturas do SoC e da bateria. Os dois podem ser arrastados com o dedo para qualquer lugar da tela."},
 {"Game data missing",
  "Faltam dados do jogo"},
+{"Game data incomplete: set up the game files again",
+ "Dados do jogo incompletos: configure os arquivos do jogo de novo"},
 {"Game files",
  "Arquivos do jogo"},
 {"Game Files",

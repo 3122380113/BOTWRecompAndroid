@@ -196,6 +196,8 @@ static std::string check_copied_files(const std::string &root) {
     // (the game reads its data through romfs.bin alone: on Android it's built straight from the picked folder, and romfs/
     // holds only the movies, opened by path)
     if (!file_exists(root + "/romfs.bin")) return "Game data missing";
+    char why[128];  // (a copy cut short: the game would abort at start, runtime/romfs_build.c)
+    if (!romfs_image_ok((root + "/romfs.bin").c_str(), why, sizeof why)) return "Game data incomplete: set up the game files again";
     return "";
 }
 
@@ -440,6 +442,7 @@ extern "C" bool vk_adreno_8xx(const char *name);  // (Driver compatibility's Aut
 extern "C" bool vk_lrz_at_start(void);
 extern "C" const char *vk_gpu_name(void);
 extern "C" const char *vk_driver_rejected(void);  // (runtime/nvn/vulkan/android_driver.c)
+extern "C" const char *vk_driver_desc(void);      // (its own name and version: runtime/nvn/vulkan/device.c)
 extern "C" bool vk_driver_is_turnip(void);
 extern "C" const char *vk_gpu_desc(void);  // ("Adreno (TM) 830 - Turnip")
 static std::string g_log_folder;  // its name ("Download/BOTWRecomp"), "" with none
@@ -1117,10 +1120,18 @@ static void prelaunch_tab(float sc) {
     heading("Vulkan driver");
     {
         const char *d = getenv("LARECOMP_VK_DRIVER");
-        const char *base = d && *d ? strrchr(d, '/') : NULL;
         const char *rejected = vk_driver_rejected();  // (chosen, but the system's ran: android_driver.c)
-        ImGui::Text(tr("In use: %s"), d && *d && !*rejected ? (base ? base + 1 : d) : tr("the system's driver"));
+        std::string pkg = tr("the system's driver");
+        if (d && *d && !*rejected) {  // (the package's name: its folder, files/drivers/<name>/<library>)
+            pkg = d;
+            size_t slash = pkg.rfind('/');
+            if (slash != std::string::npos) pkg.erase(slash);
+            slash = pkg.rfind('/');
+            if (slash != std::string::npos) pkg.erase(0, slash + 1);
+        }
+        ImGui::Text(tr("In use: %s"), pkg.c_str());
         ImGui::PushTextWrapPos(0);
+        if (*vk_driver_desc()) ImGui::TextDisabled("%s", vk_driver_desc());  // (its own name and version)
         if (*rejected)
             ImGui::TextColored(ImVec4(1.0f, 0.62f, 0.3f, 1.0f), tr("%s couldn't be used on this GPU: choose a driver made for it."),
                                rejected);

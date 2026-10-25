@@ -588,28 +588,46 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
         nativeDriverPicked(installDriver(this, f));
     }
 
-    // A driver package (.zip, or a bare .so) into <external files>/drivers, in place of any there (customDriver loads
-    // it at the next start). Its name, or "" (not a driver package, or the copy failed). Also DriverPickActivity's.
+    // A driver package (.zip or .adpkg - a zip too -, or a bare .so) into <external files>/drivers, in place of any
+    // there (customDriver loads it at the next start). Its name, or "" (not a driver package, or the copy failed).
+    // Also DriverPickActivity's.
     static String installDriver(Context ctx, Uri f) {
         String name = "driver.zip";
         try (Cursor c = ctx.getContentResolver().query(f, new String[] {OpenableColumns.DISPLAY_NAME}, null, null, null)) {
             if (c != null && c.moveToFirst() && !c.isNull(0)) name = c.getString(0);
         } catch (Exception ignored) {
         }
-        String low = name.toLowerCase();
-        if (!low.endsWith(".zip") && !low.endsWith(".so")) return "";
+        if (!DRIVER_FILE.matcher(name).find()) return "";
         try {
             File dir = new File(ctx.getExternalFilesDir(null), "drivers");
             deleteTree(dir);
             dir.mkdirs();
+            File dst = new File(dir, name);
             try (InputStream in = ctx.getContentResolver().openInputStream(f)) {
-                copy(in, new File(dir, name));
+                copy(in, dst);
+            }
+            if (driverKind(dst) == 0) {  // (named like one, but neither a zip nor a library)
+                deleteTree(dir);
+                return "";
             }
             return name;
         } catch (Exception e) {
             Log.e(TAG, "driver: " + e);
             return "";
         }
+    }
+
+    // driver packages by name, and by content: 1 a zip (adrenotools' .zip / .adpkg), 2 a library (ELF), 0 neither
+    private static final java.util.regex.Pattern DRIVER_FILE =
+            java.util.regex.Pattern.compile("\\.(so|zip|adpkg)$", java.util.regex.Pattern.CASE_INSENSITIVE);
+    private static int driverKind(File f) throws IOException {
+        byte[] m = new byte[4];
+        try (InputStream in = new FileInputStream(f)) {
+            if (in.read(m) != 4) return 0;
+        }
+        if (m[0] == 'P' && m[1] == 'K' && m[2] == 3 && m[3] == 4) return 1;
+        if (m[0] == 0x7f && m[1] == 'E' && m[2] == 'L' && m[3] == 'F') return 2;
+        return 0;
     }
 
     // (by size and date: the game code is ~100 MB)
@@ -638,46 +656,63 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
         }
     }
 
-    // The first driver in <external files>/drivers, in internal storage (copied again only when it changed).
+    // The first driver in <external files>/drivers, in internal storage (copied again only when it changed). A zip's
+    // library is the one its meta.json names (adrenotools' libraryName: packages with support libraries beside it, as
+    // RADV-Xclipse's), else one named like a Vulkan driver, else its only / last .so.
     private File customDriver() throws IOException {
         File src = new File(getExternalFilesDir(null), "drivers");
         src.mkdirs();
-        File[] files = src.listFiles((d, n) -> n.endsWith(".so") || n.endsWith(".zip"));
+        File[] files = src.listFiles((d, n) -> DRIVER_FILE.matcher(n).find());
         if (files == null || files.length == 0) return null;
         Arrays.sort(files);
         File f = files[0];
-        File dir = new File(getFilesDir(), "drivers/" + f.getName().replaceAll("\\.(so|zip)$", ""));
-        File stamp = new File(dir, ".source");
+        File dir = new File(getFilesDir(), "drivers/" + DRIVER_FILE.matcher(f.getName()).replaceAll(""));
+        File stamp = new File(dir, ".source");  // (the package's size:date, then the library chosen in it)
         String id = f.length() + ":" + f.lastModified();
-        File lib = findLib(dir);
-        if (lib != null && stamp.exists() && id.equals(readSmall(stamp))) return lib;
+        String[] was = stamp.exists() ? readSmall(stamp).split("\n") : new String[0];
+        File lib = was.length == 2 ? new File(dir, was[1]) : null;
+        if (lib != null && id.equals(was[0]) && lib.exists()) return lib;
         deleteTree(dir);
         dir.mkdirs();
-        if (f.getName().endsWith(".so")) {
+        int kind = driverKind(f);
+        if (kind == 2) {
             try (InputStream in = new FileInputStream(f)) {
-                lib = copy(in, new File(dir, f.getName()));
+                lib = copy(in, new File(dir, f.getName().toLowerCase().endsWith(".so") ? f.getName() : "libvulkan_custom.so"));
             }
-        } else {
+        } else if (kind == 1) {
             lib = null;
+            File named = null, vulkan = null;
+            String libraryName = null;
             try (ZipInputStream z = new ZipInputStream(new FileInputStream(f))) {
                 for (ZipEntry e; (e = z.getNextEntry()) != null; ) {
                     String n = new File(e.getName()).getName();
-                    if (!e.isDirectory() && n.endsWith(".so")) lib = copyNoClose(z, new File(dir, n));
+                    if (e.isDirectory()) continue;
+                    if (n.equals("meta.json")) {
+                        try {
+                            libraryName = new org.json.JSONObject(new String(readAll(z))).optString("libraryName", null);
+                        } catch (org.json.JSONException bad) {
+                            Log.w(TAG, "driver meta.json: " + bad);
+                        }
+                    } else if (n.endsWith(".so")) {
+                        lib = copyNoClose(z, new File(dir, n));
+                        if (n.contains("vulkan")) vulkan = lib;
+                    }
                 }
             }
+            if (libraryName != null) named = new File(dir, new File(libraryName).getName());
+            if (named != null && named.exists()) lib = named;
+            else if (vulkan != null) lib = vulkan;
+        } else {
+            Log.w(TAG, "Vulkan driver: " + f.getName() + " is neither a zip nor a library");
+            lib = null;
         }
         if (lib != null) {
             try (OutputStream o = new FileOutputStream(stamp)) {
-                o.write(id.getBytes());
+                o.write((id + "\n" + lib.getName()).getBytes());
             }
         }
         Log.i(TAG, "Vulkan driver: " + f.getName() + " -> " + lib);
         return lib;
-    }
-
-    private static File findLib(File dir) {
-        File[] libs = dir.listFiles((d, n) -> n.endsWith(".so"));
-        return libs != null && libs.length > 0 ? libs[0] : null;
     }
 
     private static String readSmall(File f) throws IOException {
