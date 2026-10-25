@@ -19,6 +19,7 @@
 package com.botwrecompandroid;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
@@ -76,7 +77,8 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
     private static native void nativeModImportDone(String message);
     private static native void nativeLogFolderPicked(String name);
 
-    private static final int REQ_GAME = 0x4c41, REQ_DRIVER = 0x4c42, REQ_MOD = 0x4c46, REQ_LOG = 0x4c47;
+    private static final int REQ_GAME = 0x4c41, REQ_DRIVER = 0x4c42, REQ_MOD = 0x4c46, REQ_LOG = 0x4c47,
+            REQ_DRIVER_RECOVER = 0x4c48;
     private static BOTWRecompAndroidActivity self;
     private WatchMapServer watchMap;
 
@@ -307,6 +309,15 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
         if (req == REQ_DRIVER) {
             Uri f = result == Activity.RESULT_OK && data != null ? data.getData() : null;
             if (f != null) new Thread(() -> importDriver(f), "driver").start();
+            return;
+        }
+        if (req == REQ_DRIVER_RECOVER) {
+            Uri f = result == Activity.RESULT_OK && data != null ? data.getData() : null;
+            if (f == null) showDriverError(null);
+            else new Thread(() -> {
+                if (!installDriver(this, f).isEmpty()) restartApp();
+                else runOnUiThread(() -> showDriverError(getString(R.string.driver_not_a_package)));
+            }, "driver").start();
             return;
         }
         if (req == REQ_LOG) {
@@ -617,6 +628,52 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
             Log.e(TAG, "driver: " + e);
             return "";
         }
+    }
+
+    // ---- a graphics driver error that stops the app (runtime/platform/android.c plat_fatal_notice): the driver is
+    // loaded before the start screen, so the Settings rows that choose it can't be reached when it fails. This dialog
+    // installs a driver package, or goes back to the system's driver, and starts the app again; else it closes. Blocks
+    // the calling (native) thread until the player closes it. LAS Recomp for Android 1c05238, from
+    // LASRecomp-Android-Plus (MIT); the app icon's long-press "Choose driver" (DriverPickActivity) does the same.
+    private static final Object dlgLock = new Object();
+    private static boolean dlgDone;
+    private static String dlgText;
+
+    public static boolean driverErrorDialog(String text) {
+        BOTWRecompAndroidActivity a = self;
+        if (a == null) return false;
+        synchronized (dlgLock) { dlgDone = false; dlgText = text; }
+        a.runOnUiThread(() -> a.showDriverError(null));
+        synchronized (dlgLock) {
+            while (!dlgDone) {
+                try { dlgLock.wait(); } catch (InterruptedException e) { break; }
+            }
+        }
+        return true;
+    }
+
+    private void showDriverError(String extra) {
+        String msg = dlgText + (extra != null ? "\n\n" + extra : "");
+        AlertDialog.Builder b = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle(R.string.driver_error_title).setMessage(msg).setCancelable(false)
+            .setPositiveButton(R.string.driver_install, (d, w) -> {
+                Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                i.addCategory(Intent.CATEGORY_OPENABLE);
+                i.setType("*/*");
+                try {
+                    startActivityForResult(i, REQ_DRIVER_RECOVER);
+                } catch (Exception e) {
+                    Log.e(TAG, "file picker: " + e);
+                    showDriverError(getString(R.string.driver_not_a_package));
+                }
+            })
+            .setNegativeButton(R.string.driver_close, (d, w) -> {
+                synchronized (dlgLock) { dlgDone = true; dlgLock.notifyAll(); }
+            });
+        File[] custom = new File(getExternalFilesDir(null), "drivers").listFiles((dir, n) -> DRIVER_FILE.matcher(n).find());
+        if (custom != null && custom.length > 0)
+            b.setNeutralButton(R.string.driver_system, (d, w) -> { dropCustomDriver(); restartApp(); });
+        b.show();
     }
 
     // driver packages by name, and by content: 1 a zip (adrenotools' .zip / .adpkg), 2 a library (ELF), 0 neither

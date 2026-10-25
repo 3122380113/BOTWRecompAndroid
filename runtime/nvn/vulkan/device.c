@@ -503,6 +503,20 @@ static void create_device(void) {
 #endif
     if (g_vk.divisor) ext[n_ext++] = VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME;
     g_vk.host_import = has_ext(ep, ne, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);  // guest heap as a GPU buffer (exec.c)
+#ifdef __ANDROID__
+    // Samsung's Xclipse driver accepts the import, then fails the first submission (VK_ERROR_UNKNOWN on a Galaxy S26,
+    // reported to LASRecomp-Android-Plus; LAS Recomp for Android 4a8749f turned it off on every GPU). Here only on
+    // Xclipse: without it BOTW's heap goes through CPU copies (~4 GB every 2 s), and Mali drivers may take it.
+    // LARECOMP_VK_HOST_IMPORT=0 / 1: off / on on any GPU.
+    if (g_vk.host_import) {
+        const char *e = getenv("LARECOMP_VK_HOST_IMPORT");
+        bool xclipse = strstr(g_vk.props.deviceName, "Xclipse") || g_vk.props.vendorID == 0x144D;  // (Samsung)
+        if (e ? !atoi(e) : xclipse) {
+            g_vk.host_import = false;
+            LOG("[vk] guest heap import left off (%s)\n", e ? "LARECOMP_VK_HOST_IMPORT=0" : "Xclipse: its first submission fails");
+        }
+    }
+#endif
     if (g_vk.host_import) ext[n_ext++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
     bool fault = has_ext(ep, ne, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);  // device-lost diagnostics (vk_device_fault_report)
 #ifdef __ANDROID__
@@ -1685,6 +1699,17 @@ void ui_window_init(void) {
         if (scripted) SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
     }
     window = SDL_CreateWindow("BOTWRecompAndroid", win_w, win_h, wflags);
+#ifdef __ANDROID__
+    // opened with the screen locked / off: no surface to make the window on yet - it comes once the activity shows.
+    // SDL_PumpEvents sleeps while the app is paused, so the 5 s count only time in the foreground: a window that fails
+    // for another reason still shows the error below (LAS Recomp for Android 83d1679, d751651)
+    for (int tries = 0; !window && tries < 20 * 5; tries++) {
+        if (tries == 0) LOG("[vk] waiting for the Android window (%s)\n", SDL_GetError());
+        SDL_PumpEvents();
+        SDL_Delay(50);
+        window = SDL_CreateWindow("BOTWRecompAndroid", win_w, win_h, wflags);
+    }
+#endif
     if (!window) FATAL("SDL_CreateWindow: %s\n", SDL_GetError());
     rt_window_icon(window);
     // the Fullscreen setting applies from the start screen on (not only once the game runs); test windows stay windows
@@ -1697,6 +1722,14 @@ void ui_window_init(void) {
 #ifdef __ANDROID__
     {   // (through the driver volk loaded: SDL would use the system loader's)
         struct ANativeWindow *aw = android_window();
+        // (opened with the screen locked: the surface went away after the window was made - it comes back once the
+        // activity shows)
+        for (int tries = 0; !aw && tries < 20 * 5; tries++) {  // (5 s in the foreground, as above)
+            if (tries == 0) LOG("[vk] waiting for the Android window (the screen is locked or off)\n");
+            SDL_PumpEvents();
+            SDL_Delay(50);
+            aw = android_window();
+        }
         if (!aw) FATAL("no Android window\n");
         android_create_surface(aw);
     }

@@ -7,4 +7,8 @@
     <string name="shortcut_pick_driver">Escolher driver</string>
     <string name="shortcut_pick_driver_long">Escolher um driver Vulkan (.zip)</string>
     <string name="driver_not_a_package">Não é um pacote de driver (.zip ou .so): o driver não mudou.</string>
+    <string name="driver_error_title">Erro no driver de vídeo</string>
+    <string name="driver_install">Instalar um driver</string>
+    <string name="driver_system">Usar o driver do sistema</string>
+    <string name="driver_close">Fechar</string>
 </resources>
