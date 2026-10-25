@@ -1060,6 +1060,16 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
             // made 2D_ARRAY_COMPATIBLE. BOTW draws its colour LUT so (8x8x8, the 8 slices as the 8 targets of one draw:
             // the pause menu's background and its panels go through it - empty, they were black) and the mips of a
             // 32x32x32 volume, slice by slice.
+            // Qualcomm's own driver lost the device on these draws (at the title screen, 2026-10-25: bisected to
+            // bde9d0e): there, as before it, no view - those draws are skipped and the menu's background stays black.
+            // LARECOMP_3D_RT=0 none / 1 level 0 only / 2 every level (default: 2, 0 on Qualcomm's driver).
+            static int rt3d = -1;
+            if (rt3d < 0) {
+                extern bool vk_driver_is_qualcomm(void);
+                const char *e = getenv("LARECOMP_3D_RT");
+                rt3d = e ? atoi(e) : vk_driver_is_qualcomm() ? 0 : 2;
+            }
+            if (rt3d == 0 || (rt3d == 1 && lv0 > 0)) return VK_NULL_HANDLE;
             uint32_t d = b->depth >> lv0, z = v && (v->setmask & 2) ? v->min_layer : 0;
             if (!d) d = 1;
             if (z >= d) z = d - 1;
