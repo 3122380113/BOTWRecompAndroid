@@ -660,7 +660,12 @@ Pedidos ainda não começados, o mais recente no fim.
     do jogo como faltando.
   - Quem pediu lembrou que um dos projetos LAS faz isso. O LASRecompAndroid não faz; falta conferir o
     LASRecomp-Android-Plus (Nycolazs).
-- **Controles de toque estilo FPS** (pedido no Reddit, 2026-10-24): movimento e câmera pelas duas metades da tela,
+- **Controles de toque estilo FPS** (pedido no Reddit, 2026-10-24) - feito, falta testar no celular: na aba
+  Controles, "Câmera por arrasto" (`drag_frame`: inclinação total a 80% da altura da tela por segundo vezes a
+  sensibilidade, suavizada, começando depois de 15% para passar a zona morta do jogo; usa a metade direita inteira),
+  "Analógicos só ao tocar" e "Áreas maiores dos analógicos" (cada metade da tela). Ajustar no POCO: a curva e a zona
+  morta do arrasto, e se a câmera fica com atraso. O pedido original:
+  movimento e câmera pelas duas metades da tela,
   para deixar a tela mais limpa. Hoje (`runtime/ui/touch_controls.mm`) os dois analógicos já flutuam: o esquerdo nasce
   onde o dedo toca em `x < 45%` da largura e abaixo de 30% da altura, e o direito (câmera) em `x > 50%`, abaixo de 25%,
   fora dos botões. Mas os dois ficam desenhados no lugar de descanso mesmo sem toque, e a câmera é um analógico: o dedo
@@ -673,7 +678,8 @@ Pedidos ainda não começados, o mais recente no fim.
     sempre visíveis / só ao tocar).
   - **Áreas maiores:** cada metade inteira da tela, com os botões ainda na frente.
 - **Resolução dinâmica do jogo só no modo Dinâmica** (sugestão do usuário, 2026-10-25; há mods do BOTW que a
-  desligam): o próprio jogo baixa a resolução da cena quando o quadro pesa (1600x900, 1440x810... no log `[post]
+  desligam) - feito em 625f8c3: os contadores de GPU do jogo ficam congelados (a cena presa em 1600x900;
+  `LARECOMP_GAME_DYNRES=1` devolve a do jogo), e Resolução interna > Dinâmica é a nossa, pelo tempo de GPU. O próprio jogo baixa a resolução da cena quando o quadro pesa (1600x900, 1440x810... no log `[post]
   scene`), e as folhas escuras do aspecto livre aparecem justamente nesses degraus; trocas de tamanho dos alvos também
   são candidatas a outros bugs. Ideia: com a Resolução interna num valor fixo, prender a escala do jogo no máximo, e
   deixar a dinâmica só quando a opção estiver em Dinâmica. Caminhos:
