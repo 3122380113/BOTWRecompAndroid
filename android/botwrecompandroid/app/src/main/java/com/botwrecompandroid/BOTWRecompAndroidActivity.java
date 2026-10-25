@@ -70,6 +70,7 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
     private static native String nativeImportBegin(String name, int version);
     private static native void nativeImportProgress(long done, long total);
     private static native void nativeImportDone(int result);
+    private static native void nativeImportDetail(String what);  // (a failure's cause, shown under it)
     private native String nativeBuildRomfs(String[] paths, long[] sizes);
     private static native void nativeDriverPicked(String name);
     private static native void nativeModImportDone(String message);
@@ -579,6 +580,7 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
             result = 0;
         } catch (Exception e) {
             Log.e(TAG, "game files: " + e);
+            nativeImportDetail(e.getClass().getSimpleName() + (e.getMessage() != null ? ": " + e.getMessage() : ""));
             result = 5;
         }
         nativeImportDone(result);

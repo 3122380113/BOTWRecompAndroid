@@ -235,6 +235,8 @@ static std::string g_dest;          // the setup's: the picked files' version's 
 static int g_set_up_version;        // a setup that worked: the version it set up (another than this run's: a restart into it)
 static std::string g_job;           // current setup step / result for the status line
 static std::string g_job_hint;      // a failure: what to do about it (shown under it)
+static std::string g_job_detail;    // a failure: its cause as the code saw it, untranslated ("can't read Pack/...")
+static std::string g_fail_detail;   // (that cause, from the import thread, until its failure is set)
 static bool g_busy, g_job_failed;
 static bool g_confirm_delete;       // game-files page: "Delete the game files?" shown
 
@@ -243,6 +245,17 @@ static void set_job(const std::string &s, bool failed = false, const std::string
     g_job = s;
     g_job_failed = failed;
     g_job_hint = hint;
+    g_job_detail.clear();
+    pthread_mutex_unlock(&g_lock);
+}
+
+// A failure's cause on the screen too: before, "Setup didn't finish" alone, the cause only in Android's log
+// (RedMagic 11 Air, 2026-10-24: a player can't read that)
+static void set_job_detail(const std::string &d) {
+    if (d.empty()) return;
+    fprintf(stderr, "[launcher] setup failed: %s\n", d.c_str());
+    pthread_mutex_lock(&g_lock);
+    g_job_detail = d;
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -389,6 +402,7 @@ static void *extract_thread(void *) {
         if (!romfs_build((dest + "/romfs").c_str(), (dest + "/romfs.bin").c_str(), setup_progress, why, sizeof why)) {
             fprintf(stderr, "[launcher] romfs image: %s\n", why);
             set_failure(FAIL_COPY);
+            set_job_detail(why);
             goto done;
         }
         if (!build_game_code(dest)) goto done;
@@ -557,7 +571,21 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_botwrecompandroid_BOTWRecompAndroi
                                   romfs.c_str(), keep_loose, setup_progress, why, sizeof why);
     if (ok) return NULL;
     fprintf(stderr, "[launcher] romfs image: %s\n", why);
-    return env->NewStringUTF(why[0] ? why : "Could not build the game data image. Check free storage and try again.");
+    const char *what = why[0] ? why : "Could not build the game data image. Check free storage and try again.";
+    pthread_mutex_lock(&g_lock);
+    g_fail_detail = what;  // (nativeImportDone(5) follows)
+    pthread_mutex_unlock(&g_lock);
+    return env->NewStringUTF(what);
+}
+
+// The import thread's cause of a failure (an exception: "IOException: ..."), ahead of nativeImportDone
+extern "C" JNIEXPORT void JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeImportDetail(JNIEnv *env, jclass,
+                                                                                                         jstring what) {
+    const char *c = what ? env->GetStringUTFChars(what, NULL) : NULL;
+    pthread_mutex_lock(&g_lock);
+    g_fail_detail = c ? c : "";
+    pthread_mutex_unlock(&g_lock);
+    if (c) env->ReleaseStringUTFChars(what, c);
 }
 
 // An earlier version copied all of romfs/ beside romfs.bin (its ~15 GB twice): once the image is there, only the loose
@@ -607,9 +635,12 @@ extern "C" JNIEXPORT void JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidAc
     pthread_mutex_lock(&g_lock);
     g_busy = false;
     g_dest.clear();
+    std::string detail = g_fail_detail;
+    g_fail_detail.clear();
     pthread_mutex_unlock(&g_lock);
     if (result == 1) return;
     set_failure(result == 2 ? FAIL_NOT_FOUND : result == 3 ? FAIL_UNUSABLE : result == 4 ? FAIL_VERSION : FAIL_COPY);
+    set_job_detail(detail);
 }
 
 extern "C" JNIEXPORT void JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeDriverPicked(JNIEnv *env, jclass, jstring name) {
@@ -1734,7 +1765,7 @@ extern "C" void launcher_run(const char *root) {
                 ImGui::Spacing();
 
                 pthread_mutex_lock(&g_lock);
-                std::string src = g_src, job = g_job, job_hint = g_job_hint;
+                std::string src = g_src, job = g_job, job_hint = g_job_hint, job_detail = g_job_detail;
                 bool failed = g_job_failed;
                 pthread_mutex_unlock(&g_lock);
                 bool ready = status.empty() && !busy;  // (set up: the window offers to delete them)
@@ -1765,6 +1796,7 @@ extern "C" void launcher_run(const char *root) {
                                              : "Copies the game files BOTWRecompAndroid needs and recompiles the game from them. "
                                                "This only needs to be done once and may take a while. Your own files aren't changed.");
                 if (!job.empty()) ex_d += "\n\n" + std::string(tr(job.c_str())) + (job_hint.empty() ? "" : ".\n" + std::string(tr(job_hint.c_str())));
+                if (failed && !job_detail.empty()) ex_d += "\n(" + job_detail + ")";
 
                 // the controller's cursor starts on the first row (not the X), a few frames while the window lays out
                 static int seen_frame = -10, focus_first;  // (not drawn last frame: the window has just opened)
@@ -1827,6 +1859,7 @@ extern "C" void launcher_run(const char *root) {
                                               : ImVec4(0.45f, 0.95f, 0.55f, 1), "%s", tr(job_line.c_str()));
                     if (failed && !job_hint.empty())  // (what to do next, in the rows' own text colour)
                         ImGui::TextColored(ImVec4(0.86f, 0.85f, 0.80f, 1), "%s", tr(job_hint.c_str()));
+                    if (failed && !job_detail.empty()) ImGui::TextDisabled("(%s)", job_detail.c_str());  // (its cause)
                     ImGui::PopTextWrapPos();
                 }
                 opt_end();
