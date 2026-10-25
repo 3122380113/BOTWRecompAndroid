@@ -361,6 +361,10 @@ static void pick_device(void) {
         if ((int)i == want) score = 100;
         if (score > best_score) { best_score = score; best = (int)i; best_queue = present_queue; }
     }
+    if (env_on("LARECOMP_TEST_DRIVER_ERROR")) {  // (test: the driver error and its dialog, platform/android.c)
+        best = -1, have_api = false;
+        snprintf(g_compat_missing, sizeof g_compat_missing, "LARECOMP_TEST_DRIVER_ERROR");
+    }
     if (best < 0 && have_api)
         FATAL("%sNo Vulkan GPU has a graphics+compute queue that can present to the screen. Check the selected driver "
               "(long-press the app icon: Choose driver, or System driver).\n", rejected_note());
