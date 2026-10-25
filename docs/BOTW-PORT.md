@@ -681,6 +681,12 @@ Pedidos ainda não começados, o mais recente no fim.
     ele fica na escala mínima), então devolver tempos curtos pode prendê-la no máximo sem mexer no código do jogo.
   - Ou como os mods fazem (patch no exefs que trava a escala): conferir os endereços deles nas três versões.
   - Medir o custo: a escala dinâmica é o que segura os 30 fps nos lugares pesados; sem ela, menos fps lá.
+- **Menus do app nos idiomas do jogo** (pedido do usuário, 2026-10-25): hoje a tela inicial e o menu do jogo (ImGui,
+  `runtime/ui/i18n.mm`) só têm inglês e português do Brasil (`i18n_pt.inc`, escolhido pelo idioma do celular). O jogo
+  tem japonês, inglês, espanhol, francês, alemão, italiano, holandês, russo, coreano, chinês simplificado e
+  tradicional e português do Brasil (1.8.2). Falta: uma tabela por idioma no mesmo formato, o idioma escolhido pelo
+  do celular ou pela opção de idioma do jogo (Controles > Idioma), e glifos de japonês, coreano e chinês na fonte do
+  ImGui (conferir o que a fonte do menu cobre hoje).
 
 ## Regras
 
