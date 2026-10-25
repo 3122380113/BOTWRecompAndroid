@@ -96,18 +96,28 @@ static bool has_ext(VkExtensionProperties *e, uint32_t n, const char *name) {
 // extensions. The backend then runs exactly its 1.3 code: the extensions' functions take the core names' place
 // (compat_aliases, volk's pointers) and their structures are the same. `below`: the version from which it is core.
 // After LASRecomp-Android-Plus by Nycolazs (MIT, runtime/nvn/vulkan/device.c COMPAT_EXT / compat_ok / compat_aliases).
-// optional: without it the backend still runs - OPT_DR dynamic rendering (classic render passes instead, rpcompat.c),
-// OPT_EDS2 extended dynamic state 2 (depth bias and primitive restart as pipeline state, exec.c)
-enum { OPT_NONE, OPT_DR, OPT_EDS2 };
+// optional: without it the backend still runs - all of a group or none of it (Mali's older drivers: LAS Recomp's
+// issue #2), each with its own way:
+//   OPT_DR      dynamic rendering - classic render passes (rpcompat.c)
+//   OPT_SYNC2   synchronization2 - Vulkan 1.0's barriers and submissions (sync1_*, below)
+//   OPT_EDS     extended dynamic state - cull, winding, topology, depth / stencil tests baked into each pipeline (exec.c
+//               PipeKey.fx; extended dynamic state 2 left out with it)
+//   OPT_EDS2    extended dynamic state 2 - depth bias and primitive restart as pipeline state (exec.c; Qualcomm's driver
+//               on Adreno 7xx)
+//   OPT_DEMOTE / OPT_TERM - only SPIR-V 1.6 (Vulkan 1.3) uses them; older SPIR-V's discard is OpKill (shaders.c)
+enum { OPT_NONE, OPT_DR, OPT_SYNC2, OPT_EDS, OPT_EDS2, OPT_DEMOTE, OPT_TERM, OPT_N };
+static const char *const OPT_WITHOUT[OPT_N] = {"", "render passes", "Vulkan 1.0 barriers", "states baked into pipelines",
+                                               "depth bias and primitive restart in pipelines", "not needed below 1.3",
+                                               "not needed below 1.3"};
 static const struct { const char *name; uint32_t below; uint8_t optional; } COMPAT_EXT[] = {
     {VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME, VK_API_VERSION_1_3, OPT_DR},
     {VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME, VK_API_VERSION_1_2, OPT_DR},  // (dynamic rendering needs these two)
     {VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME, VK_API_VERSION_1_2, OPT_DR},
-    {VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME, VK_API_VERSION_1_3},
-    {VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME, VK_API_VERSION_1_3},
+    {VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME, VK_API_VERSION_1_3, OPT_SYNC2},
+    {VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME, VK_API_VERSION_1_3, OPT_EDS},
     {VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME, VK_API_VERSION_1_3, OPT_EDS2},  // (Qualcomm's on Adreno 7xx: not there)
-    {VK_EXT_SHADER_DEMOTE_TO_HELPER_INVOCATION_EXTENSION_NAME, VK_API_VERSION_1_3},
-    {VK_KHR_SHADER_TERMINATE_INVOCATION_EXTENSION_NAME, VK_API_VERSION_1_3},
+    {VK_EXT_SHADER_DEMOTE_TO_HELPER_INVOCATION_EXTENSION_NAME, VK_API_VERSION_1_3, OPT_DEMOTE},
+    {VK_KHR_SHADER_TERMINATE_INVOCATION_EXTENSION_NAME, VK_API_VERSION_1_3, OPT_TERM},
     {VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME, VK_API_VERSION_1_2},
     {VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME, VK_API_VERSION_1_2},
     {VK_KHR_8BIT_STORAGE_EXTENSION_NAME, VK_API_VERSION_1_2},
@@ -144,14 +154,124 @@ static bool compat_ok(VkPhysicalDevice pd, uint32_t api) {
     g_compat_missing[0] = 0;  // (every one missing, so a report names them all at once)
     for (size_t i = 0; i < N_COMPAT_EXT; i++)
         if (api < COMPAT_EXT[i].below && !has_ext(ep, ne, COMPAT_EXT[i].name)) {
-            LOG("[vk-cap]   missing %s%s\n", COMPAT_EXT[i].name, COMPAT_EXT[i].optional ? " (optional)" : "");
-            if (COMPAT_EXT[i].optional) continue;
+            if (COMPAT_EXT[i].optional) {  // (its group's other way)
+                LOG("[vk-cap]   no %s: %s\n", COMPAT_EXT[i].name, OPT_WITHOUT[COMPAT_EXT[i].optional]);
+                continue;
+            }
+            LOG("[vk-cap]   missing %s\n", COMPAT_EXT[i].name);
             size_t l = strlen(g_compat_missing);
             snprintf(g_compat_missing + l, sizeof g_compat_missing - l, "%s%s", l ? ", " : "", COMPAT_EXT[i].name);
             ok = false;
         }
     free(ep);
     return ok;
+}
+
+// Whether a device below 1.3 has every extension of an optional group
+static bool compat_group(VkExtensionProperties *ep, uint32_t ne, uint32_t api, int group) {
+    for (size_t i = 0; i < N_COMPAT_EXT; i++)
+        if (COMPAT_EXT[i].optional == group && api < COMPAT_EXT[i].below && !has_ext(ep, ne, COMPAT_EXT[i].name)) return false;
+    return true;
+}
+
+static bool env_on(const char *name) { const char *v = getenv(name); return v && atoi(v); }
+
+// ---- synchronization2 without it (Mali's older drivers): Vulkan 1.0's barriers, submissions and timestamps. The
+// stage / access bits below 32 are 1.0's own; the split-up ones above map to the 1.0 bit they came from. (From LAS
+// Recomp for Android, device.c sync1_*.)
+static VkPipelineStageFlags sync1_stages(VkPipelineStageFlags2 s, bool src) {
+    VkPipelineStageFlags r = (VkPipelineStageFlags)(s & 0xFFFFFFFFull);
+    if (s & (VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_RESOLVE_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT |
+             VK_PIPELINE_STAGE_2_CLEAR_BIT)) r |= VK_PIPELINE_STAGE_TRANSFER_BIT;
+    if (s & (VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT | VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT)) r |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
+    if (s & VK_PIPELINE_STAGE_2_PRE_RASTERIZATION_SHADERS_BIT) r |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+    return r ? r : src ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;  // (NONE)
+}
+static VkAccessFlags sync1_access(VkAccessFlags2 a) {
+    VkAccessFlags r = (VkAccessFlags)(a & 0xFFFFFFFFull);
+    if (a & (VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT)) r |= VK_ACCESS_SHADER_READ_BIT;
+    if (a & VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT) r |= VK_ACCESS_SHADER_WRITE_BIT;
+    return r;
+}
+// (1.0 has one stage pair per call: one call per barrier)
+static VKAPI_ATTR void VKAPI_CALL sync1_barrier(VkCommandBuffer cb, const VkDependencyInfo *d) {
+    for (uint32_t i = 0; i < d->memoryBarrierCount; i++) {
+        const VkMemoryBarrier2 *m = &d->pMemoryBarriers[i];
+        VkMemoryBarrier b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = sync1_access(m->srcAccessMask),
+                             .dstAccessMask = sync1_access(m->dstAccessMask)};
+        vkCmdPipelineBarrier(cb, sync1_stages(m->srcStageMask, true), sync1_stages(m->dstStageMask, false), d->dependencyFlags,
+                             1, &b, 0, NULL, 0, NULL);
+    }
+    for (uint32_t i = 0; i < d->bufferMemoryBarrierCount; i++) {
+        const VkBufferMemoryBarrier2 *m = &d->pBufferMemoryBarriers[i];
+        VkBufferMemoryBarrier b = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, .srcAccessMask = sync1_access(m->srcAccessMask),
+                                   .dstAccessMask = sync1_access(m->dstAccessMask), .srcQueueFamilyIndex = m->srcQueueFamilyIndex,
+                                   .dstQueueFamilyIndex = m->dstQueueFamilyIndex, .buffer = m->buffer, .offset = m->offset,
+                                   .size = m->size};
+        vkCmdPipelineBarrier(cb, sync1_stages(m->srcStageMask, true), sync1_stages(m->dstStageMask, false), d->dependencyFlags,
+                             0, NULL, 1, &b, 0, NULL);
+    }
+    for (uint32_t i = 0; i < d->imageMemoryBarrierCount; i++) {
+        const VkImageMemoryBarrier2 *m = &d->pImageMemoryBarriers[i];
+        VkImageMemoryBarrier b = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .srcAccessMask = sync1_access(m->srcAccessMask),
+                                  .dstAccessMask = sync1_access(m->dstAccessMask), .oldLayout = m->oldLayout,
+                                  .newLayout = m->newLayout, .srcQueueFamilyIndex = m->srcQueueFamilyIndex,
+                                  .dstQueueFamilyIndex = m->dstQueueFamilyIndex, .image = m->image,
+                                  .subresourceRange = m->subresourceRange};
+        vkCmdPipelineBarrier(cb, sync1_stages(m->srcStageMask, true), sync1_stages(m->dstStageMask, false), d->dependencyFlags,
+                             0, NULL, 0, NULL, 1, &b);
+    }
+}
+static VKAPI_ATTR void VKAPI_CALL sync1_timestamp(VkCommandBuffer cb, VkPipelineStageFlags2 s, VkQueryPool pool, uint32_t q) {
+    VkPipelineStageFlags f = !s ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+                           : (s & VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT) ? VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT : sync1_stages(s, false);
+    vkCmdWriteTimestamp(cb, (VkPipelineStageFlagBits)(f & -f), pool, q);  // (one stage: the earliest bit)
+}
+// (timeline values through VkTimelineSemaphoreSubmitInfo; a binary semaphore's value is ignored)
+#define SYNC1_MAX 8
+static VKAPI_ATTR VkResult VKAPI_CALL sync1_submit(VkQueue queue, uint32_t n, const VkSubmitInfo2 *si, VkFence fence) {
+    if (n > SYNC1_MAX) n = SYNC1_MAX;  // (the backend submits one at a time)
+    VkSubmitInfo s[SYNC1_MAX];
+    VkTimelineSemaphoreSubmitInfo tl[SYNC1_MAX];
+    VkSemaphore wsem[SYNC1_MAX][SYNC1_MAX], ssem[SYNC1_MAX][SYNC1_MAX];
+    uint64_t wval[SYNC1_MAX][SYNC1_MAX], sval[SYNC1_MAX][SYNC1_MAX];
+    VkPipelineStageFlags wst[SYNC1_MAX][SYNC1_MAX];
+    VkCommandBuffer cbs[SYNC1_MAX][SYNC1_MAX];
+    for (uint32_t i = 0; i < n; i++) {
+        const VkSubmitInfo2 *a = &si[i];
+        uint32_t nw = a->waitSemaphoreInfoCount < SYNC1_MAX ? a->waitSemaphoreInfoCount : SYNC1_MAX;
+        uint32_t nc = a->commandBufferInfoCount < SYNC1_MAX ? a->commandBufferInfoCount : SYNC1_MAX;
+        uint32_t ns = a->signalSemaphoreInfoCount < SYNC1_MAX ? a->signalSemaphoreInfoCount : SYNC1_MAX;
+        for (uint32_t j = 0; j < nw; j++) {
+            wsem[i][j] = a->pWaitSemaphoreInfos[j].semaphore;
+            wval[i][j] = a->pWaitSemaphoreInfos[j].value;
+            wst[i][j] = sync1_stages(a->pWaitSemaphoreInfos[j].stageMask, false);
+        }
+        for (uint32_t j = 0; j < nc; j++) cbs[i][j] = a->pCommandBufferInfos[j].commandBuffer;
+        for (uint32_t j = 0; j < ns; j++) {
+            ssem[i][j] = a->pSignalSemaphoreInfos[j].semaphore;
+            sval[i][j] = a->pSignalSemaphoreInfos[j].value;
+        }
+        tl[i] = (VkTimelineSemaphoreSubmitInfo){.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+                                                .waitSemaphoreValueCount = nw, .pWaitSemaphoreValues = wval[i],
+                                                .signalSemaphoreValueCount = ns, .pSignalSemaphoreValues = sval[i]};
+        s[i] = (VkSubmitInfo){.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .pNext = &tl[i], .waitSemaphoreCount = nw,
+                              .pWaitSemaphores = wsem[i], .pWaitDstStageMask = wst[i], .commandBufferCount = nc,
+                              .pCommandBuffers = cbs[i], .signalSemaphoreCount = ns, .pSignalSemaphores = ssem[i]};
+    }
+    return vkQueueSubmit(queue, n, s, fence);
+}
+
+// ---- extended dynamic state without it: these states are baked into each pipeline (exec.c PipeKey.fx), so the
+// backend's calls setting them do nothing
+static VKAPI_ATTR void VKAPI_CALL eds_cull(VkCommandBuffer cb, VkCullModeFlags v) { (void)cb, (void)v; }
+static VKAPI_ATTR void VKAPI_CALL eds_front(VkCommandBuffer cb, VkFrontFace v) { (void)cb, (void)v; }
+static VKAPI_ATTR void VKAPI_CALL eds_topology(VkCommandBuffer cb, VkPrimitiveTopology v) { (void)cb, (void)v; }
+static VKAPI_ATTR void VKAPI_CALL eds_bool(VkCommandBuffer cb, VkBool32 v) { (void)cb, (void)v; }
+static VKAPI_ATTR void VKAPI_CALL eds_compare(VkCommandBuffer cb, VkCompareOp v) { (void)cb, (void)v; }
+static VKAPI_ATTR void VKAPI_CALL eds_stencil_op(VkCommandBuffer cb, VkStencilFaceFlags f, VkStencilOp a, VkStencilOp b,
+                                                 VkStencilOp c, VkCompareOp d) {
+    (void)cb, (void)f, (void)a, (void)b, (void)c, (void)d;
 }
 
 static void compat_aliases(void) {  // (after volkLoadDevice)
@@ -177,6 +297,21 @@ static void compat_aliases(void) {  // (after volkLoadDevice)
         vkGetSemaphoreCounterValue = vkGetSemaphoreCounterValueKHR;
         vkSignalSemaphore = vkSignalSemaphoreKHR;
     }
+    if (!g_vk.sync2) {  // (the backend's synchronization2 calls, translated: sync1_*)
+        vkCmdPipelineBarrier2 = sync1_barrier;
+        vkQueueSubmit2 = sync1_submit;
+        vkCmdWriteTimestamp2 = sync1_timestamp;
+    }
+    if (!g_vk.eds) {  // (the states are in the pipelines: exec.c PipeKey.fx)
+        vkCmdSetCullMode = eds_cull;
+        vkCmdSetFrontFace = eds_front;
+        vkCmdSetPrimitiveTopology = eds_topology;
+        vkCmdSetDepthTestEnable = vkCmdSetDepthWriteEnable = vkCmdSetStencilTestEnable = eds_bool;
+        vkCmdSetDepthCompareOp = eds_compare;
+        vkCmdSetStencilOp = eds_stencil_op;
+    }
+    if (!g_vk.eds2)  // (exec.c doesn't call them then: depth bias always on, primitive restart in PipeKey)
+        vkCmdSetPrimitiveRestartEnable = vkCmdSetDepthBiasEnable = eds_bool;
 }
 
 // (Android: a GPU whose queues can't present is skipped rather than fatal, and the fatal message says what to report;
@@ -336,15 +471,18 @@ static void create_device(void) {
     uint32_t n_ext = 0;
     ext[n_ext++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
 #ifdef __ANDROID__
-    // (dynamic rendering: core in 1.3, below it its extension and the two it needs - the three or none)
-    bool dr_ext = g_vk.api >= VK_API_VERSION_1_3 || (has_ext(ep, ne, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME) &&
-                                                     has_ext(ep, ne, VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME) &&
-                                                     has_ext(ep, ne, VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME));
-    bool eds2_ext = g_vk.api >= VK_API_VERSION_1_3 || has_ext(ep, ne, VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME);
-    for (size_t i = 0; i < N_COMPAT_EXT; i++)  // (below 1.3: pick_device checked the others are all there)
-        if (g_vk.api < COMPAT_EXT[i].below && (COMPAT_EXT[i].optional == OPT_NONE ||
-                                               (COMPAT_EXT[i].optional == OPT_DR ? dr_ext : eds2_ext)))
-            ext[n_ext++] = COMPAT_EXT[i].name;
+    // (below 1.3: pick_device checked the required ones are there; an optional group goes in only whole - dynamic
+    // rendering's three, for one). Test switches, each that group's other way on any driver (below 1.3 also as if its
+    // extensions were missing, as on Mali's): LARECOMP_NO_DYNAMIC_RENDERING=1, LARECOMP_NO_SYNC2=1, LARECOMP_NO_EDS=1
+    // (extended dynamic state 2 too), LARECOMP_NO_EDS2=1
+    bool no_dr = env_on("LARECOMP_NO_DYNAMIC_RENDERING"), no_s2 = env_on("LARECOMP_NO_SYNC2"), no_eds = env_on("LARECOMP_NO_EDS");
+    bool no_eds2 = no_eds || env_on("LARECOMP_NO_EDS2");
+    bool cg[OPT_N];
+    for (int g = 0; g < OPT_N; g++) cg[g] = g_vk.api >= VK_API_VERSION_1_3 || compat_group(ep, ne, g_vk.api, g);
+    if (g_vk.api < VK_API_VERSION_1_3)
+        cg[OPT_DR] &= !no_dr, cg[OPT_SYNC2] &= !no_s2, cg[OPT_EDS] &= !no_eds, cg[OPT_EDS2] &= !no_eds2;
+    for (size_t i = 0; i < N_COMPAT_EXT; i++)
+        if (g_vk.api < COMPAT_EXT[i].below && cg[COMPAT_EXT[i].optional]) ext[n_ext++] = COMPAT_EXT[i].name;
     // (VkPhysicalDeviceDriverProperties: core from 1.2, before that its own extension, only queried)
     bool driver_props = g_vk.api >= VK_API_VERSION_1_2 || has_ext(ep, ne, VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME);
 #endif
@@ -400,16 +538,15 @@ static void create_device(void) {
     // Below 1.3 the Vulkan13 structure (below 1.2 the 11 / 12 ones too) isn't valid: the extensions' own structures are
     // asked instead and copied into h11 / h12 / h13, so what follows reads them as on 1.3
     VkPhysicalDeviceDynamicRenderingFeaturesKHR q_dr = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR};
-    VkPhysicalDeviceSynchronization2FeaturesKHR q_s2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR,
-                                                        .pNext = &q_dr};
+    VkPhysicalDeviceSynchronization2FeaturesKHR q_s2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR};
     VkPhysicalDeviceExtendedDynamicStateFeaturesEXT q_eds = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT, .pNext = &q_s2};
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT};
     VkPhysicalDeviceExtendedDynamicState2FeaturesEXT q_eds2 = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT, .pNext = &q_eds};
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT};
     VkPhysicalDeviceShaderDemoteToHelperInvocationFeaturesEXT q_dem = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DEMOTE_TO_HELPER_INVOCATION_FEATURES_EXT, .pNext = &q_eds2};
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DEMOTE_TO_HELPER_INVOCATION_FEATURES_EXT};
     VkPhysicalDeviceShaderTerminateInvocationFeaturesKHR q_term = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_TERMINATE_INVOCATION_FEATURES_KHR, .pNext = &q_dem};
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_TERMINATE_INVOCATION_FEATURES_KHR};
     VkPhysicalDeviceTimelineSemaphoreFeatures q_tl = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES};
     VkPhysicalDeviceShaderFloat16Int8Features q_i8 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES,
                                                       .pNext = &q_tl};
@@ -420,19 +557,28 @@ static void create_device(void) {
                                                   .pNext = &q_sbl};
     if (g_vk.api < VK_API_VERSION_1_3) {
         // (the 1.1 / 1.2 structures at the end of the extensions' chain, q_term -> ... -> q_dr: hung on q_term they
-        // cut the rest off - Turnip forced to 1.2 answered terminate only, and setup stopped on extendedDynamicState)
+        // cut the rest off - Turnip forced to 1.2 answered terminate only, and setup stopped on extendedDynamicState).
+        // Only the groups whose extensions are there.
         h12.pNext = NULL;
-        q_dr.pNext = g_vk.api >= VK_API_VERSION_1_2 ? (void *)&h11 : (void *)&q_b16;
-        have.pNext = &q_term;
+        void *q = g_vk.api >= VK_API_VERSION_1_2 ? (void *)&h11 : (void *)&q_b16;
+#define QCHAIN(on, s) do { if (on) { (s).pNext = q; q = &(s); } } while (0)
+        QCHAIN(cg[OPT_DR], q_dr);
+        QCHAIN(cg[OPT_SYNC2], q_s2);
+        QCHAIN(cg[OPT_EDS], q_eds);
+        QCHAIN(cg[OPT_EDS2], q_eds2);
+        QCHAIN(cg[OPT_DEMOTE], q_dem);
+        QCHAIN(cg[OPT_TERM], q_term);
+#undef QCHAIN
+        have.pNext = q;
     }
 #endif
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &have);
 #ifdef __ANDROID__
     if (g_vk.api < VK_API_VERSION_1_3) {
-        h13.dynamicRendering = q_dr.dynamicRendering;
-        h13.synchronization2 = q_s2.synchronization2;
-        h13.shaderDemoteToHelperInvocation = q_dem.shaderDemoteToHelperInvocation;
-        h13.shaderTerminateInvocation = q_term.shaderTerminateInvocation;
+        h13.dynamicRendering = cg[OPT_DR] && q_dr.dynamicRendering;
+        h13.synchronization2 = cg[OPT_SYNC2] && q_s2.synchronization2;
+        h13.shaderDemoteToHelperInvocation = cg[OPT_DEMOTE] && q_dem.shaderDemoteToHelperInvocation;
+        h13.shaderTerminateInvocation = cg[OPT_TERM] && q_term.shaderTerminateInvocation;
         h13.maintenance4 = VK_TRUE;  // (only for 1.3's SPIR-V 1.6 LocalSizeId: older SPIR-V, shaders.c, doesn't use it)
         if (g_vk.api < VK_API_VERSION_1_2) {
             h11.storageBuffer16BitAccess = q_b16.storageBuffer16BitAccess;
@@ -446,26 +592,22 @@ static void create_device(void) {
         LOG("[vk] compat features: eds %u eds2 %u dynamic-rendering %u sync2 %u demote %u terminate %u\n",
             q_eds.extendedDynamicState, q_eds2.extendedDynamicState2, q_dr.dynamicRendering, q_s2.synchronization2,
             q_dem.shaderDemoteToHelperInvocation, q_term.shaderTerminateInvocation);
-        if (!q_eds.extendedDynamicState)
-            FATAL("%sVulkan driver on %s lacks a feature required by this renderer: extendedDynamicState. " DRIVER_HINT
-                  "\nInclude this message, phone model and app version in your bug report.\n", rejected_note(),
-                  g_vk.props.deviceName);
     }
-    // Extended dynamic state 2 where the driver has it (core in 1.3); without, depth bias and primitive restart are
-    // pipeline state (exec.c). LARECOMP_NO_EDS2=1: that way on any driver (to test it).
-    g_vk.eds2 = (g_vk.api >= VK_API_VERSION_1_3 || (eds2_ext && q_eds2.extendedDynamicState2)) &&
-                !(getenv("LARECOMP_NO_EDS2") && atoi(getenv("LARECOMP_NO_EDS2")));
-    if (!g_vk.eds2) LOG("[vk] no extended dynamic state 2: depth bias and primitive restart in the pipelines\n");
-#ifdef __ANDROID__
+    // Without synchronization2: Vulkan 1.0's barriers and submissions (sync1_*). Without extended dynamic state: cull,
+    // winding, topology and the depth / stencil tests baked into each pipeline (exec.c PipeKey.fx), and extended dynamic
+    // state 2's two with them; without only that one, depth bias and primitive restart are pipeline state (exec.c). On
+    // 1.3 all are core: only the test switches leave them out.
+    g_vk.sync2 = h13.synchronization2 && !no_s2;
+    g_vk.eds = (g_vk.api >= VK_API_VERSION_1_3 || (cg[OPT_EDS] && q_eds.extendedDynamicState)) && !no_eds;
+    g_vk.eds2 = g_vk.eds && (g_vk.api >= VK_API_VERSION_1_3 || (cg[OPT_EDS2] && q_eds2.extendedDynamicState2)) && !no_eds2;
+    if (!g_vk.sync2) LOG("[vk] no synchronization2%s: Vulkan 1.0 barriers and submissions\n", no_s2 ? " (LARECOMP_NO_SYNC2)" : "");
+    if (!g_vk.eds) LOG("[vk] no extended dynamic state%s: states baked into pipelines\n", no_eds ? " (LARECOMP_NO_EDS)" : "");
+    else if (!g_vk.eds2) LOG("[vk] no extended dynamic state 2: depth bias and primitive restart in the pipelines\n");
     // Dynamic rendering where the driver has it; without, classic render passes (rpcompat.c).
     // LARECOMP_NO_DYNAMIC_RENDERING=1: render passes on any driver (to test that path).
-    g_vk.dyn_render = dr_ext && h13.dynamicRendering &&
-                      !(getenv("LARECOMP_NO_DYNAMIC_RENDERING") && atoi(getenv("LARECOMP_NO_DYNAMIC_RENDERING")));
+    g_vk.dyn_render = h13.dynamicRendering && !no_dr;
     if (!g_vk.dyn_render)
-        LOG("[vk] no dynamic rendering (%s): classic render passes\n", dr_ext && h13.dynamicRendering ? "switched off" : "the driver lacks it");
-#else
-    g_vk.dyn_render = true;
-#endif
+        LOG("[vk] no dynamic rendering (%s): classic render passes\n", no_dr ? "switched off" : "the driver lacks it");
     VkPhysicalDeviceDriverProperties driver = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
     VkPhysicalDeviceProperties2 properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
                                               .pNext = driver_props ? &driver : NULL};
@@ -524,27 +666,34 @@ static void create_device(void) {
         f12.shaderInt8 = h12.shaderInt8;
         f12.uniformAndStorageBuffer8BitAccess = h12.uniformAndStorageBuffer8BitAccess;
         f12.storageBuffer8BitAccess = h12.storageBuffer8BitAccess;
+        // nor 16-bit storage: no translated or built-in shader declares it, and the Adreno 610 under Turnip lacks it
+        // (LAS Recomp's issue #4). LARECOMP_VK_NO_STORAGE16=1 (test): as if it lacked it.
+        if (env_on("LARECOMP_VK_NO_STORAGE16"))
+            h11.storageBuffer16BitAccess = VK_FALSE, LOG("[vk] 16-bit storage left off (LARECOMP_VK_NO_STORAGE16)\n");
+        f11.storageBuffer16BitAccess = h11.storageBuffer16BitAccess;
+        // synchronization2, demote and terminate as the driver has them (optional below 1.3: device.c OPT_*)
+        f13.synchronization2 = g_vk.sync2;
+        f13.shaderDemoteToHelperInvocation = h13.shaderDemoteToHelperInvocation;
+        f13.shaderTerminateInvocation = h13.shaderTerminateInvocation;
     }
     // Below 1.3: the same features through the extensions' structures (1.2: its own 11 / 12 ones and the 1.3
-    // extensions'; 1.1: the extensions' for both), ahead of the optional ones f13 led to
+    // extensions'; 1.1: the extensions' for both), ahead of the optional ones f13 led to - only those in use
     VkPhysicalDeviceDynamicRenderingFeaturesKHR e_dr = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR,
-                                                        .dynamicRendering = g_vk.dyn_render, .pNext = f13.pNext};
+                                                        .dynamicRendering = VK_TRUE};
     VkPhysicalDeviceSynchronization2FeaturesKHR e_s2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR,
-                                                        .synchronization2 = VK_TRUE, .pNext = dr_ext ? (void *)&e_dr : e_dr.pNext};
+                                                        .synchronization2 = VK_TRUE};
     VkPhysicalDeviceExtendedDynamicStateFeaturesEXT e_eds = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT, .extendedDynamicState = VK_TRUE,
-        .pNext = &e_s2};
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT, .extendedDynamicState = VK_TRUE};
     VkPhysicalDeviceExtendedDynamicState2FeaturesEXT e_eds2 = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT, .extendedDynamicState2 = VK_TRUE,
-        .pNext = &e_eds};
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT, .extendedDynamicState2 = VK_TRUE};
     VkPhysicalDeviceShaderDemoteToHelperInvocationFeaturesEXT e_dem = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DEMOTE_TO_HELPER_INVOCATION_FEATURES_EXT,
-        .shaderDemoteToHelperInvocation = VK_TRUE, .pNext = g_vk.eds2 ? (void *)&e_eds2 : (void *)&e_eds};
+        .shaderDemoteToHelperInvocation = VK_TRUE};
     VkPhysicalDeviceShaderTerminateInvocationFeaturesKHR e_term = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_TERMINATE_INVOCATION_FEATURES_KHR,
-        .shaderTerminateInvocation = VK_TRUE, .pNext = &e_dem};
+        .shaderTerminateInvocation = VK_TRUE};
     VkPhysicalDeviceTimelineSemaphoreFeatures e_tl = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES,
-                                                      .timelineSemaphore = VK_TRUE, .pNext = &e_term};
+                                                      .timelineSemaphore = VK_TRUE};
     VkPhysicalDeviceShaderFloat16Int8Features e_i8 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES,
                                                       .shaderInt8 = h12.shaderInt8, .pNext = &e_tl};
     VkPhysicalDevice8BitStorageFeatures e_b8 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES,
@@ -554,11 +703,21 @@ static void create_device(void) {
     VkPhysicalDeviceScalarBlockLayoutFeatures e_sbl = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES,
                                                        .scalarBlockLayout = VK_TRUE, .pNext = &e_b8};
     VkPhysicalDevice16BitStorageFeatures e_b16 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES,
-                                                  .storageBuffer16BitAccess = VK_TRUE, .pNext = &e_sbl};
+                                                  .storageBuffer16BitAccess = h11.storageBuffer16BitAccess, .pNext = &e_sbl};
     if (g_vk.api < VK_API_VERSION_1_3) {
+        void *x = f13.pNext;  // (the 1.3 extensions' in use, ahead of the optional ones f13 led to)
+#define ECHAIN(on, s) do { if (on) { (s).pNext = x; x = &(s); } } while (0)
+        ECHAIN(g_vk.dyn_render, e_dr);
+        ECHAIN(g_vk.sync2, e_s2);
+        ECHAIN(g_vk.eds, e_eds);
+        ECHAIN(g_vk.eds2, e_eds2);
+        ECHAIN(h13.shaderDemoteToHelperInvocation, e_dem);
+        ECHAIN(h13.shaderTerminateInvocation, e_term);
+#undef ECHAIN
+        e_tl.pNext = x;
         void *head = &e_b16;
         if (g_vk.api >= VK_API_VERSION_1_2) {
-            f12.pNext = &e_term;  // (f11 -> f12 -> the 1.3 extensions'; f13 left out)
+            f12.pNext = x;  // (f11 -> f12 -> the 1.3 extensions'; f13 left out)
             head = &f11;
         }
         ff.pNext = head;
