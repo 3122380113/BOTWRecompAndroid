@@ -1440,8 +1440,12 @@ extern "C" void launcher_run(const char *root) {
     for (const char *p : fonts) {
         if (g_font_menu || !*p || !file_exists(p)) continue;
         bool b2 = p == own.c_str() || getenv("LARECOMP_LAUNCHER_FONT");
+        // (each followed by the menu language's other letters, if it needs any: ui/i18n.mm - not the title's, the
+        // app's name)
         g_font_small = io.Fonts->AddFontFromFileTTF(p, 30 * (b2 ? 1.75f : 1), NULL, ranges);
+        i18n_merge_fonts(io.Fonts, 30 * (b2 ? 1.75f : 1));
         g_font_menu = io.Fonts->AddFontFromFileTTF(p, 52 * (b2 ? 1.85f : 1), NULL, ranges);
+        i18n_merge_fonts(io.Fonts, 52 * (b2 ? 1.85f : 1));
         g_font_title = io.Fonts->AddFontFromFileTTF(p, 92 * (b2 ? 2.3f : 1), NULL, ranges);
     }
     if (!g_font_menu) g_font_small = g_font_menu = g_font_title = io.Fonts->AddFontDefault();

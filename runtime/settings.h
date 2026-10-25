@@ -69,5 +69,8 @@ void settings_reset_defaults(void);
 const char *settings_language(void);
 // That code's name for the menu ("Spanish")
 const char *settings_language_name(void);
-// Android: the phone's language is Portuguese (the menus' own text: ui/i18n.mm). LARECOMP_HOST_LANG=pt|en (tests)
-bool settings_host_portuguese(void);
+// Android: the language of the menus' own text (ui/i18n.mm), from the phone's first preferred language: "pt", "es", "fr",
+// "de", "it", "nl", "ru", "ja", "ko", "zh-Hans", "zh-Hant" (the game's languages), else "en". LARECOMP_HOST_LANG=<code>
+// (tests). Elsewhere "en".
+const char *settings_menu_language(void);
+bool settings_host_portuguese(void);  // (settings_menu_language is "pt")

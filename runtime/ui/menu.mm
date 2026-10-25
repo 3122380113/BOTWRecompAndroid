@@ -405,7 +405,9 @@ static void init(void) {
     if (const char *f = getenv("LARECOMP_MENU_FONT")) strlcpy(baloo, f, sizeof baloo);  // (test) another weight / face
     if (getenv("LARECOMP_MENU_FONT") || rt_resource("Baloo2-SemiBold.ttf", "third_party/fonts/Baloo2/Baloo2-SemiBold.ttf", baloo, sizeof baloo)) {
         g_menu_font = io.Fonts->AddFontFromFileTTF(baloo, 39, &cfg);
+        i18n_merge_fonts(io.Fonts, 39);  // (the menu language's other letters: ui/i18n.mm)
         g_menu_font_big = io.Fonts->AddFontFromFileTTF(baloo, 72, &cfg);
+        i18n_merge_fonts(io.Fonts, 72);
     }
     if (!g_font) g_font = io.Fonts->AddFontDefault();
     if (!g_font_big) g_font_big = g_font;

@@ -681,12 +681,13 @@ Pedidos ainda não começados, o mais recente no fim.
     ele fica na escala mínima), então devolver tempos curtos pode prendê-la no máximo sem mexer no código do jogo.
   - Ou como os mods fazem (patch no exefs que trava a escala): conferir os endereços deles nas três versões.
   - Medir o custo: a escala dinâmica é o que segura os 30 fps nos lugares pesados; sem ela, menos fps lá.
-- **Menus do app nos idiomas do jogo** (pedido do usuário, 2026-10-25): hoje a tela inicial e o menu do jogo (ImGui,
-  `runtime/ui/i18n.mm`) só têm inglês e português do Brasil (`i18n_pt.inc`, escolhido pelo idioma do celular). O jogo
-  tem japonês, inglês, espanhol, francês, alemão, italiano, holandês, russo, coreano, chinês simplificado e
-  tradicional e português do Brasil (1.8.2). Falta: uma tabela por idioma no mesmo formato, o idioma escolhido pelo
-  do celular ou pela opção de idioma do jogo (Controles > Idioma), e glifos de japonês, coreano e chinês na fonte do
-  ImGui (conferir o que a fonte do menu cobre hoje).
+- **Menus do app nos idiomas do jogo** (pedido do usuário, 2026-10-25) - feito, falta conferir no celular: uma
+  tabela por idioma (`runtime/ui/i18n_<idioma>.inc`: es, fr, de, it, nl, ru, ja, ko, zh_hans, zh_hant, além do pt),
+  escolhida pelo idioma do celular (`settings_menu_language`; `LARECOMP_HOST_LANG=ja` para testar); russo, japonês,
+  coreano e chinês com os glifos que a tabela usa, vindos das fontes do próprio Android (NotoSansCJK, Roboto) e
+  mesclados na Baloo 2 (`i18n_merge_fonts`); os textos do lado Java em `res/values-<idioma>`. Conferir no POCO:
+  altura e alinhamento dos glifos mesclados (escala 0,6 da Baloo, a ajustar), largura dos textos mais longos
+  (alemão, russo) nas linhas do menu, e que o NotoSansCJK existe no HyperOS.
 - **Build do código do jogo mais leve** (issues #18 e #25, 2026-10-25): numa tablet de 12 GB (1.6.0) o app fechou
   após ~20 min de build, na tela, sem erro no log; num Nubia Z60 Ultra (16 GB) o build demorou demais, puxou 11 W e
   esquentou, e reabrir o app começa tudo de novo. Hoje são `min(núcleos, RAM em GB - 2)` compiladores de uma vez

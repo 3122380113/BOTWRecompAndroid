@@ -71,24 +71,40 @@ const char *const g_language_names[N_LANGUAGES] = {"Auto", "Japanese", "English"
                                                    "Italian", "Dutch", "Russian", "Korean", "Chinese (Simplified)",
                                                    "Chinese (Traditional)", "Portuguese (Brazil)"};
 
-bool settings_host_portuguese(void) {
+const char *settings_menu_language(void) {
 #ifdef __ANDROID__
-    static int pt = -1;
-    if (pt < 0) {
+    static const char *lang;
+    if (!lang) {
+        char l[16] = "", country[16] = "";
         const char *e = getenv("LARECOMP_HOST_LANG");
-        if (e && *e) pt = !strncmp(e, "pt", 2);
-        else {  // (the phone's first preferred language, through SDL)
+        if (e && *e) {
+            snprintf(l, sizeof l, "%s", e);
+            char *dash = strchr(l, '-');
+            if (dash) snprintf(country, sizeof country, "%s", dash + 1), *dash = 0;
+        } else {  // (the phone's first preferred language, through SDL)
             int n = 0;
-            SDL_Locale **l = SDL_GetPreferredLocales(&n);
-            pt = l && n > 0 && l[0]->language && !strcmp(l[0]->language, "pt");
-            SDL_free(l);
+            SDL_Locale **loc = SDL_GetPreferredLocales(&n);
+            if (loc && n > 0 && loc[0]->language) {
+                snprintf(l, sizeof l, "%s", loc[0]->language);
+                if (loc[0]->country) snprintf(country, sizeof country, "%s", loc[0]->country);
+            }
+            SDL_free(loc);
         }
+        static const char *const own[] = {"pt", "es", "fr", "de", "it", "nl", "ru", "ja", "ko"};
+        lang = "en";
+        for (size_t i = 0; i < sizeof own / sizeof *own; i++)
+            if (!strcmp(l, own[i])) lang = own[i];
+        if (!strcmp(l, "zh"))  // (Taiwan, Hong Kong, Macau: traditional characters)
+            lang = !strcmp(country, "TW") || !strcmp(country, "HK") || !strcmp(country, "MO") || !strcmp(country, "Hant")
+                       ? "zh-Hant" : "zh-Hans";
     }
-    return pt;
+    return lang;
 #else
-    return false;
+    return "en";
 #endif
 }
+
+bool settings_host_portuguese(void) { return !strcmp(settings_menu_language(), "pt"); }
 
 // LANG_AUTO: the host's own language (LANG=es_ES.UTF-8 -> es), en-US when it is none of the game's. Linux only:
 // macOS / Windows apps get no locale variables from the system, so Auto is English there (pick one in settings).
