@@ -687,6 +687,13 @@ Pedidos ainda não começados, o mais recente no fim.
   tradicional e português do Brasil (1.8.2). Falta: uma tabela por idioma no mesmo formato, o idioma escolhido pelo
   do celular ou pela opção de idioma do jogo (Controles > Idioma), e glifos de japonês, coreano e chinês na fonte do
   ImGui (conferir o que a fonte do menu cobre hoje).
+- **Build do código do jogo mais leve** (issues #18 e #25, 2026-10-25): numa tablet de 12 GB (1.6.0) o app fechou
+  após ~20 min de build, na tela, sem erro no log; num Nubia Z60 Ultra (16 GB) o build demorou demais, puxou 11 W e
+  esquentou, e reabrir o app começa tudo de novo. Hoje são `min(núcleos, RAM em GB - 2)` compiladores de uma vez
+  (`launcher.mm build_game_code`: 8 nos dois). Falta:
+  - Começar um compilador novo só com memória livre (MemAvailable) e menos de uma vez num celular quente.
+  - Continuar de onde parou: manter os objetos já compilados entre aberturas do app.
+  - Registrar no log por que o Android fechou o app da última vez (`ApplicationExitInfo`: LOW_MEMORY etc.).
 
 ## Regras
 
