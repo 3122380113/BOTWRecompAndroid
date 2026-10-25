@@ -494,21 +494,27 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
     }
 
     // (called by nativeBuildRomfs) file i's data as a descriptor the native side reads and closes; -1 when it can't be
-    // opened, romfsOpenError saying why. Three tries: a setup stopped once in ~41000 opens with "can't read" (#17). The
-    // provider's descriptor is closed here and a duplicate handed over: detached, it kept its hold on the provider
-    // until the garbage collector came by.
+    // opened, romfsOpenError saying why. Three tries: a setup stopped once in ~41000 opens with "can't read" (#17).
+    // Through one client of the file provider for the whole image (ContentResolver's openFileDescriptor took and dropped
+    // the provider for each file, and its descriptors held it until the garbage collector came by); unstable: the
+    // provider dying fails an open (a new client, tried again), not this app.
     private String romfsOpenError;
+    private android.content.ContentProviderClient romfsClient;
 
     @SuppressWarnings("unused")
     private int openRomfsFile(int i) {
         Uri u = DocumentsContract.buildDocumentUriUsingTree(romfsTree, romfsFiles.get(i).id);
         for (int attempt = 1; ; attempt++) {
-            try (android.os.ParcelFileDescriptor pfd = getContentResolver().openFileDescriptor(u, "r")) {
+            try {
+                if (romfsClient == null) romfsClient = getContentResolver().acquireUnstableContentProviderClient(u);
+                if (romfsClient == null) throw new IOException("no file provider for " + u.getAuthority());
+                android.os.ParcelFileDescriptor pfd = romfsClient.openFile(u, "r");
                 if (pfd == null) throw new IOException("the file provider gave no file");
-                return pfd.dup().detachFd();
+                return pfd.detachFd();
             } catch (Exception e) {
                 String why = e.getClass().getSimpleName() + (e.getMessage() != null ? ": " + e.getMessage() : "");
                 Log.w(TAG, "opening " + romfsPaths.get(i) + ", try " + attempt + ": " + why);
+                if (e instanceof android.os.RemoteException) closeRomfsClient();  // (the provider died: a new one)
                 if (attempt == 3) {
                     romfsOpenError = why;
                     return -1;
@@ -520,6 +526,11 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
                 }
             }
         }
+    }
+
+    private void closeRomfsClient() {
+        if (romfsClient != null) romfsClient.close();
+        romfsClient = null;
     }
 
     private long copied, total, reported;
@@ -606,7 +617,12 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
             long[] sizes = new long[romfsFiles.size()];
             for (int i = 0; i < sizes.length; i++) sizes[i] = romfsFiles.get(i).size;
             romfsOpenError = null;
-            String failed = nativeBuildRomfs(romfsPaths.toArray(new String[0]), sizes);
+            String failed;
+            try {
+                failed = nativeBuildRomfs(romfsPaths.toArray(new String[0]), sizes);
+            } finally {
+                closeRomfsClient();
+            }
             romfsFiles.clear();
             romfsPaths.clear();
             if (failed != null) {

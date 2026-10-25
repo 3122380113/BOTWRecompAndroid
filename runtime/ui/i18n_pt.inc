@@ -24,6 +24,8 @@
  ". Usado(s) a partir do próximo início do jogo."},
 {"32-bit shader math",
  "Shaders com cálculo de 32 bits"},
+{"A file in the chosen folder couldn't be read. Copy the whole game folder again and try again.",
+ "Um arquivo da pasta escolhida não pôde ser lido. Copie a pasta do jogo inteira de novo e tente outra vez."},
 {"a button",
  "um botão"},
 {"a key",

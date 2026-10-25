@@ -649,6 +649,9 @@ extern "C" JNIEXPORT void JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidAc
     pthread_mutex_unlock(&g_lock);
     if (result == 1) return;
     set_failure(result == 2 ? FAIL_NOT_FOUND : result == 3 ? FAIL_UNUSABLE : result == 4 ? FAIL_VERSION : FAIL_COPY);
+    if (result == 5 && detail.rfind("can't read ", 0) == 0)  // (not the free space: issue #17 read it as 30 GB asked for)
+        set_job("Setup didn't finish", true,
+                "A file in the chosen folder couldn't be read. Copy the whole game folder again and try again.");
     set_job_detail(detail);
 }
 
