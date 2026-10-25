@@ -11,4 +11,5 @@
     <string name="driver_install">Instalar um driver</string>
     <string name="driver_system">Usar o driver do sistema</string>
     <string name="driver_close">Fechar</string>
+    <string name="driver_error_intro">O driver de vídeo não conseguiu rodar o jogo. Um driver Turnip para a sua GPU (.zip) costuma resolver: toque em Instalar um driver.\n\nDetalhes:</string>
 </resources>

@@ -653,7 +653,8 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
     }
 
     private void showDriverError(String extra) {
-        String msg = dlgText + (extra != null ? "\n\n" + extra : "");
+        // (the native message is in English: what to do comes first, in the phone's language - issue #13)
+        String msg = getString(R.string.driver_error_intro) + "\n" + dlgText + (extra != null ? "\n\n" + extra : "");
         AlertDialog.Builder b = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle(R.string.driver_error_title).setMessage(msg).setCancelable(false)
             .setPositiveButton(R.string.driver_install, (d, w) -> {
