@@ -499,6 +499,15 @@ extern "C" JNIEXPORT jint JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidAc
     return game_version_of_build((const uint8_t *)b);
 }
 
+// The picked folder is searched (the activity's import thread, through the file provider: it can take a while) - before,
+// nothing on the screen moved until the copy began (issue #17). nativeImportBegin or nativeImportDone follows.
+extern "C" JNIEXPORT void JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeImportLooking(JNIEnv *, jclass) {
+    pthread_mutex_lock(&g_lock);
+    g_busy = true;
+    pthread_mutex_unlock(&g_lock);
+    set_job("Looking for the game files...");
+}
+
 // The import of that version's files begins: its own extracted/ (runtime/paths.h), emptied of an earlier setup - its
 // path back, for the activity to copy exefs/ into
 extern "C" JNIEXPORT jstring JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeImportBegin(JNIEnv *env, jclass, jstring name,

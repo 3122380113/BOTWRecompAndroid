@@ -68,6 +68,7 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
     private static native void nativeDeviceStats(float battTempC, float battPct, float watts, int thermal, float headroom);
     // the start screen (runtime/ui/launcher.mm)
     private static native int nativeGameVersion(byte[] head);
+    private static native void nativeImportLooking();  // (the picked folder is being searched: busy, and said so)
     private static native String nativeImportBegin(String name, int version);
     private static native void nativeImportProgress(long done, long total);
     private static native void nativeImportDone(int result);
@@ -456,6 +457,9 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
         if (exefs == null && named(kids, "main") != null && named(kids, "main.npdm") != null) exefs = dir;
         Doc rc = named(kids, "Pack");
         if (romfs == null && rc != null && rc.dir) romfs = dir;
+        // (romfs/'s own folders hold no exefs: through the file provider, listing their ~40000 files took long enough
+        // for the setup to look stuck - issue #17)
+        if (dir == romfs || dir == exefs) return;
         for (Doc k : kids) {
             String n = k.name == null ? "" : k.name.toLowerCase();
             if (n.endsWith(".nsp") || n.endsWith(".xci") || n.endsWith(".nca") || n.endsWith(".nsz") || n.endsWith(".xcz")) packages = true;
@@ -489,13 +493,33 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
         }
     }
 
-    // (called by nativeBuildRomfs) file i's data as a descriptor the native side reads and closes
+    // (called by nativeBuildRomfs) file i's data as a descriptor the native side reads and closes; -1 when it can't be
+    // opened, romfsOpenError saying why. Three tries: a setup stopped once in ~41000 opens with "can't read" (#17). The
+    // provider's descriptor is closed here and a duplicate handed over: detached, it kept its hold on the provider
+    // until the garbage collector came by.
+    private String romfsOpenError;
+
     @SuppressWarnings("unused")
-    private int openRomfsFile(int i) throws IOException {
-        android.os.ParcelFileDescriptor pfd = getContentResolver().openFileDescriptor(
-                DocumentsContract.buildDocumentUriUsingTree(romfsTree, romfsFiles.get(i).id), "r");
-        if (pfd == null) throw new IOException("Could not open " + romfsPaths.get(i));
-        return pfd.detachFd();
+    private int openRomfsFile(int i) {
+        Uri u = DocumentsContract.buildDocumentUriUsingTree(romfsTree, romfsFiles.get(i).id);
+        for (int attempt = 1; ; attempt++) {
+            try (android.os.ParcelFileDescriptor pfd = getContentResolver().openFileDescriptor(u, "r")) {
+                if (pfd == null) throw new IOException("the file provider gave no file");
+                return pfd.dup().detachFd();
+            } catch (Exception e) {
+                String why = e.getClass().getSimpleName() + (e.getMessage() != null ? ": " + e.getMessage() : "");
+                Log.w(TAG, "opening " + romfsPaths.get(i) + ", try " + attempt + ": " + why);
+                if (attempt == 3) {
+                    romfsOpenError = why;
+                    return -1;
+                }
+                try {
+                    Thread.sleep(attempt * 1000L);
+                } catch (InterruptedException ie) {
+                    return -1;
+                }
+            }
+        }
     }
 
     private long copied, total, reported;
@@ -536,6 +560,7 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
 
     private void importGame(Uri tree) {
         int result;
+        nativeImportLooking();
         try {
             exefs = romfs = null;
             preLib = preId = preGame = null;
@@ -580,10 +605,12 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
             nativeImportProgress(copied, total);
             long[] sizes = new long[romfsFiles.size()];
             for (int i = 0; i < sizes.length; i++) sizes[i] = romfsFiles.get(i).size;
+            romfsOpenError = null;
             String failed = nativeBuildRomfs(romfsPaths.toArray(new String[0]), sizes);
             romfsFiles.clear();
             romfsPaths.clear();
             if (failed != null) {
+                if (romfsOpenError != null) nativeImportDetail(failed + " - " + romfsOpenError);  // (in place of the native side's)
                 Log.e(TAG, "game data image: " + failed);
                 nativeImportDone(5);
                 return;
