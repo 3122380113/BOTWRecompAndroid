@@ -96,14 +96,16 @@ static bool has_ext(VkExtensionProperties *e, uint32_t n, const char *name) {
 // extensions. The backend then runs exactly its 1.3 code: the extensions' functions take the core names' place
 // (compat_aliases, volk's pointers) and their structures are the same. `below`: the version from which it is core.
 // After LASRecomp-Android-Plus by Nycolazs (MIT, runtime/nvn/vulkan/device.c COMPAT_EXT / compat_ok / compat_aliases).
-// optional: without it the backend still runs (dynamic rendering: classic render passes instead, rpcompat.c)
-static const struct { const char *name; uint32_t below; bool optional; } COMPAT_EXT[] = {
-    {VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME, VK_API_VERSION_1_3, true},
-    {VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME, VK_API_VERSION_1_2, true},  // (dynamic rendering needs these two)
-    {VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME, VK_API_VERSION_1_2, true},
+// optional: without it the backend still runs - OPT_DR dynamic rendering (classic render passes instead, rpcompat.c),
+// OPT_EDS2 extended dynamic state 2 (depth bias and primitive restart as pipeline state, exec.c)
+enum { OPT_NONE, OPT_DR, OPT_EDS2 };
+static const struct { const char *name; uint32_t below; uint8_t optional; } COMPAT_EXT[] = {
+    {VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME, VK_API_VERSION_1_3, OPT_DR},
+    {VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME, VK_API_VERSION_1_2, OPT_DR},  // (dynamic rendering needs these two)
+    {VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME, VK_API_VERSION_1_2, OPT_DR},
     {VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME, VK_API_VERSION_1_3},
     {VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME, VK_API_VERSION_1_3},
-    {VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME, VK_API_VERSION_1_3},
+    {VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME, VK_API_VERSION_1_3, OPT_EDS2},  // (Qualcomm's on Adreno 7xx: not there)
     {VK_EXT_SHADER_DEMOTE_TO_HELPER_INVOCATION_EXTENSION_NAME, VK_API_VERSION_1_3},
     {VK_KHR_SHADER_TERMINATE_INVOCATION_EXTENSION_NAME, VK_API_VERSION_1_3},
     {VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME, VK_API_VERSION_1_2},
@@ -113,10 +115,19 @@ static const struct { const char *name; uint32_t below; bool optional; } COMPAT_
     {VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE_EXTENSION_NAME, VK_API_VERSION_1_2},
 };
 #define N_COMPAT_EXT (sizeof COMPAT_EXT / sizeof *COMPAT_EXT)
-// (the fatal messages below: this check stops the app before the start screen, where Settings > Prelaunch > Choose
-// driver is - the app icon's long-press shortcut reaches it, DriverPickActivity.java)
+// (the fatal messages below: this check stops the app before the start screen, where Settings > Files > Choose driver
+// is - the app icon's long-press shortcut reaches it, DriverPickActivity.java)
 #define DRIVER_HINT "Another driver may have it - on Adreno GPUs, a Turnip driver: long-press the app icon, then Choose " \
                     "driver. "
+// (ahead of them: a chosen driver that couldn't be used, so the system's ran - android_driver.c)
+static const char *rejected_note(void) {
+    static char s[256];
+    const char *r = vk_driver_rejected();
+    if (!*r) return "";
+    snprintf(s, sizeof s, "The chosen driver (%s) couldn't be used on this GPU, so the phone's own driver ran. "
+             "Choose a build made for this GPU.\n\n", r);
+    return s;
+}
 static char g_compat_missing[640];  // (what a rejected GPU lacked: the fatal message names it all)
 
 // Whether a device below 1.3 has every extension it needs (missing ones logged)
@@ -216,12 +227,12 @@ static void pick_device(void) {
         if (score > best_score) { best_score = score; best = (int)i; best_queue = present_queue; }
     }
     if (best < 0 && have_api)
-        FATAL("No Vulkan GPU has a graphics+compute queue that can present to the screen. Check the selected driver "
-              "(long-press the app icon: Choose driver, or System driver).\n");
+        FATAL("%sNo Vulkan GPU has a graphics+compute queue that can present to the screen. Check the selected driver "
+              "(long-press the app icon: Choose driver, or System driver).\n", rejected_note());
     if (best < 0)
-        FATAL("This phone's Vulkan driver is too old for the game: it needs Vulkan 1.3, or 1.1 / 1.2 with extensions "
+        FATAL("%sThis phone's Vulkan driver is too old for the game: it needs Vulkan 1.3, or 1.1 / 1.2 with extensions "
               "(missing: %s). " DRIVER_HINT "Otherwise, report your phone model and Android version.\n",
-              g_compat_missing[0] ? g_compat_missing : "Vulkan 1.1");
+              rejected_note(), g_compat_missing[0] ? g_compat_missing : "Vulkan 1.1");
     g_vk.phys = pd[best];
     free(pd);
     vkGetPhysicalDeviceProperties(g_vk.phys, &g_vk.props);
@@ -329,8 +340,11 @@ static void create_device(void) {
     bool dr_ext = g_vk.api >= VK_API_VERSION_1_3 || (has_ext(ep, ne, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME) &&
                                                      has_ext(ep, ne, VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME) &&
                                                      has_ext(ep, ne, VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME));
+    bool eds2_ext = g_vk.api >= VK_API_VERSION_1_3 || has_ext(ep, ne, VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME);
     for (size_t i = 0; i < N_COMPAT_EXT; i++)  // (below 1.3: pick_device checked the others are all there)
-        if (g_vk.api < COMPAT_EXT[i].below && (!COMPAT_EXT[i].optional || dr_ext)) ext[n_ext++] = COMPAT_EXT[i].name;
+        if (g_vk.api < COMPAT_EXT[i].below && (COMPAT_EXT[i].optional == OPT_NONE ||
+                                               (COMPAT_EXT[i].optional == OPT_DR ? dr_ext : eds2_ext)))
+            ext[n_ext++] = COMPAT_EXT[i].name;
     // (VkPhysicalDeviceDriverProperties: core from 1.2, before that its own extension, only queried)
     bool driver_props = g_vk.api >= VK_API_VERSION_1_2 || has_ext(ep, ne, VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME);
 #endif
@@ -432,11 +446,16 @@ static void create_device(void) {
         LOG("[vk] compat features: eds %u eds2 %u dynamic-rendering %u sync2 %u demote %u terminate %u\n",
             q_eds.extendedDynamicState, q_eds2.extendedDynamicState2, q_dr.dynamicRendering, q_s2.synchronization2,
             q_dem.shaderDemoteToHelperInvocation, q_term.shaderTerminateInvocation);
-        if (!q_eds.extendedDynamicState || !q_eds2.extendedDynamicState2)
-            FATAL("Vulkan driver on %s lacks a feature required by this renderer: extendedDynamicState%s. " DRIVER_HINT
-                  "\nInclude this message, phone model and app version in your bug report.\n",
-                  g_vk.props.deviceName, q_eds.extendedDynamicState ? "2" : "");
+        if (!q_eds.extendedDynamicState)
+            FATAL("%sVulkan driver on %s lacks a feature required by this renderer: extendedDynamicState. " DRIVER_HINT
+                  "\nInclude this message, phone model and app version in your bug report.\n", rejected_note(),
+                  g_vk.props.deviceName);
     }
+    // Extended dynamic state 2 where the driver has it (core in 1.3); without, depth bias and primitive restart are
+    // pipeline state (exec.c). LARECOMP_NO_EDS2=1: that way on any driver (to test it).
+    g_vk.eds2 = (g_vk.api >= VK_API_VERSION_1_3 || (eds2_ext && q_eds2.extendedDynamicState2)) &&
+                !(getenv("LARECOMP_NO_EDS2") && atoi(getenv("LARECOMP_NO_EDS2")));
+    if (!g_vk.eds2) LOG("[vk] no extended dynamic state 2: depth bias and primitive restart in the pipelines\n");
 #ifdef __ANDROID__
     // Dynamic rendering where the driver has it; without, classic render passes (rpcompat.c).
     // LARECOMP_NO_DYNAMIC_RENDERING=1: render passes on any driver (to test that path).
@@ -474,9 +493,9 @@ static void create_device(void) {
             (unsigned long long)g_vk.props.limits.minStorageBufferOffsetAlignment, types);
     }
     const char *missing = vk_missing_backend_feature(&h11, &h12, &h13);
-    if (missing) FATAL("Vulkan driver on %s lacks a feature required by this renderer: %s. " DRIVER_HINT "\n"
+    if (missing) FATAL("%sVulkan driver on %s lacks a feature required by this renderer: %s. " DRIVER_HINT "\n"
                        "Driver: %s. Include this message, phone model and app version in your bug report.\n",
-                       g_vk.props.deviceName, missing, driver.driverName);
+                       rejected_note(), g_vk.props.deviceName, missing, driver.driverName);
 #endif
     VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT div = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT,
@@ -520,7 +539,7 @@ static void create_device(void) {
         .pNext = &e_eds};
     VkPhysicalDeviceShaderDemoteToHelperInvocationFeaturesEXT e_dem = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DEMOTE_TO_HELPER_INVOCATION_FEATURES_EXT,
-        .shaderDemoteToHelperInvocation = VK_TRUE, .pNext = &e_eds2};
+        .shaderDemoteToHelperInvocation = VK_TRUE, .pNext = g_vk.eds2 ? (void *)&e_eds2 : (void *)&e_eds};
     VkPhysicalDeviceShaderTerminateInvocationFeaturesKHR e_term = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_TERMINATE_INVOCATION_FEATURES_KHR,
         .shaderTerminateInvocation = VK_TRUE, .pNext = &e_dem};

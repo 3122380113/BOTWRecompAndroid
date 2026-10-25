@@ -1,6 +1,6 @@
 // The app icon's long-press "Choose driver" shortcut (res/xml/shortcuts.xml): a Vulkan driver package picked before the
 // game starts. On a phone whose own driver is too old for the game, the app stops before the start screen
-// (runtime/nvn/vulkan/device.c), so Settings > Prelaunch > Choose driver is out of reach (issues #2, #5, #6, #9). The
+// (runtime/nvn/vulkan/device.c), so Settings > Files > Choose driver is out of reach (issues #2, #5, #6, #9). The
 // package goes where that button puts it (BOTWRecompAndroidActivity.installDriver), then the app starts again in a new
 // process, as restartApp does: the driver is loaded once, at start.
 package com.botwrecompandroid;

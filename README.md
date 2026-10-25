@@ -46,8 +46,9 @@ Windows, Linux or macOS may still be used as development hosts with the Android 
    arm64, Vulkan; about 30 GB free per game version).
 2. Open it, go to **Set up game files** and choose the folder with your `exefs` and `romfs`. The version is told from
    the files. The app copies what it needs and builds the game code on the phone.
-3. On Adreno phones, a Mesa Turnip driver (Settings > Prelaunch > Vulkan driver) runs the game much faster than the
-   system driver.
+3. On Adreno phones, a Mesa Turnip driver (Settings > Files > Vulkan driver) runs the game much faster than the
+   system driver. If the app stops at start with "Vulkan driver is too old", long-press the app icon and choose
+   **Choose driver** to pick one before the game starts.
 
 ## Testing on Android (developers)
 

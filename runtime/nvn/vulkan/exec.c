@@ -1884,12 +1884,13 @@ static const VkDynamicState DYN[] = {
     VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE, VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE, VK_DYNAMIC_STATE_DEPTH_COMPARE_OP,
     VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE, VK_DYNAMIC_STATE_STENCIL_OP, VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE,
     VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE};
-#define NDYN (sizeof DYN / sizeof DYN[0])
+// (the last two are extended dynamic state 2's: without it, pipeline state - PipeKey.prim_restart, depth bias always on)
+#define NDYN (sizeof DYN / sizeof DYN[0] - (g_vk.eds2 ? 0 : 2))
 
 // Fixed-function state that isn't part of a pipeline is set explicitly on every bind (it persists across pipelines).
 static void dyn_defaults(VkCommandBuffer cb) {
     vkCmdSetDepthBias(cb, 0, 0, 0);
-    vkCmdSetDepthBiasEnable(cb, VK_FALSE);
+    if (g_vk.eds2) vkCmdSetDepthBiasEnable(cb, VK_FALSE);
     float bc[4] = {0, 0, 0, 0};
     vkCmdSetBlendConstants(cb, bc);
     vkCmdSetStencilCompareMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 0xFF);
@@ -1904,7 +1905,7 @@ static void dyn_defaults(VkCommandBuffer cb) {
     vkCmdSetStencilTestEnable(cb, VK_FALSE);
     vkCmdSetStencilOp(cb, VK_STENCIL_FACE_FRONT_AND_BACK, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP,
                       VK_COMPARE_OP_ALWAYS);
-    vkCmdSetPrimitiveRestartEnable(cb, VK_FALSE);
+    if (g_vk.eds2) vkCmdSetPrimitiveRestartEnable(cb, VK_FALSE);
 }
 
 typedef struct { uint64_t key; VkPipeline pipe; } PipeEnt;
@@ -2497,6 +2498,7 @@ typedef struct {
     uint32_t stride[17], divisor[17], used_streams;
     uint8_t blend[8][8];
     uint8_t blend_on, a2c, topo_class, poly_fill, depth_clamp;
+    uint8_t prim_restart;  // (no extended dynamic state 2 only: primitive restart is pipeline state then)
     uint32_t write_mask[8];
 } PipeKey;
 
@@ -2547,11 +2549,12 @@ static void build_pipeline(void *arg) {
                                                .vertexBindingDescriptionCount = nb, .pVertexBindingDescriptions = vb,
                                                .vertexAttributeDescriptionCount = na, .pVertexAttributeDescriptions = va};
     VkPipelineInputAssemblyStateCreateInfo ia = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-                                                 .topology = topo_class_base(k->topo_class)};
+                                                 .topology = topo_class_base(k->topo_class), .primitiveRestartEnable = k->prim_restart};
     VkPipelineViewportStateCreateInfo vs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1};
+    // (no extended dynamic state 2: depth bias always on, "off" being a bias of zero - draw_ sets it either way)
     VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
                                                  .polygonMode = k->poly_fill ? VK_POLYGON_MODE_FILL : VK_POLYGON_MODE_LINE, .lineWidth = 1,
-                                                 .depthClampEnable = k->depth_clamp};
+                                                 .depthClampEnable = k->depth_clamp, .depthBiasEnable = !g_vk.eds2};
     VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
                                                .rasterizationSamples = (VkSampleCountFlagBits)k->samples, .alphaToCoverageEnable = k->a2c};
     VkPipelineDepthStencilStateCreateInfo ds = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
@@ -5041,6 +5044,8 @@ static void draw_(CmdRec *r, bool indexed) {
     uint8_t cls;
     bool native = topology(mode, &topo, &cls);
     if (!native && mode != 6 && mode != 7 && mode != 9) { stat_skipped++; return; }
+    VkBool32 pre = st.prim_restart && native && (mode == 3 || mode == 5);
+    uint8_t pre_key = !g_vk.eds2 && pre;  // (no extended dynamic state 2: in the pipeline, PipeKey.prim_restart)
 
     uint64_t prof_tk_ = prof ? SDL_GetTicksNS() : 0;
     if (prof) prof_pre += prof_tk_ - prof_tp_;
@@ -5053,12 +5058,13 @@ static void draw_(CmdRec *r, bool indexed) {
         verify = getenv("LARECOMP_VK_PIPE_VERIFY") != NULL;
     }
     bool hit = reuse && !pipeline_dirty && last_pipeline &&
-               last_pipeline->k.prog == pr && last_pipeline->k.topo_class == cls;
+               last_pipeline->k.prog == pr && last_pipeline->k.topo_class == cls && last_pipeline->k.prim_restart == pre_key;
     Pipe *pp = hit ? last_pipeline : NULL;
     if (!hit || verify) {
         PipeKey k;
         memset(&k, 0, sizeof k);
         k.prog = pr;
+        k.prim_restart = pre_key;
         k.ncolor = pass_ncolor;
         memcpy(k.color, pass_color, sizeof k.color);
         k.depth = pass_depth;
@@ -5215,8 +5221,7 @@ static void draw_(CmdRec *r, bool indexed) {
     if (ss_need(SS_FF, ss.ff == ff)) { ss.ff = ff; vkCmdSetFrontFace(cb, ff); }
     VkPrimitiveTopology tp = native ? topo : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     if (ss_need(SS_TOPO, ss.topo == tp)) { ss.topo = tp; vkCmdSetPrimitiveTopology(cb, tp); }
-    VkBool32 pre = st.prim_restart && native && (mode == 3 || mode == 5);
-    if (ss_need(SS_PRE, ss.pre == pre)) { ss.pre = pre; vkCmdSetPrimitiveRestartEnable(cb, pre); }
+    if (g_vk.eds2 && ss_need(SS_PRE, ss.pre == pre)) { ss.pre = pre; vkCmdSetPrimitiveRestartEnable(cb, pre); }
     {
         float f[3] = {0, 0, 0};
         static int off = -1;
@@ -5224,7 +5229,7 @@ static void draw_(CmdRec *r, bool indexed) {
         bool on = (st.poly[3] & 4) && !off;
         if (on) memcpy(f, st.poly_offset, sizeof f);
         if (equal_tol) { f[1] -= 8; on = true; }  // (see the EQUAL comment above: a few depth ulps nearer)
-        if (ss_need(SS_DBE, ss.dbe == (VkBool32)on)) { ss.dbe = on; vkCmdSetDepthBiasEnable(cb, on); }
+        if (g_vk.eds2 && ss_need(SS_DBE, ss.dbe == (VkBool32)on)) { ss.dbe = on; vkCmdSetDepthBiasEnable(cb, on); }
         if (ss_need(SS_DB, !memcmp(ss.db, f, sizeof f))) { memcpy(ss.db, f, sizeof f); vkCmdSetDepthBias(cb, f[1], f[2], f[0]); }
     }
 

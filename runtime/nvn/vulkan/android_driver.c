@@ -39,6 +39,12 @@ static bool driver_has_gpu(PFN_vkGetInstanceProcAddr gipa) {
     return ok;
 }
 
+// The chosen driver the system's stood in for (its package's name; "" none): the start screen and the driver errors
+// say so - before, a Turnip build for another Adreno generation fell back silently, and the "driver too old" error
+// read as if Turnip lacked the extensions
+static char g_rejected[128];
+const char *vk_driver_rejected(void) { return g_rejected; }
+
 void vk_android_load(void) {
     void *lib = NULL;
     const char *drv = getenv("LARECOMP_VK_DRIVER"), *hooks = getenv("LARECOMP_NATIVE_LIB_DIR");
@@ -53,6 +59,15 @@ void vk_android_load(void) {
         if (lib && (!g || !driver_has_gpu(g))) {
             LOG("[vk] driver %s: no Vulkan 1.1+ GPU it supports here - using the system driver\n", drv);
             lib = NULL;  // (left loaded: a driver doesn't always unload cleanly)
+        }
+        if (!lib) {  // (the package's name: its folder, files/drivers/<name>/<library>)
+            const char *name = drv;
+            if (slash) {
+                const char *p = slash;
+                while (p > drv && p[-1] != '/') p--;
+                name = p;
+            }
+            snprintf(g_rejected, sizeof g_rejected, "%.*s", slash && name < slash ? (int)(slash - name) : (int)strlen(name), name);
         }
     }
     if (!lib) lib = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);

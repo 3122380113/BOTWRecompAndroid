@@ -439,6 +439,7 @@ extern "C" void android_log_file(bool on);
 extern "C" bool vk_adreno_8xx(const char *name);  // (Driver compatibility's Automatic: runtime/nvn/vulkan/device.c)
 extern "C" bool vk_lrz_at_start(void);
 extern "C" const char *vk_gpu_name(void);
+extern "C" const char *vk_driver_rejected(void);  // (runtime/nvn/vulkan/android_driver.c)
 extern "C" bool vk_driver_is_turnip(void);
 extern "C" const char *vk_gpu_desc(void);  // ("Adreno (TM) 830 - Turnip")
 static std::string g_log_folder;  // its name ("Download/BOTWRecomp"), "" with none
@@ -1117,8 +1118,12 @@ static void prelaunch_tab(float sc) {
     {
         const char *d = getenv("LARECOMP_VK_DRIVER");
         const char *base = d && *d ? strrchr(d, '/') : NULL;
-        ImGui::Text(tr("In use: %s"), d && *d ? (base ? base + 1 : d) : tr("the system's driver"));
+        const char *rejected = vk_driver_rejected();  // (chosen, but the system's ran: android_driver.c)
+        ImGui::Text(tr("In use: %s"), d && *d && !*rejected ? (base ? base + 1 : d) : tr("the system's driver"));
         ImGui::PushTextWrapPos(0);
+        if (*rejected)
+            ImGui::TextColored(ImVec4(1.0f, 0.62f, 0.3f, 1.0f), tr("%s couldn't be used on this GPU: choose a driver made for it."),
+                               rejected);
         ImGui::TextDisabled("%s", tr("The game runs on the system's driver, lighting included. On Adreno GPUs, Mesa's Turnip "
                                      "driver runs it faster: choose a Turnip driver package (.zip, as for adrenotools)."));
         ImGui::PopTextWrapPos();

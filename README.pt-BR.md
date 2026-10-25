@@ -46,8 +46,9 @@ Windows, Linux e macOS podem continuar sendo usados como ambientes de desenvolvi
    Vulkan; cerca de 30 GB livres por versão do jogo).
 2. Abra, vá em **Configurar arquivos do jogo** e escolha a pasta com o seu `exefs` e `romfs`. A versão é reconhecida
    pelos arquivos. O app copia o que precisa e compila o código do jogo no celular.
-3. Em celulares com Adreno, um driver Mesa Turnip (Configurações > Prelaunch > Driver Vulkan) roda o jogo bem mais
-   rápido que o driver do sistema.
+3. Em celulares com Adreno, um driver Mesa Turnip (Configurações > Arquivos > Driver Vulkan) roda o jogo bem mais
+   rápido que o driver do sistema. Se o app parar ao abrir com "Vulkan driver is too old", toque e segure o ícone do
+   app e escolha **Escolher driver** para selecionar um antes de o jogo começar.
 
 ## Testando no Android (desenvolvedores)
 

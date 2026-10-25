@@ -214,6 +214,8 @@
  "Fontes importadas removidas: a fonte substituta é usada."},
 {"In use: %s",
  "Em uso: %s"},
+{"%s couldn't be used on this GPU: choose a driver made for it.",
+ "%s não pôde ser usado nesta GPU: escolha um driver feito para ela."},
 {"Internal resolution",
  "Resolução interna"},
 {"Italian",
