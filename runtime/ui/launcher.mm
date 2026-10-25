@@ -1497,10 +1497,13 @@ extern "C" void launcher_run(const char *root) {
             pthread_mutex_lock(&g_lock);
             int set_up = g_set_up_version;
             g_set_up_version = 0;
+            bool failed = g_job_failed;
             pthread_mutex_unlock(&g_lock);
             if (set_up && set_up != rt_game_version()) switch_to_version(set_up);  // (set up beside this one: played now)
             status = check_game_files(g_root);
-            if (status.empty() && !g_switching_to) { load_background(dev); page = MAIN; }
+            // (a failure stays on the page with its cause: with this version's files ready, a setup of another folder
+            // that failed went back to the start screen without a word)
+            if (status.empty() && !g_switching_to && !failed) { load_background(dev); page = MAIN; }
         }
         was_busy = busy;
 
