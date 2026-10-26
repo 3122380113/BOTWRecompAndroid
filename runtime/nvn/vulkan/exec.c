@@ -719,7 +719,7 @@ bool g_gpuprof_frame;
 static VkQueryPool gp_qp;
 static int gp_n;
 #ifdef __ANDROID__
-#define GP_MAX 2048  // (LARECOMP_GPUPROF_DRAWS=1: a mark after every draw too - its shaders, size and GPU time)
+#define GP_MAX 8192  // (LARECOMP_GPUPROF_DRAWS=1: a mark after every draw too - its shaders, size and GPU time; ~2,700 a 1.8.2 frame)
 #else
 #define GP_MAX 512
 #endif
