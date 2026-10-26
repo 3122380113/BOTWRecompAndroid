@@ -18,6 +18,7 @@
 #include <pthread.h>
 #include <string>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
 #include <vector>
 #include <algorithm>
@@ -272,7 +273,7 @@ static void set_failure(int k) {
         "Make sure there's about 30 GB free and try again.",
         "BOTWRecompAndroid runs versions 1.0.0, 1.6.0 and 1.8.2 of the game.",
         "Some files are missing. Choose the folder again; if it happens again, dump the game again.",
-        "Make sure there's about 2 GB free and try again. If it keeps happening, report it on GitHub."};
+        "Try again: the build goes on where it stopped. If it keeps failing, report it on GitHub with the log."};
     if (k >= 1 && k <= 6) set_job(head[k], true, hint[k]);
 }
 
@@ -348,7 +349,18 @@ static bool build_game_code(const std::string &dir) {
     bool ok = gamebuild_run(dir.c_str(), &o, why, sizeof why);
     if (!ok) {
         fprintf(stderr, "[launcher] game code: %s\n", why);
+        std::string detail = why;
+        struct statvfs fs;  // (free space named only when it is short)
+        if (statvfs(dir.c_str(), &fs) == 0) {
+            double gb = (double)fs.f_bavail * (double)fs.f_frsize / (1024.0 * 1024.0 * 1024.0);
+            if (gb < 2.0) {
+                char sp[96];
+                snprintf(sp, sizeof sp, "; only %.1f GB free on the phone", gb);
+                detail += sp;
+            }
+        }
         set_failure(FAIL_BUILD);
+        set_job_detail(detail);
     }
     return ok;
 }

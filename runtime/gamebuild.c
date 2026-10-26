@@ -83,6 +83,17 @@ static void stop(PlatProc p) {  // ends one that is still running, then forgotte
     if (ours) plat_proc_kill(p);
 }
 
+// why: what failed, and how the process ended (r from finished / wait_for); the setup screen shows it (issues #29, #36:
+// a hint about free space alone read as "the phone has 2 GB left")
+static void failed_why(char *why, size_t why_size, const char *what, int r) {
+    if (r == 128 + 9)
+        snprintf(why, why_size, "%s: Android stopped the compiler, usually for lack of free memory (RAM)", what);
+    else if (r > 128 && r < 255)
+        snprintf(why, why_size, "%s: the compiler crashed (signal %d)", what, r - 128);
+    else
+        snprintf(why, why_size, "%s (exit code %d)", what, r);
+}
+
 static void sleep_ms(int ms) { plat_sleep_until_ns(plat_now_ns() + (uint64_t)ms * 1000000ull); }
 
 static int wait_for(PlatProc p) {
@@ -705,7 +716,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
                 char last[300];
                 log_tail(u->log, last, sizeof last);
                 LOG("[gamebuild] compiling %s failed: %s\n", u->src, last);
-                snprintf(why, why_size, "the game code didn't compile");
+                failed_why(why, why_size, "the game code didn't compile", r);
                 ok = false;
             } else {
                 mark_done(u);
@@ -788,7 +799,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
             char last[300];
             log_tail(log, last, sizeof last);
             LOG("[gamebuild] linking failed: %s\n", last);
-            snprintf(why, why_size, "the game code didn't link");
+            failed_why(why, why_size, "the game code didn't link", r);
             ok = false;
         }
     }
