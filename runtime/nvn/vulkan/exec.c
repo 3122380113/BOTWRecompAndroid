@@ -19,6 +19,12 @@
 #include "../../settings.h"
 #include "../../paths.h"
 
+// LARECOMP_AB (vk_ab, below): AB() costs no call while it is not set - it is asked per constant buffer and per pass
+static int ab_n = -1;  // (LARECOMP_AB's frame count; 0: no A/B)
+int vk_ab(const char *what);
+#define AB(what) (ab_n == 0 ? -1 : vk_ab(what))
+static uint64_t hash_words(uint64_t h, const void *p, size_t n);
+
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
 static uint64_t stat_feedback_reads;  // (attachments sampled as they are: only read, resolve_feedback)
 static uint64_t stat_inplace_breaks;  // (passes ended so a draw reads a target the pass wrote: resolve_feedback)
@@ -1723,7 +1729,7 @@ static void begin_pass(void) {
             chunk = e ? atol(e) : vk_driver_is_qualcomm() ? 0 : 2000;
         }
         extern int vk_ab(const char *what);
-        long ch = chunk > 0 && vk_ab("chunk") == 1 ? 500 : chunk;
+        long ch = chunk > 0 && AB("chunk") == 1 ? 500 : chunk;
         if (ch > 0 && vk_async_on() && last_submit_ns && SDL_GetTicksNS() - last_submit_ns > (uint64_t)ch * 1000)
             renderer_submit();
     }
@@ -1734,7 +1740,7 @@ static void begin_pass(void) {
     static int no_barrier = -1;  // (LARECOMP_VK_NO_PASS_BARRIER=1: none - unsafe, a measurement of what it costs)
     if (no_barrier < 0) no_barrier = getenv("LARECOMP_VK_NO_PASS_BARRIER") != NULL;
     extern int vk_ab(const char *what);
-    if (!no_barrier && vk_ab("nobarrier") != 1) vk_full_barrier(cb);  // passes, copies and dispatches see each other's results
+    if (!no_barrier && AB("nobarrier") != 1) vk_full_barrier(cb);  // passes, copies and dispatches see each other's results
     {
         NvnTexture *t0n = st.rt.ncolor ? st.rt.color[0] : NULL;
         dl_note("pass %d color %ux%u fmt %#x depth %p", st.rt.ncolor, t0n ? t0n->width : 0, t0n ? t0n->height : 0, t0n ? t0n->format : 0,
@@ -2353,8 +2359,7 @@ static Prog *get_program(NvnProgram *np, ShaderKey *vkey, ShaderKey *fkey) {
     last_vkey = *vkey, last_fkey = *fkey;
     uint64_t h = 0xcbf29ce484222325ull;
     for (int i = 0; i < 2; i++) { uint64_t a = np->stages[i].code_addr; for (int k = 0; k < 8; k++) { h ^= (a >> (k * 8)) & 0xFF; h *= 0x100000001B3ull; } }
-    const uint8_t *vb = (const uint8_t *)vkey;
-    for (size_t i = 0; i < sizeof *vkey; i++) { h ^= vb[i]; h *= 0x100000001B3ull; }
+    h = hash_words(h, vkey, sizeof *vkey);  // (8 bytes a step: the table is in memory only)
     for (int i = 0; i < 8; i++) { h ^= fkey->rt_kind[i]; h *= 0x100000001B3ull; }
 #ifdef __ANDROID__
     if (fkey->no_ds_write) { h ^= 0xE1; h *= 0x100000001B3ull; }  // (keys without it hash as before)
@@ -3106,7 +3111,7 @@ static uint32_t draw_writes(const Prog *pr) {
     return w;
 }
 
-static void resolve_feedback(Prog *pr) {
+static void resolve_feedback(Prog *pr, uint32_t draw_written) {
     nfeedback = 0;
     ninplace = 0;
     static int off = -1;
@@ -3118,7 +3123,7 @@ static void resolve_feedback(Prog *pr) {
     // 1600x900 targets (~2.5 ms of GPU) each time it changed. LARECOMP_FEEDBACK_ALWAYS=1: a copy whenever bound.
     static int always = -1;
     if (always < 0) always = getenv("LARECOMP_FEEDBACK_ALWAYS") != NULL;
-    uint32_t written = draw_writes(pr) | (in_pass && !st.rt_dirty ? pass_written : 0);
+    uint32_t written = draw_written | (in_pass && !st.rt_dirty ? pass_written : 0);
     ShaderInfo *infos[2] = {pr->vi, pr->fi};
     for (int sg = 0; sg < 2; sg++)
         for (int i = 0; i < infos[sg]->ntex; i++) {
@@ -3161,7 +3166,7 @@ static void resolve_feedback(Prog *pr) {
                         g_settings.inplace_reads < 0 ? "automatic" : "settings");
                 }
                 extern int vk_ab(const char *what);
-                if (!g_inplace_copy && bit && bit < 1u << 8 && vk_ab("copy") != 1) {
+                if (!g_inplace_copy && bit && bit < 1u << 8 && AB("copy") != 1) {
                     int si = -1;
                     for (int k = 0; k < 8; k++) if (snap_tex[k] == t) si = k;
                     if (si < 0 || !snap_ok[si]) {
@@ -3420,7 +3425,7 @@ static bool ubo_direct(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out
     static int on = -1;
     if (on < 0) on = getenv("LARECOMP_UBO_DIRECT") && atoi(getenv("LARECOMP_UBO_DIRECT"));
     extern int vk_ab(const char *what);
-    if (!(on || vk_ab("ubo") == 1) || !gmem_placed || addr < HEAP_BASE || addr + size > HEAP_BASE + gmem_size) return false;
+    if (!(on || AB("ubo") == 1) || !gmem_placed || addr < HEAP_BASE || addr + size > HEAP_BASE + gmem_size) return false;
     uint64_t off = addr - HEAP_BASE;
     if ((off & (g_vk.props.limits.minUniformBufferOffsetAlignment - 1)) || size > g_vk.props.limits.maxUniformBufferRange)
         return false;
@@ -5141,7 +5146,10 @@ static void draw_(CmdRec *r, bool indexed) {
     }
     if (ct_on()) ct_draw(pr, "draw");
     alias_draw_check();
-    resolve_feedback(pr);
+    // (the attachments this draw writes: once a draw - the targets and masks don't change before it is recorded; three
+    // computations of it were ~8% of the render thread on the POCO F7 Ultra)
+    const uint32_t draw_w = draw_writes(pr);
+    resolve_feedback(pr, draw_w);
     scene_upscale(pr, r);
     snap_reason = "draw-depthwrite";
     if (st.rt.depth && st.ds[0] && st.ds[1]) {
@@ -5151,10 +5159,10 @@ static void draw_(CmdRec *r, bool indexed) {
         if (fb) snapshots_mark_fb_dirty(st.rt.depth);
         else snapshots_invalidate(st.rt.depth);
     }
-    if (in_pass && (draw_writes(pr) & pass_dup_null)) st.rt_dirty = true;  // (writes a slot begin_pass left unbound)
+    if (in_pass && (draw_w & pass_dup_null)) st.rt_dirty = true;  // (writes a slot begin_pass left unbound)
     snap_reason = "draw-colorwrite";
     for (int i = 0; i < st.rt.ncolor; i++) {
-        if (st.rt.color[i] && ((pr->fs_out_mask >> (i * 4)) & 0xF) && ((st.channel_mask >> (i * 4)) & 0xF)) {
+        if ((draw_w >> i) & 1) {
             bool fb = false;
             for (int k = 0; k < nfeedback; k++) fb |= feedback_tex[k] == st.rt.color[i];
             for (int k = 0; k < ninplace; k++) fb |= inplace_tex[k] == st.rt.color[i];
@@ -5601,7 +5609,7 @@ static void draw_(CmdRec *r, bool indexed) {
     // ---- draw
     if (!use_index) vkCmdDraw(cb, count, inst, first, base_inst);
     else vkCmdDrawIndexed(cb, icount, inst, 0, base_vertex, base_inst);
-    pass_written |= draw_writes(pr);
+    pass_written |= draw_w;
     stat_draws++;
     cum_draws++;
     if (g_gpuprof_frame && gp_n) {
@@ -6279,7 +6287,7 @@ static void scene_upscale(Prog *pr, CmdRec *r) {
     if (on < 0) on = getenv("LARECOMP_SCENE_UPSCALE") ? atoi(getenv("LARECOMP_SCENE_UPSCALE")) : 1;
     int mode = g_settings.upscaler;
     extern int vk_ab(const char *what);
-    if (vk_ab("sgsr") == 1) mode = UPSCALE_SGSR1;
+    if (AB("sgsr") == 1) mode = UPSCALE_SGSR1;
     if (!on || (mode != UPSCALE_FSR1 && mode != UPSCALE_SGSR1)) return;
     NvnTexture *rt = st.rt.ncolor ? st.rt.color[0] : NULL;
     if (!rt || r->x[2] > 6 || !pr->fi->ntex || vk_texture_scale_group(rt) != RS_OUT) return;
@@ -6454,12 +6462,13 @@ void renderer_save_texture_tex(TexBackend *b, const char *path) {
 // the start of a pass: unsafe, what they cost), copy (feedback copies instead of in-place reads), chunk (submissions
 // every 0.5 ms of translation instead of LARECOMP_VK_CHUNK_US). -1: not under test.
 int vk_ab(const char *what) {
-    static int n = -1;
+    int n = ab_n;
     static char w[32];
     if (n < 0) {
         const char *e = getenv("LARECOMP_AB"), *c = e ? strchr(e, ':') : NULL;
         n = e ? atoi(e) : 0;
         snprintf(w, sizeof w, "%s", c ? c + 1 : "");
+        ab_n = n > 0 ? n : 0;
     }
     if (n <= 0 || (what && strcmp(what, w))) return -1;
     return (int)((renderer_present_count() / (uint64_t)n) & 1);
@@ -6475,7 +6484,7 @@ static void split_long_pass(void) {
     }
     extern bool vk_async_on(void);
     static unsigned n;  // (the clock every 32 draws: a clock read per draw showed up in the profile)
-    if (split > 0 && in_pass && !(++n & 31) && vk_ab("split") != 1 && vk_async_on() && last_submit_ns &&
+    if (split > 0 && in_pass && !(++n & 31) && AB("split") != 1 && vk_async_on() && last_submit_ns &&
         SDL_GetTicksNS() - last_submit_ns > (uint64_t)split * 1000)
         renderer_submit();
 #endif
