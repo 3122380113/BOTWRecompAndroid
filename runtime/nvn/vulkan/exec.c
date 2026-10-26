@@ -145,6 +145,11 @@ void vk_wait_seq(uint64_t seq) {
 }
 
 uint64_t vk_pending_seq(void) { return submit_seq + 1; }
+// The submission holding the last draw or dispatch that stores to global memory - the game's own memory on the GPU
+// (vk_heap_place): what the CPU may read after a fence (nvnSyncWait's sync lag waits for it). Render thread writes.
+static _Atomic uint64_t g_gmem_store_seq;
+uint64_t vk_last_gmem_store_seq(void) { return atomic_load(&g_gmem_store_seq); }
+static void note_gmem_store(int stage);  // (below: it reads the bound storage buffers)
 
 // ---- the game's GPU timing counters (nvnCommandBufferReportCounter, two per frame)
 // The game times its GPU work with these and drops to 30 fps when frames look slow. They used to get the host clock
@@ -1510,7 +1515,30 @@ static void wb_queue(NvnTexture *t) {
         wb_ptr = info.pMappedData;
     }
     WbEntry *e = &wb_ent[wb_next];
-    if (e->busy) { stat_wb_dropped++; pthread_mutex_unlock(&wb_lock); return; }  // (the GPU is that far behind)
+    if (e->busy) {
+        // Every slot still waits for the GPU. Dropped, the target's texels never reached memory: a tower's cutscene
+        // draws the region's terrain height tiles (8 levels of 256x256 a tile) in a burst, the heights stayed stale and
+        // the terrain sampled from that memory stood up in "curtains" until the area loaded again (2026-10-26). Now the
+        // GPU is waited for up to the slot's submission and the slot's write-back lands first. LARECOMP_WB_DROP=1: dropped,
+        // as before.
+        static int drop = -1;
+        if (drop < 0) drop = getenv("LARECOMP_WB_DROP") != NULL;
+        stat_wb_dropped++;
+        static int nlog;
+        if (nlog++ < 40 || !(stat_wb_dropped & 255))
+            LOG("[vk] write-back slots full (%llu so far): %s the GPU (submission %llu)\n", (unsigned long long)stat_wb_dropped,
+                drop ? "dropped, not waiting for" : "waiting for", (unsigned long long)e->seq);
+        if (drop) { pthread_mutex_unlock(&wb_lock); return; }
+        uint64_t seq = e->seq;
+        pthread_mutex_unlock(&wb_lock);
+        if (seq >= vk_pending_seq()) renderer_submit();  // (its copy is in the work being recorded: send it)
+        wait_why = "write-back slots full";
+        vk_wait_seq(seq);  // (lands the finished write-backs: cq_resolve_done -> wb_apply)
+        wb_apply(seq);
+        pthread_mutex_lock(&wb_lock);
+        e = &wb_ent[wb_next];
+        if (e->busy) { pthread_mutex_unlock(&wb_lock); return; }  // (should not happen: still busy after the wait)
+    }
     int slot = wb_next;
     wb_next = (wb_next + 1) % WB_SLOTS;
     const FormatInfo *fi = t->layout.fmt;
@@ -4277,6 +4305,23 @@ static void vc_mark_gpu(uint64_t lo, uint64_t hi) {
 }
 
 // A storing shader (stage 0 / 1 / 5) may write any of its bound storage buffers.
+// The last store's submission (sync lag), and LARECOMP_LOG_STORES=<frame>: that frame's storing draws and dispatches -
+// the stage, its shader's code address, the submission and the storage buffers bound (where its stores may land)
+static void note_gmem_store(int stage) {
+    atomic_store(&g_gmem_store_seq, vk_pending_seq());
+    static long at = -2;
+    if (at == -2) at = getenv("LARECOMP_LOG_STORES") ? atol(getenv("LARECOMP_LOG_STORES")) : -1;
+    if (at < 0 || (long)renderer_present_count() != at || !st.program) return;
+    char line[700];
+    int o = snprintf(line, sizeof line, "[stores] frame %ld seq %llu stage %d code %llx:", at, (unsigned long long)vk_pending_seq(),
+                     stage, (unsigned long long)st.program->stages[stage].code_addr);
+    for (int i = 0; i < 16 && o < (int)sizeof line - 48; i++)
+        if (st.sbuf[stage][i].addr)
+            o += snprintf(line + o, sizeof line - o, " sb%d %llx+%llx", i, (unsigned long long)st.sbuf[stage][i].addr,
+                          (unsigned long long)st.sbuf[stage][i].size);
+    LOG("%s\n", line);
+}
+
 static void vc_mark_sbufs(int stage) {
     for (int i = 0; i < 16; i++) {
         uint64_t a = st.sbuf[stage][i].addr, sz = st.sbuf[stage][i].size;
@@ -4848,7 +4893,7 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cp->p.layout, 0, 1, &ds, 0, NULL);
     vkCmdDispatch(cb, gx, gy, gz);
     if (cp->si->uses_gmem_map && cp->si->uses_gmem_store) gfast_finish(cb);
-    if (cp->si->uses_gmem_store) vc_mark_sbufs(5);
+    if (cp->si->uses_gmem_store) vc_mark_sbufs(5), note_gmem_store(5);
     stat_dispatches++;
 }
 
@@ -5476,8 +5521,8 @@ static void draw_(CmdRec *r, bool indexed) {
         vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pr->layout, 0, 2, sets, nd, dyn);
         stat_set_binds++;
     }
-    if (pr->vi->uses_gmem_store) vc_mark_sbufs(0);
-    if (pr->fi->uses_gmem_store) vc_mark_sbufs(1);
+    if (pr->vi->uses_gmem_store) vc_mark_sbufs(0), note_gmem_store(0);
+    if (pr->fi->uses_gmem_store) vc_mark_sbufs(1), note_gmem_store(1);
 
     uint64_t prof_t2_ = prof ? SDL_GetTicksNS() : 0;
     // ---- indices (copied; the largest index bounds the vertex data copied below)

@@ -304,6 +304,8 @@ NVN(nvnSyncWait) {  // NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED
     // stretched "curtains" (2026-10-26, POCO F7 Ultra; BOTW reads GPU results back right after this wait - the water's
     // colour from a tiny render target, MacNativeGames PR #239). Off by default; LARECOMP_SYNC_LAG=1 on (1.8.2's Great
     // Plateau, in-run A/B: 41.7 -> 45.6 fps); LARECOMP_AB=<frames>:synclag alternates.
+    // LARECOMP_SYNC_LAG=2: the lag, but the wait still covers the newest frame's last draw or dispatch that stores to
+    // global memory - on the POCO the game's memory itself, which the CPU reads after this wait (vk_last_gmem_store_seq)
     static int lag = -1;
     if (lag < 0) lag = getenv("LARECOMP_SYNC_LAG") ? atoi(getenv("LARECOMP_SYNC_LAG")) : 0;
     extern int vk_ab(const char *what);
@@ -314,8 +316,24 @@ NVN(nvnSyncWait) {  // NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED
     uint64_t newest_prev = prev_newest_seq;
     if (newest) prev_newest_seq = sync_of(A(0))->seq;
     if (lag_now && newest) {
-        uint64_t seq = sync_of(A(0))->seq;
-        renderer_wait_seq(newest_prev < seq ? newest_prev : seq);
+        uint64_t seq = sync_of(A(0))->seq, target = newest_prev < seq ? newest_prev : seq;
+        if (lag != 1) {  // (2, or the A/B: the stores guarded)
+            extern uint64_t vk_last_gmem_store_seq(void);
+            uint64_t st = vk_last_gmem_store_seq();
+            static uint64_t n, guarded, pos_sum;  // (LARECOMP_LOG_SYNC_LAG: how far into the frame its last store is)
+            static int log = -1;
+            if (log < 0) log = getenv("LARECOMP_LOG_SYNC_LAG") != NULL;
+            n++;
+            if (st > target) {
+                guarded++;
+                if (seq > newest_prev) pos_sum += 100 * (st - newest_prev) / (seq - newest_prev);
+                target = st < seq ? st : seq;
+            }
+            if (log && n % 120 == 0)
+                LOG("[synclag] %llu of 120 frames waited for a store in the newest frame, at %llu%% of its submissions on average\n",
+                    (unsigned long long)guarded, (unsigned long long)(guarded ? pos_sum / guarded : 0)), guarded = pos_sum = 0;
+        }
+        renderer_wait_seq(target);
     } else
 #endif
     if (flush) renderer_flush();
