@@ -255,10 +255,11 @@ static NvnSync *sync_of(uint64_t guest) {
 uint64_t renderer_fence_seq(void);
 void renderer_wait_seq(uint64_t seq);
 #ifdef __ANDROID__
+static uint64_t g_newest_fence_lseq;  // (sync lag, nvnSyncWait: the render thread's request of the newest fence placed)
 NVN(nvnQueueFenceSync) {
     NvnSync *s = sync_of(A(1));
     s->signaled = 1;
-    if (vk_async_on()) s->lseq = vk_async_fence(A(1));  // (its submission is known once the render thread gets there)
+    if (vk_async_on()) s->lseq = g_newest_fence_lseq = vk_async_fence(A(1));  // (its submission: once the render thread gets there)
     else s->seq = renderer_fence_seq();
     extern uint64_t renderer_present_count(void);
     s->frame = renderer_present_count();
@@ -291,6 +292,29 @@ NVN(nvnSyncWait) {  // NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED
         else vk_async_wait_id(sync_of(A(0))->lseq);
     }
     uint64_t t1 = plat_now_ns();
+#endif
+#ifdef __ANDROID__
+    // Sync lag (MacNativeGames PR #680, for TOTK): every frame the game waits for the fence it placed with the frame it
+    // has just sent, so its next frame never overlaps the GPU's work on this one (~2.7 ms a frame of an idle GPU while
+    // it records, LARECOMP_FRAME_TIMELINE). For that newest fence the wait goes to the GPU's end of the previous frame's
+    // newest fence instead - one frame of lag at most. Its translation is waited for above (vk_async_wait_id): every copy
+    // of the frame's constants and textures is made before the game writes them again, and the lists were copied when
+    // sent (vulkan/async.c snap_list). What the GPU reads in place (vertices in the heap) or writes for the CPU
+    // (readbacks, queries) may be a frame apart. On by default (POCO F7 Ultra, 1.8.2's Great Plateau, in-run A/B: 41.7 ->
+    // 45.6 fps, the image the same); LARECOMP_SYNC_LAG=0 off; LARECOMP_AB=<frames>:synclag alternates.
+    static int lag = -1;
+    if (lag < 0) lag = getenv("LARECOMP_SYNC_LAG") ? atoi(getenv("LARECOMP_SYNC_LAG")) : 1;
+    extern int vk_ab(const char *what);
+    int ab = vk_ab("synclag");
+    bool lag_now = vk_async_on() && !flush && !whole && (ab >= 0 ? ab == 1 : lag > 0);
+    static uint64_t prev_newest_seq;  // (kept with the lag off too: turned on, it waits one frame back, not more)
+    bool newest = vk_async_on() && sync_of(A(0))->lseq == g_newest_fence_lseq;
+    uint64_t newest_prev = prev_newest_seq;
+    if (newest) prev_newest_seq = sync_of(A(0))->seq;
+    if (lag_now && newest) {
+        uint64_t seq = sync_of(A(0))->seq;
+        renderer_wait_seq(newest_prev < seq ? newest_prev : seq);
+    } else
 #endif
     if (flush) renderer_flush();
     else if (whole) renderer_sync();
