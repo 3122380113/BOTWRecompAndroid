@@ -647,7 +647,10 @@ Medição no planalto (2026-10-21, save do usuário perto da igreja, POCO F7 Ult
     tabela não resolvida mantém todas, como antes. 1.8.2, os mesmos 603 arquivos: **202 -> 74 min de CPU**, o mais
     lento 13,3 -> 5,2 min, a compilação inteira no PC em 7 min; nenhum arquivo acima de 15.000 rótulos (-O0). Também:
     a limpeza dos arquivos de uma geração anterior só reconhecia nomes de 3 dígitos.
-  - Muda o id do código do jogo: o de cada versão compila de novo. Não rodado no celular ainda (estava bloqueado).
+  - Muda o id do código do jogo: o de cada versão compila de novo. **No celular (POCO F7 Ultra, Turnip, 2026-10-26):**
+    o 0.1.11-beta com as duas (sem nada mais) recompilou o código da 1.8.2 pela tela de arquivos do jogo em **12 min**
+    (717 s, até 8 compiladores, tudo a -O1, nenhum arquivo a -O0) e o jogo carregou uma cópia do save no Grande
+    Platô: 150 s andando pelo campo a ~30 fps, a imagem certa, nenhum erro.
 
 - Threads do Havok e dos jobs do jogo nos núcleos (o LAS precisou emular o núcleo 0 do Switch), thread de render,
   resolução interna, ritmo de quadros (o jogo roda a 30 fps no Switch).
