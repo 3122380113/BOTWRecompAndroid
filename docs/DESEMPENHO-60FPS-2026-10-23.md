@@ -139,3 +139,24 @@ Mesmo celular, 1.8.2 no Grande Platô, as configurações de um jogador (50%, FS
    lugar, e as cópias de 64 KB por draw acabariam.
 3. **Os passes da cena na GPU** (o G-buffer, ~10 ms).
 4. **A simulação do jogo (~16 ms por quadro):** sozinha, já limita a ~53 fps nesta cena.
+
+### Mais testes de 26/10 (lista de otimizações e o SavageWindRecomp)
+
+- **`-O3` + ThinLTO na libmain:** pior. 31,8 e 30,5 fps contra 34,6 e 35,5 com `-O2`, em duas rodadas de cada.
+  Provavelmente pelo código maior no cache de instruções. Fica `-O2`.
+- **`SleepThread(0)` dormindo 50 µs depois de 32 yields seguidos:**
+  - +1% de fps, dentro do ruído;
+  - CPU do processo 2,51 → 2,47 núcleos, sem diferença de temperatura;
+  - o giro com `sched_yield` custa menos do que os 3,3% do perfil sugeriam. Não entrou.
+- **Textura consultada uma vez por draw:** a parte duplicada é ~0,5% da thread de render, abaixo do que uma medição
+  separa. Não entrou.
+- **GLSL mais barato do SavageWindRecomp (9f94aba):** built-ins nas conversões, só as funções do prelúdio que o shader
+  usa e SPIR-V sem nomes. Com os caches frios:
+  - espera por shaders 17,3 → 11,2 s;
+  - pior quadro 6,2 → 3,8 s;
+  - a mesma imagem.
+- **Memória de comandos (#74 do SavageWindRecomp):** não se aplica aqui.
+  - Depois de 2 min no mundo, 43 páginas de sombra (21 MB de endereço, menos em RSS), num processo de 2,2 GB.
+  - Os pools do BOTW têm 16 KB, menos que uma página de sombra de 64 KB, então liberar páginas inteiras quando um pool
+    fecha não liberou nenhuma em ~300 finalizações.
+  - A sombra aqui é por página de memória do jogo e se reaproveita quando o jogo reaproveita a memória. Revertido.
