@@ -724,6 +724,13 @@ Pedidos ainda não começados, o mais recente no fim.
   - 526fc76 + 0464be0: relatório de crash um por vez, com os registradores e a cadeia de quadros do jogo (x29) antes
     do backtrace do host (#24, #30).
   - 4a27085: os marcos de cada vídeo (primeiro pacote, primeiro quadro decodificado, primeira saída ao jogo) (#22).
+  - De 26/10, também prontos:
+    - Saída Automática (60ac287);
+    - o GLSL mais barato do SavageWindRecomp (9f94aba: menos travadas de shader na primeira vez);
+    - as esperas com limite e o áudio do TOTK (0b86617);
+    - a altura de bloco do NVN (e82107e);
+    - o MapMemory que confere endereços e a mensagem de build com a causa (4a27085).
+    - As notas precisam explicar que os shaders compilam de novo uma vez e que a Saída vira Automática.
   - Antes de lançar, testar no POCO: a verificação do setup num caso que falha (uma cópia em
     `/sdcard/Download/botwtest` com o `Version.txt` trocado; nunca nas pastas do usuário) e o relatório de crash (não
     há como provocar um crash de propósito: um `LARECOMP_` de teste ajudaria).
@@ -776,6 +783,28 @@ Pedidos ainda não começados, o mais recente no fim.
       app em segundo plano;
     - de preferência só carregando. A bateria acabar no meio era a queixa original.
   - Perguntar o modelo de RAM, e pedir o `botwrecomp-log.txt` e o `botwrecomp-log-previous.txt`.
+- **Cortinas de terreno depois da cutscene de uma torre** (2026-10-26, em andamento).
+  - Aparecem só quando a ativação toca a cutscene. Carregar um save já com a torre ativada não mostra nenhuma.
+  - Com `LARECOMP_TEX_FULLHASH=1` não apareceram. Não é o padrão do #511 do MacNativeGames
+    (`LARECOMP_LOG_STALE_UPLOAD` só pegou o vídeo).
+  - Suspeitas: a comparação por snapshot das texturas dinâmicas (`texture_unchanged`), ou uma corrida com as threads do
+    jogo que escrevem texturas enquanto a thread de render as lê.
+  - Medindo o custo da verificação completa antes de decidir a correção.
+- **Sync lag seguro** (+9% de fps no Grande Platô, 82b71e2, hoje desligado em a1c4b45).
+  - O jogo lê resultados da GPU logo depois da espera (a cor da água ficou branca). No POCO a GPU escreve direto na
+    memória do jogo, sem um ponto de cópia para atrasar.
+  - Falta achar quais escritas a CPU lê (água, sondas de luz, máscaras da grama) e esperar só por elas.
+- **BOTW 1.9.0** (#28): o MacNativeGames já roda a 1.9.0 (`docs/botw-v1.9.0-port.md` deles). Grande: as rodadas de
+  patches e endereços da versão.
+- **Os 16 bytes por draw como push constants:** o jogo reescreve 16 bytes de um constant buffer de 64 KB antes de cada
+  draw, e cada draw copia os 64 KB (~16 MB por quadro, ~10% da thread de render). O tradutor de shaders leria esse
+  trecho de outro lugar. Médio a grande.
+- **Aquecimento de shaders com listas conhecidas** (como o MacNativeGames): menos travadas no primeiro jogo. Médio.
+- **Pequenos, do SavageWindRecomp e do MacNativeGames:**
+  - aprender o desvio do giroscópio em repouso (mira derivando);
+  - zona morta e drift dos analógicos;
+  - campo de visão;
+  - um botão 60/30 nos controles de toque.
 
 ## Regras
 
