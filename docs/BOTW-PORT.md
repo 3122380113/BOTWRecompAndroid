@@ -632,6 +632,22 @@ Medição no planalto (2026-10-21, save do usuário perto da igreja, POCO F7 Ult
   ~37 -> ~18,5 ms. O fps fica em ~15-17: tradução e GPU em série (o jogo espera a fence do quadro recém-enviado).
 - Folga hoje: render ~16 ms livres, GPU ~10 ms. Para 60 fps seria preciso GPU <= ~14 ms (~40% menos) e um patch
   no jogo (o sead nunca escolhe menos de 2 vsyncs, e a lógica do jogo conta com 30).
+- **Do TOTKRecompAndroid (2026-10-26), duas correções do motor:**
+  - **Memória local dos shaders do tamanho que eles usam.** O tradutor declarava `uint lmem[256]` e zerava as 256
+    palavras em toda invocação, mesmo num shader que só guarda um registrador lá (`STL` / `LDL` em `[0x0]`, spill do
+    compilador da Nintendo): 1 KB por thread vai para a memória privada, e o laço escreve 256 vezes por pixel. No
+    TOTK um draw de material levava 95-102 ms de GPU por isso. Agora o vetor tem o tamanho que os acessos pedem (os
+    de endereço constante: as palavras que alcançam; com endereço em registrador: o do SPH, ou 256 sem SPH), uma
+    potência de 2 (`lmask_`). Fuzz GLSL (4.000 programas, mesma semente): 3.051 compilados, as mesmas 31 falhas de
+    `textureGather` que o tradutor anterior dá; o teste de operações do TOTK dá as mesmas 16 falhas que antes (as
+    correções que só o TOTK tem, como o deslocamento com sinal do `LDC`).
+  - **`gen.py`: a rede de segurança das tabelas de salto só nos inícios de bloco.** Toda função com tabela ganhava um
+    switch com um case por instrução (caso a emulação da tabela perdesse um alvo): uma aresta para cada instrução.
+    Agora só os alvos de desvio, os das tabelas e cada instrução depois de um salto, retorno ou trap; uma função com
+    tabela não resolvida mantém todas, como antes. 1.8.2, os mesmos 603 arquivos: **202 -> 74 min de CPU**, o mais
+    lento 13,3 -> 5,2 min, a compilação inteira no PC em 7 min; nenhum arquivo acima de 15.000 rótulos (-O0). Também:
+    a limpeza dos arquivos de uma geração anterior só reconhecia nomes de 3 dígitos.
+  - Muda o id do código do jogo: o de cada versão compila de novo. Não rodado no celular ainda (estava bloqueado).
 
 - Threads do Havok e dos jobs do jogo nos núcleos (o LAS precisou emular o núcleo 0 do Switch), thread de render,
   resolução interna, ritmo de quadros (o jogo roda a 30 fps no Switch).
