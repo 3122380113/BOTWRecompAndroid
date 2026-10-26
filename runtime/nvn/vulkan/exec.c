@@ -690,6 +690,7 @@ static void gp_mark(VkCommandBuffer cb, const char *fmt, ...) {
     gp_draws[gp_n] = 0;
     gp_n++;
 }
+void vk_gp_note(VkCommandBuffer cb, const char *what) { gp_mark(cb, "%s", what); }  // (device.c: the present's steps)
 void renderer_flush(void);
 void vk_gpuprof_report(void) {
     if (!gp_n) return;
@@ -1124,6 +1125,15 @@ static bool rt_one_off(NvnTexture *t, uint64_t frame) {
         b->rt_frame = frame + 1;
     }
     return b->rt_oneoff;
+}
+// And every draw without a depth target, drawn into each frame or not: post-processing, the final composite and the HUD
+// are a few full-screen passes, and one skipped there while its shader built showed the whole frame black - TOTK's
+// flashes on new ground (2026-10-25; the first use of each such shader waits once, then the caches have it).
+// LARECOMP_WAIT_NO_DEPTH=0: only the one-off ones, as before.
+static bool wait_no_depth(void) {
+    static int on = -1;
+    if (on < 0) on = !getenv("LARECOMP_WAIT_NO_DEPTH") || atoi(getenv("LARECOMP_WAIT_NO_DEPTH"));
+    return on;
 }
 
 // ================================================================== state
@@ -4803,6 +4813,16 @@ static bool topology(uint32_t mode, VkPrimitiveTopology *t, uint8_t *cls) {
 }
 
 static void draw_(CmdRec *r, bool indexed);
+// (diagnosis: dark frames) the first skipped draws into a large target - which passes still skip while their shaders
+// build: their target's size and whether it has depth
+static void skip_note(const char *what) {
+    static int n;
+    NvnTexture *t = st.rt.ncolor ? st.rt.color[0] : st.rt.depth;
+    if (!t || t->width < 640 || n >= 40) return;
+    n++;
+    LOG("[vk] frame %llu: a draw into %ux%u%s skipped (%s still building)\n", (unsigned long long)renderer_present_count(),
+        t->width, t->height, st.rt.depth ? " with depth" : "", what);
+}
 static void draw(CmdRec *r, bool indexed) {
     PROF_T0();
     draw_(r, indexed);
@@ -4836,7 +4856,7 @@ static void draw_(CmdRec *r, bool indexed) {
             memcpy(kc, st.rt.color, sizeof kc);
             kd = st.rt.depth;
             kframe = frame;
-            kkeep = false;
+            kkeep = !st.rt.depth && st.rt.ncolor && wait_no_depth();
             for (int i = 0; i < st.rt.ncolor; i++) {  // (every target: rt_one_off records each one's frame)
                 bool once = rt_one_off(st.rt.color[i], frame);
                 kkeep |= rt_is_persistent(st.rt.color[i]) | (once && !st.rt.depth);
@@ -4845,7 +4865,7 @@ static void draw_(CmdRec *r, bool indexed) {
         keep = kkeep;
     }
     if (pr && keep) wait_built(&pr->state);
-    if (!pr || atomic_load(&pr->state) != 1) { stat_skipped++; return; }
+    if (!pr || atomic_load(&pr->state) != 1) { stat_skipped++; skip_note("shader"); return; }
     {   // fragment-shader hash: interior backdrop detection (widescreen), skip lists, item twinkle (renderer.m)
         static uint64_t last_fs, last_hash;
         uint64_t fs = st.program->stages[1].code_addr;
@@ -5249,6 +5269,7 @@ static void draw_(CmdRec *r, bool indexed) {
     if (atomic_load(&pp->state) != 1) {
         if (g_debug_frame) LOG("[draw]   skipped: pipeline %s\n", atomic_load(&pp->state) ? "failed" : "still building");
         stat_skipped++;
+        skip_note("pipeline");
         return;
     }
     ss_enabled();
@@ -6658,6 +6679,19 @@ static void exec_list(uint64_t handle, int depth) {
         case CMD_COPY_TEXTURE_TO_BUFFER: copy_texture_to_buffer(x, r->x[3]); break;
         case CMD_COPY_BUFFER_TO_BUFFER:
             wait_why = "buffer -> buffer copy";
+            {   // LARECOMP_LOG_BUFCOPY=1: the first 30 (where in the frame, how large: each waits for the GPU here)
+                static int log = -1, n;
+                if (log < 0) log = getenv("LARECOMP_LOG_BUFCOPY") != NULL;
+                if (log && n++ < 30) {
+                    // (whether the GPU writes the source: its bytes before and after the wait)
+                    uint64_t h0 = hmix(1469598103934665603ull, (const void *)(uintptr_t)r->x[0], r->x[2] < 4096 ? r->x[2] : 4096);
+                    renderer_flush();
+                    uint64_t h1 = hmix(1469598103934665603ull, (const void *)(uintptr_t)r->x[0], r->x[2] < 4096 ? r->x[2] : 4096);
+                    LOG("[vk] frame %llu: buffer copy %llx -> %llx, %llu bytes; the source %s by the wait\n",
+                        (unsigned long long)renderer_present_count(), (unsigned long long)r->x[0], (unsigned long long)r->x[1],
+                        (unsigned long long)r->x[2], h0 == h1 ? "unchanged" : "CHANGED");
+                }
+            }
             renderer_flush();
             memmove((void *)(uintptr_t)r->x[1], (void *)(uintptr_t)r->x[0], r->x[2]);
             break;

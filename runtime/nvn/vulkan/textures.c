@@ -1069,6 +1069,9 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
                 const char *e = getenv("LARECOMP_3D_RT");
                 rt3d = e ? atoi(e) : vk_driver_is_qualcomm() ? 0 : 2;
             }
+            static int n3d;  // (which games draw so: TOTK's first frames on Qualcomm's driver lost the device too)
+            if (n3d++ < 4) LOG("[vk] 3D target %ux%ux%u level %u: %s\n", t->width, t->height, b->depth, lv0,
+                               rt3d == 0 || (rt3d == 1 && lv0 > 0) ? "skipped (LARECOMP_3D_RT)" : "a slice as 2D");
             if (rt3d == 0 || (rt3d == 1 && lv0 > 0)) return VK_NULL_HANDLE;
             uint32_t d = b->depth >> lv0, z = v && (v->setmask & 2) ? v->min_layer : 0;
             if (!d) d = 1;

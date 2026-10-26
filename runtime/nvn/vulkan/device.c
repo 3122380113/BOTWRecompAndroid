@@ -1075,10 +1075,21 @@ bool vk_frame_begin(const float clear[4]) {
     if (timing) vk_timing_trace_wait(VK_TIMING_SLOT, SDL_GetTicksNS() - trace_start);
     trace_start = timing ? SDL_GetTicksNS() : 0;
 #endif
-    VkResult r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image);
+    // At most a second for a window image: with no limit a compositor that kept every buffer held the game's frame there
+    // until the app went to the background (the surface's loss ends the wait) - TOTK froze until another window came
+    // in front and back (2026-10-25). Then the swapchain is made again, as that trip does; still none: no frame now.
+    const uint64_t acquire_ns = 1000000000ull;
+    VkResult r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, acquire_ns, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image);
+    if (r == VK_TIMEOUT || r == VK_NOT_READY) {
+        static int nstuck;
+        if (nstuck++ < 20) LOG("[vk] no window image within 1 s (%d): the swapchain made again\n", r);
+        r = VK_ERROR_OUT_OF_DATE_KHR;
+    }
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         recreate_swapchain();
-        r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image);
+        if (!g_vk.swapchain) return false;
+        r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, acquire_ns, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image);
+        if (r == VK_TIMEOUT || r == VK_NOT_READY) { LOG("[vk] still no window image: frame skipped\n"); return false; }
     }
 #ifdef __ANDROID__
     if (timing) vk_timing_trace_wait(VK_TIMING_ACQUIRE, SDL_GetTicksNS() - trace_start);
@@ -1314,7 +1325,10 @@ void backend_present(NvnTexture *t) {
         VkCommandBuffer cb = vk_cmd();
         float pv[8] = {renderer_origin_lower_left() ? 1.0f : 0.0f, 0, 0, 0, crop[0], crop[1], crop[2], crop[3]};
         memcpy(g_shot_crop, crop, sizeof crop);
+        extern void vk_gp_note(VkCommandBuffer cb, const char *what);  // (LARECOMP_GPUPROF_AT: the present's own rows)
+        vk_gp_note(cb, "present: the image into the window");
         vk_present_draw(cb, b, (float)vx, (float)vy, (float)vw, (float)vh, pv);
+        vk_gp_note(cb, "present: menus and overlay");
         static long menu_at = -1;
         if (menu_at < 0) menu_at = getenv("LARECOMP_MENU_AT") ? atol(getenv("LARECOMP_MENU_AT")) : 0;
         if (menu_at && (long)total_frames + 1 == menu_at) { extern void menu_test_open(void); menu_test_open(); }
