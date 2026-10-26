@@ -2074,6 +2074,9 @@ typedef struct {
     VkDescriptorSetLayout set_layout[2];
     VkPipelineLayout layout;
     bool vs_uses_vid;
+    uint32_t fs_out_mask;  // fi->out_mask: the render targets the fragment shader writes (read by every draw; in
+                           // ShaderInfo it sits 1.4 KB in, past the 64 textures - a cache miss each draw, ~7% of the
+                           // render thread on the POCO F7 Ultra: draw_writes)
     _Atomic int state;  // 0 building, 1 ready, 2 failed
 } Prog;
 
@@ -2229,6 +2232,7 @@ static void translate_program(void *arg) {
     if (p->vi->msl) {
         p->fkey.vs_out_mask = p->vi->out_mask;
         p->fi = maxwell_translate_bounded((const uint8_t *)(uintptr_t)p->code[1], p->cmax[1], p->const_bytes[1], STAGE_FRAGMENT, &p->fkey);
+        p->fs_out_mask = p->fi ? p->fi->out_mask : 0;
     }
     pthread_mutex_unlock(&translate_lock);
     if (!p->vi->msl) {
@@ -3033,7 +3037,7 @@ static void alias_draw_check(void) {
 static uint32_t draw_writes(const Prog *pr) {
     uint32_t w = 0;
     for (int i = 0; i < st.rt.ncolor; i++)
-        if (st.rt.color[i] && ((pr->fi->out_mask >> (i * 4)) & 0xF) && ((st.channel_mask >> (i * 4)) & 0xF)) w |= 1u << i;
+        if (st.rt.color[i] && ((pr->fs_out_mask >> (i * 4)) & 0xF) && ((st.channel_mask >> (i * 4)) & 0xF)) w |= 1u << i;
     if (st.rt.depth && ((st.ds[0] && st.ds[1]) || (st.ds[3] && ((st.stencil_mask[0] | st.stencil_mask[1]) & 0xFF)))) w |= 1u << 8;
     return w;
 }
@@ -5086,7 +5090,7 @@ static void draw_(CmdRec *r, bool indexed) {
     if (in_pass && (draw_writes(pr) & pass_dup_null)) st.rt_dirty = true;  // (writes a slot begin_pass left unbound)
     snap_reason = "draw-colorwrite";
     for (int i = 0; i < st.rt.ncolor; i++) {
-        if (st.rt.color[i] && ((pr->fi->out_mask >> (i * 4)) & 0xF) && ((st.channel_mask >> (i * 4)) & 0xF)) {
+        if (st.rt.color[i] && ((pr->fs_out_mask >> (i * 4)) & 0xF) && ((st.channel_mask >> (i * 4)) & 0xF)) {
             bool fb = false;
             for (int k = 0; k < nfeedback; k++) fb |= feedback_tex[k] == st.rt.color[i];
             for (int k = 0; k < ninplace; k++) fb |= inplace_tex[k] == st.rt.color[i];
@@ -5222,7 +5226,7 @@ static void draw_(CmdRec *r, bool indexed) {
             if (!st.rt.color[i] || k.color[i] == VK_FORMAT_UNDEFINED) continue;
             // Targets the fragment shader doesn't output keep their contents on Metal, but are undefined in Vulkan
             // (NVIDIA writes black): mask them. Foliage depth pre-passes left black silhouettes (user 2026-10-08).
-            k.write_mask[i] = ((pr->fi->out_mask >> (i * 4)) & 0xF) ? (st.channel_mask >> (i * 4)) & 0xF : 0;
+            k.write_mask[i] = ((pr->fs_out_mask >> (i * 4)) & 0xF) ? (st.channel_mask >> (i * 4)) & 0xF : 0;
             if (((st.color_state[0] >> i) & 1) && !rt_kind(st.rt.color[i]->format)) {
                 k.blend_on |= (uint8_t)(1u << i);
                 memcpy(k.blend[i], st.blend[i], 8);
