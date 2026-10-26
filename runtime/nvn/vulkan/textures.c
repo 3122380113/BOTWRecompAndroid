@@ -798,6 +798,24 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     if (b->uploaded && h == b->data_hash && !restyle) return;
     if (b->uploaded && h != b->data_hash) b->dynamic = true;
     if (b->tp > 0) b->tp_gen = texpatch_generation();
+    {   // LARECOMP_LOG_STALE_UPLOAD=1 (diagnosis): an upload from guest memory that a render target the GPU drew into
+        // covers - its object's own image, where the drawing never reaches memory: the texture reads what was there
+        // before (MacNativeGames PR #511: BOTW's terrain height map, drawn through one object and sampled through
+        // another, kept zeros - Link's feet under the ground). Each pair once, 60 at most.
+        static int on = -1, n;
+        if (on < 0) on = getenv("LARECOMP_LOG_STALE_UPLOAD") != NULL;
+        for (int i = 0; on && n < 60 && i < g_nlive; i++) {
+            NvnTexture *e = g_live[i];
+            if (e == t || !e->addr || !e->backend || !((TexBackend *)e->backend)->gpu_owned) continue;
+            uint64_t ee = e->addr + tegra_total_size(&e->layout);
+            if (e->addr >= t->addr + total || ee <= t->addr) continue;
+            n++;
+            LOG("[stale] frame %llu: %ux%u fmt %#x flags %#x at %llx+%llx uploaded from memory under the drawn target "
+                "%ux%u fmt %#x flags %#x at %llx+%llx\n", (unsigned long long)frame, t->width, t->height, t->format, t->flags,
+                (unsigned long long)t->addr, (unsigned long long)total, e->width, e->height, e->format, e->flags,
+                (unsigned long long)e->addr, (unsigned long long)(ee - e->addr));
+        }
+    }
     b->data_hash = h;
     b->uploaded = true;
 #ifdef __ANDROID__
@@ -927,6 +945,23 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
 TexBackend *vk_tex(NvnTexture *t, bool for_render) {
     TexBackend *b = tex_backend(t);
     if (b->pending_rgba) upload_pending(b);
+    if (for_render && !b->gpu_owned && t->addr) {  // (LARECOMP_LOG_STALE_UPLOAD: textures uploaded before, over it)
+        static int on = -1, n;
+        if (on < 0) on = getenv("LARECOMP_LOG_STALE_UPLOAD") != NULL;
+        uint64_t te = t->addr + tegra_total_size(&t->layout);
+        for (int i = 0; on && n < 60 && i < g_nlive; i++) {
+            NvnTexture *e = g_live[i];
+            TexBackend *eb = e->backend;
+            if (e == t || !e->addr || !eb || eb->gpu_owned || !eb->uploaded) continue;
+            uint64_t ee = e->addr + tegra_total_size(&e->layout);
+            if (e->addr >= te || ee <= t->addr) continue;
+            n++;
+            LOG("[stale] frame %llu: target %ux%u fmt %#x flags %#x at %llx+%llx first drawn over %ux%u fmt %#x flags %#x "
+                "at %llx+%llx, uploaded from memory\n", (unsigned long long)vk_frame_counter(), t->width, t->height, t->format,
+                t->flags, (unsigned long long)t->addr, (unsigned long long)(te - t->addr), e->width, e->height, e->format,
+                e->flags, (unsigned long long)e->addr, (unsigned long long)(ee - e->addr));
+        }
+    }
     if (for_render) b->gpu_owned = true;
     else if (!b->gpu_owned) {
         extern uint64_t prof_up_ns;
