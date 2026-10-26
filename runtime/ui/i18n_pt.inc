@@ -518,3 +518,7 @@
  "Áreas maiores dos analógicos"},
 {"Each stick starts anywhere on its half of the screen, not only in the lower part. The buttons stay in front.",
  "Cada analógico começa em qualquer ponto da sua metade da tela, não só na parte de baixo. Os botões continuam na frente."},
+{"Auto",
+ "Auto"},
+{"Auto: 1080p on screens with more lines than that, where it costs the GPU the most; the screen's own on the others.",
+ "Auto: 1080p em telas com mais linhas que isso, onde ela mais pesa na GPU; a da própria tela nas outras."},

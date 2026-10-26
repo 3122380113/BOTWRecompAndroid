@@ -5,6 +5,7 @@
 enum { ASPECT_UNLOCKED = 0, ASPECT_ORIGINAL = 1 };
 enum { RES_MATCH = 0, /* 1..8 = 1x..8x */ RES_DYNAMIC = 9, RES_Q75 = 10, RES_Q25 = 11, RES_Q50 = 12 };
 // (11 was 67% of the display: larecomp.ini "67%" now loads as RES_Q75)
+enum { OUT_AUTO = -1 };  // (Settings.out_lines)
 enum { UPSCALE_BILINEAR = 0, UPSCALE_METALFX = 1 /* macOS */, UPSCALE_FSR1 = 2 /* AMD FSR 1 */,
        UPSCALE_SGSR1 = 3 /* Vulkan: Snapdragon Game Super Resolution 1 */ };
 #ifdef __APPLE__
@@ -26,7 +27,8 @@ typedef struct {
     int res_mode;        // RES_MATCH, 1..4 (N x the Switch's 1080p), RES_DYNAMIC, RES_Q75/50/25 (share of the display)
     int upscaler;        // UPSCALE_*: how a lower internal resolution reaches the window (MetalFX: macOS, FSR 1: Windows)
     int out_lines;       // Output resolution: the final image (scene + HUD) at most this many lines, scaled up to the
-                         // screen at the end (0: the screen's own; 1080 / 900 / 720) - nvn/output_scale.c
+                         // screen at the end (0: the screen's own; 1080 / 900 / 720; OUT_AUTO: 1080 on taller
+                         // screens, Android's default) - nvn/output_scale.c
     int antialias;       // AA_*: anti-aliasing of the game image before it is scaled to the window
     float volume;        // master volume, 1 = 100%
     bool reverb;         // room reverb effect

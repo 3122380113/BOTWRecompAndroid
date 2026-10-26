@@ -517,3 +517,7 @@
  "Grotere stickgebieden"},
 {"Each stick starts anywhere on its half of the screen, not only in the lower part. The buttons stay in front.",
  "Elke stick begint overal op zijn helft van het scherm, niet alleen onderaan. De knoppen blijven ervoor."},
+{"Auto",
+ "Auto"},
+{"Auto: 1080p on screens with more lines than that, where it costs the GPU the most; the screen's own on the others.",
+ "Auto: 1080p op schermen met meer lijnen, waar het de GPU het meest kost; op de andere die van het scherm zelf."},

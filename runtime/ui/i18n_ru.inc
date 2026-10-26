@@ -517,3 +517,7 @@
  "Большие области стиков"},
 {"Each stick starts anywhere on its half of the screen, not only in the lower part. The buttons stay in front.",
  "Каждый стик начинается в любом месте своей половины экрана, а не только внизу. Кнопки остаются поверх."},
+{"Auto",
+ "Авто"},
+{"Auto: 1080p on screens with more lines than that, where it costs the GPU the most; the screen's own on the others.",
+ "Авто: 1080p на экранах с большим числом строк, где это сильнее всего нагружает GPU; на остальных — разрешение экрана."},

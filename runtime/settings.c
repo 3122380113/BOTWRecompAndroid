@@ -54,6 +54,8 @@ Settings g_settings = {
 #endif
 #ifdef __ANDROID__
     .upscaler = UPSCALE_SGSR1,  // (one pass: ~1 ms on the Adreno 830 to 2560x1440, FSR 1's two ~2.7 ms; 40 fps against 38)
+    .out_lines = OUT_AUTO,      // (POCO F7 Ultra, 3200x1440, 1.8.2's Great Plateau: GPU 22.8 ms a frame at the screen's,
+                                // 18.6 at 1080 lines with a larger scene - the final image's passes over 2.2x the pixels)
 #else
     .upscaler = UPSCALE_SHARP,  // (MetalFX on macOS, AMD FSR 1 on Windows)
 #endif
@@ -191,7 +193,7 @@ void settings_load(void) {
 #else
     char line[256];
 #endif
-    bool tip_key = false, aspect_key = false;
+    bool tip_key = false, aspect_key = false, output_key = false;
     while (fgets(line, sizeof line, f)) {
         char key[64];
 #ifdef __ANDROID__
@@ -247,9 +249,14 @@ void settings_load(void) {
                                 : !strcmp(val, "sgsr1") ? UPSCALE_SGSR1
 #endif
                                 : UPSCALE_SHARP;
-        else if (!strcmp(key, "output_resolution")) {  // ("screen", or the final image's lines: 1080 / 900 / 720)
+        else if (!strcmp(key, "output")) {  // ("auto", "screen", or the final image's lines: 1080 / 900 / 720)
             int n = atoi(val);
-            g_settings.out_lines = n == 1080 || n == 900 || n == 720 ? n : 0;
+            g_settings.out_lines = !strcmp(val, "auto") ? OUT_AUTO : n == 1080 || n == 900 || n == 720 ? n : 0;
+            output_key = true;
+        }
+        else if (!strcmp(key, "output_resolution") && !output_key) {  // (0.1.11 and before: "screen" was only the default,
+            int n = atoi(val);                                         // written by every save - read as Auto now)
+            g_settings.out_lines = n == 1080 || n == 900 || n == 720 ? n : g_defaults.out_lines;
         }
         else if (!strcmp(key, "antialias")) g_settings.antialias = !strcmp(val, "off") ? AA_OFF : AA_SMAA;  // ("fxaa": SMAA now)
         else if (!strcmp(key, "language")) {  // ("auto" or one of the game's codes; anything else: auto)
@@ -305,8 +312,8 @@ void settings_save(void) {
 #endif
     fprintf(f, "upscaler = %s\n", g_settings.upscaler == UPSCALE_METALFX ? "metalfx" : g_settings.upscaler == UPSCALE_FSR1 ? "fsr1" :
                                    g_settings.upscaler == UPSCALE_SGSR1 ? "sgsr1" : "bilinear");
-    if (g_settings.out_lines > 0) fprintf(f, "output_resolution = %d\n", g_settings.out_lines);
-    else fprintf(f, "output_resolution = screen\n");
+    if (g_settings.out_lines > 0) fprintf(f, "output = %d\n", g_settings.out_lines);
+    else fprintf(f, "output = %s\n", g_settings.out_lines == OUT_AUTO ? "auto" : "screen");
     fprintf(f, "antialias = %s\n", g_settings.antialias == AA_SMAA ? "smaa" : "off");
     if (g_settings.res_mode == RES_DYNAMIC) fprintf(f, "resolution = dynamic\n");
     else if (g_settings.res_mode == RES_Q75) fprintf(f, "resolution = 75%%\n");

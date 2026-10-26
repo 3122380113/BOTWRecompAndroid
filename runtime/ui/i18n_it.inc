@@ -517,3 +517,7 @@
  "Aree delle levette più grandi"},
 {"Each stick starts anywhere on its half of the screen, not only in the lower part. The buttons stay in front.",
  "Ogni levetta parte da qualsiasi punto della sua metà dello schermo, non solo dalla parte bassa. I pulsanti restano davanti."},
+{"Auto",
+ "Auto"},
+{"Auto: 1080p on screens with more lines than that, where it costs the GPU the most; the screen's own on the others.",
+ "Auto: 1080p sugli schermi con più righe, dove pesa di più sulla GPU; quella dello schermo sugli altri."},

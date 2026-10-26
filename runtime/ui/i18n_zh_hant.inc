@@ -517,3 +517,7 @@
  "擴大搖桿區域"},
 {"Each stick starts anywhere on its half of the screen, not only in the lower part. The buttons stay in front.",
  "每個搖桿可以從螢幕對應的半邊任意位置開始，而不只是下方。按鈕仍在最前面。"},
+{"Auto",
+ "自動"},
+{"Auto: 1080p on screens with more lines than that, where it costs the GPU the most; the screen's own on the others.",
+ "自動：在行數多於 1080 的螢幕上使用 1080p（這時 GPU 負擔最重），其他螢幕使用螢幕本身的解析度。"},

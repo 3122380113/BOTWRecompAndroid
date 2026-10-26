@@ -517,3 +517,7 @@
  "スティックの範囲を広げる"},
 {"Each stick starts anywhere on its half of the screen, not only in the lower part. The buttons stay in front.",
  "スティックは下の部分だけでなく、画面の左右それぞれの半分のどこからでも始められます。ボタンは手前のままです。"},
+{"Auto",
+ "自動"},
+{"Auto: 1080p on screens with more lines than that, where it costs the GPU the most; the screen's own on the others.",
+ "自動: それより行数の多い画面では 1080p（GPU の負担が最も大きいところ）、ほかの画面では画面そのままの解像度。"},

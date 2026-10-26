@@ -6138,7 +6138,21 @@ static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, 
     if (oh > 16384) oh = 16384;
     bool fsr = (g_settings.upscaler == UPSCALE_FSR1 || g_settings.upscaler == UPSCALE_SGSR1) &&
                (ow > b->width + 1 || oh > b->height + 1);  // (an upscale only)
+    // The final image (scene already upscaled, and the HUD) below the window - Output resolution 1080p / Auto on a
+    // 1440-line screen: the present's own bilinear sampling, whichever upscaler is chosen. FSR 1's two passes ran here
+    // again over the whole window (~3 ms of the Adreno 830's frame at 3200x1440), and SGSR 1's one took 1.9 ms against
+    // bilinear's 0.14, with no difference to see in the HUD or the scene at a scale of 1.33 (POCO F7 Ultra, 2026-10-26):
+    // the scene had its own upscale already. LARECOMP_PRESENT_UPSCALE=sgsr: SGSR 1, =setting: the chosen one (A/B).
+    static int pmode = -1;
+    if (pmode < 0) {
+        const char *e = getenv("LARECOMP_PRESENT_UPSCALE");
+        pmode = !e ? UPSCALE_BILINEAR : !strcmp(e, "sgsr") ? UPSCALE_SGSR1 : !strcmp(e, "setting") ? 99 : UPSCALE_BILINEAR;
+    }
+    int up = pmode == 99 ? g_settings.upscaler : pmode;
+    if (pmode == UPSCALE_BILINEAR) fsr = false;
     if (!smaa && !fsr) return v;
+    gp_mark(cb, "present: %s%s %ux%u -> %ux%u", smaa ? "smaa " : "", !fsr ? "" : up == UPSCALE_SGSR1 ? "sgsr1" : "easu+rcas",
+            b->width, b->height, ow, oh);
     extern void vk_frame_suspend(void);
     extern void vk_frame_resume(void);
     vk_frame_suspend();
@@ -6155,7 +6169,7 @@ static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, 
         post_pass(cb, "smaa_blend.frag", bi, 2, out, m, false);
         v = post_view(out);
     }
-    if (fsr && g_settings.upscaler == UPSCALE_SGSR1) {
+    if (fsr && up == UPSCALE_SGSR1) {
         float iw = (float)b->width, ih = (float)b->height;
         TexBackend *o = post_image(3, ow, oh, VK_FORMAT_R8G8B8A8_UNORM);
         float ps[8] = {1.0f / iw, 1.0f / ih, iw, ih, (float)ow, (float)oh};
@@ -6180,7 +6194,7 @@ static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, 
         static int psm = -1, pfs = -1;
         if (b->width != piw || b->height != pih || ow != pow_ || oh != poh || smaa != psm || fsr != pfs)
             LOG("[post] %ux%u%s%s -> %ux%u\n", b->width, b->height, smaa ? " smaa" : "",
-                !fsr ? "" : g_settings.upscaler == UPSCALE_SGSR1 ? " sgsr1" : " fsr1", ow, oh);
+                !fsr ? "" : up == UPSCALE_SGSR1 ? " sgsr1" : " fsr1", ow, oh);
         piw = b->width; pih = b->height; pow_ = ow; poh = oh; psm = smaa; pfs = fsr;
     }
     return v;

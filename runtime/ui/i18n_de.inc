@@ -517,3 +517,7 @@
  "Größere Stick-Bereiche"},
 {"Each stick starts anywhere on its half of the screen, not only in the lower part. The buttons stay in front.",
  "Jeder Stick beginnt überall auf seiner Bildschirmhälfte, nicht nur im unteren Teil. Die Tasten bleiben davor."},
+{"Auto",
+ "Auto"},
+{"Auto: 1080p on screens with more lines than that, where it costs the GPU the most; the screen's own on the others.",
+ "Auto: 1080p auf Bildschirmen mit mehr Zeilen, wo sie die GPU am meisten kostet; sonst die des Bildschirms."},

@@ -517,3 +517,7 @@
  "Zones des sticks agrandies"},
 {"Each stick starts anywhere on its half of the screen, not only in the lower part. The buttons stay in front.",
  "Chaque stick démarre n'importe où sur sa moitié de l'écran, pas seulement en bas. Les boutons restent devant."},
+{"Auto",
+ "Auto"},
+{"Auto: 1080p on screens with more lines than that, where it costs the GPU the most; the screen's own on the others.",
+ "Auto : 1080p sur les écrans qui ont plus de lignes, là où elle coûte le plus au GPU ; celle de l'écran sur les autres."},

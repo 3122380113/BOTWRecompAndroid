@@ -517,3 +517,7 @@
  "扩大摇杆区域"},
 {"Each stick starts anywhere on its half of the screen, not only in the lower part. The buttons stay in front.",
  "每个摇杆可以从屏幕对应的半边任意位置开始，而不只是下方。按钮仍在最前面。"},
+{"Auto",
+ "自动"},
+{"Auto: 1080p on screens with more lines than that, where it costs the GPU the most; the screen's own on the others.",
+ "自动：在行数多于 1080 的屏幕上使用 1080p（这时 GPU 负担最重），其他屏幕使用屏幕本身的分辨率。"},

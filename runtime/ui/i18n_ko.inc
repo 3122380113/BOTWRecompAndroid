@@ -517,3 +517,7 @@
  "스틱 영역 넓히기"},
 {"Each stick starts anywhere on its half of the screen, not only in the lower part. The buttons stay in front.",
  "각 스틱을 아래쪽뿐 아니라 화면의 자기 쪽 절반 어디에서나 시작할 수 있습니다. 버튼은 계속 앞에 있습니다."},
+{"Auto",
+ "자동"},
+{"Auto: 1080p on screens with more lines than that, where it costs the GPU the most; the screen's own on the others.",
+ "자동: 그보다 줄 수가 많은 화면에서는 1080p(GPU 부담이 가장 큰 경우), 다른 화면에서는 화면 그대로의 해상도."},
