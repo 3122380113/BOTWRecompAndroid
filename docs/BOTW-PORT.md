@@ -713,13 +713,58 @@ Pedidos ainda não começados, o mais recente no fim.
   mesclados na Baloo 2 (`i18n_merge_fonts`); os textos do lado Java em `res/values-<idioma>`. Conferir no POCO:
   altura e alinhamento dos glifos mesclados (escala 0,6 da Baloo, a ajustar), largura dos textos mais longos
   (alemão, russo) nas linhas do menu, e que o NotoSansCJK existe no HyperOS.
-- **Build do código do jogo mais leve** (issues #18 e #25, 2026-10-25): numa tablet de 12 GB (1.6.0) o app fechou
-  após ~20 min de build, na tela, sem erro no log; num Nubia Z60 Ultra (16 GB) o build demorou demais, puxou 11 W e
-  esquentou, e reabrir o app começa tudo de novo. Hoje são `min(núcleos, RAM em GB - 2)` compiladores de uma vez
-  (`launcher.mm build_game_code`: 8 nos dois). Falta:
-  - Começar um compilador novo só com memória livre (MemAvailable) e menos de uma vez num celular quente.
-  - Continuar de onde parou: manter os objetos já compilados entre aberturas do app.
-  - Registrar no log por que o Android fechou o app da última vez (`ApplicationExitInfo`: LOW_MEMORY etc.).
+- **Build do código do jogo mais leve** (issues #18 e #25, 2026-10-25) - feito na 0.1.11 (2f68d60, aabd205):
+  compiladores novos só com memória livre, metade num celular quente, o build continua de onde parou, e o log diz
+  por que o Android fechou o app. Escolher a pasta de novo ainda apagava os objetos (`.gamebuild`): corrigido em
+  201e99b, ainda não lançado. No #25 (ZF8 Ultra) a 0.1.11 ainda esquentou demais: falta o log do build.
+- **Próxima versão: o que as issues já esperam** (2026-10-26). No `main`, não lançados, e prometidos como "a próxima
+  versão":
+  - 201e99b: cada arquivo uma vez quando o provedor de arquivos lista em dobro (#31/#38: Huawei, 79.356 arquivos, uma
+    imagem de 28,84 GB de uma pasta de 14,44 GB) e a pasta escolhida de novo mantém o código compilado (#25).
+  - 526fc76 + 0464be0: relatório de crash um por vez, com os registradores e a cadeia de quadros do jogo (x29) antes
+    do backtrace do host (#24, #30).
+  - 4a27085: os marcos de cada vídeo (primeiro pacote, primeiro quadro decodificado, primeira saída ao jogo) (#22).
+  - Antes de lançar, testar no POCO: a verificação do setup num caso que falha (uma cópia em
+    `/sdcard/Download/botwtest` com o `Version.txt` trocado; nunca nas pastas do usuário) e o relatório de crash (não
+    há como provocar um crash de propósito: um `LARECOMP_` de teste ajudaria).
+  - Depois de lançar, avisar em #22, #24, #25, #30 e #38.
+- **`uclamp.min` para o #41** (prometido ao autor, 2026-10-26): Snapdragon 8 Gen 3 (Adreno 750, Honor 300 Ultra,
+  MagicOS) cai para ~10 fps no mundo com um núcleo ocupado a ~600 MHz. O trabalho por quadro é o mesmo do POCO, ou
+  menos (3.000-4.500 draws e ~15 MB enviados por quadro, contra 4.500-6.000 e 20-25 MB a 30 fps), e a sessão do ADPF
+  está ligada: algo acima do escalonador segura o clock (o iAware do MagicOS gerencia o app). Falta:
+  - Uma opção que aplique `sched_setattr` com `SCHED_FLAG_UTIL_CLAMP_MIN` (~50-60) às threads do jogo
+    (`plat_thread_unpin`, `runtime/platform/android.c`), registrando no log se o Android aceita (seccomp, SELinux,
+    o `uclamp.max` do cgroup). No POCO não dá para medir: o clock do 8 Elite já acompanha a carga. Mandar ao autor
+    um build de teste.
+  - A outra proposta dele: medir espera e posse do núcleo 0 (`runtime/kernel.c`, `core0_acquire`), sem mudar o
+    comportamento.
+  - A resposta dele: se pôr o app na lista de jogos do MagicOS muda os clocks.
+- **DLC** (#42, #40, #34; talvez o crash ao chamar o cavalo do #43) - em andamento numa sessão própria (pedido do
+  usuário, 2026-10-25). O Modo Mestre vem com o primeiro pacote (#34). Avisar nas issues quando sair.
+- **Importar saves de emulador** (prometido no #40, 2026-10-26): os saves ficam em
+  `Android/data/com.botwrecomp.android/files/<versão>/save/save_0`, fora do alcance dos gerenciadores de arquivos (nem
+  o adb escreve ali: só o próprio app). Os emuladores de Switch guardam os do BOTW no mesmo formato (`0/` a `5/` com
+  `caption.jpg`, `caption.sav`, `game_data.sav`, `option.sav`, `tracker/`). Falta: escolher uma pasta (SAF) e copiar
+  para o save da versão atual, guardando o anterior ao lado como o `LARECOMP_SAVE_REPLACE` faz
+  (`save_0.before-replace`). Conferir: uma pasta com `save_0` dentro ou só os slots, e um save mais novo que a versão
+  (um 1.8.2 numa 1.0.0).
+- **Crash no Snapdragon 8s Gen 4 / Adreno 825** (#24, #30; POCO F7): sempre no mesmo ponto, ~2 s depois de a tela de
+  título começar a carregar, em todo driver (Turnip, Qualcomm), com a memória do jogo na GPU ligada ou não e em
+  toda resolução. É no código do jogo (1.0.0, `f_100a550e0+0x94`: um append de lista com o elemento nulo, centenas
+  de chamadores), com duas threads do jogo no mesmo nulo, 33 ms uma depois da outra. O código do jogo sai igual em todo
+  celular (`-target aarch64-linux-musl` sem `-mcpu`). No POCO a 1.0.0 passa desse ponto. Falta o log da próxima
+  versão (526fc76: os chamadores pela cadeia x29) para achar o objeto nulo.
+- **Vídeo da torre trava no Adreno 840** (#22; OnePlus 15, Snapdragon 8 Elite Gen 5, 1.0.0 com o dump completo): o
+  jogo inteiro para logo depois de `[movie] decoder vp9 configured`, com Turnip e com o driver da Qualcomm; no
+  Adreno 830 o mesmo vídeo passa até o fim. O VP9 do FFmpeg 9.0.2 só tem caminhos NEON (os de SVE/SME são do VVC).
+  Falta o log da próxima versão (4a27085) para ver o passo em que para.
+- **#43** (Adreno 740, 1.8.2, Turnip V38): a grama some de vez em quando ao andar, e chamar o cavalo trava com um
+  save da 1.6.0. Esperando o log (e se o cavalo usa equipamento de DLC).
+- **#23** (RP Nova T26, 1.0.0): o `ActorInfo.product.sbyml` está na pasta, mas a imagem tinha 39.677 arquivos e o
+  jogo para ao carregá-lo. Esperando a mensagem da verificação de setup da 0.1.11 (qual arquivo falta) e o tamanho
+  exato do arquivo (760.223 bytes).
+- **Mali** (#39: Dimensity 7050, Mali-G68, 7-10 fps; #34: Mali-G925, crash no código do jogo em `f_100047d40`;
+  #29): o caminho da Mali nunca foi ajustado, e não há um celular Mali para testar.
 
 ## Regras
 
