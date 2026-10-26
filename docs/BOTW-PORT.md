@@ -660,7 +660,7 @@ Pedidos ainda não começados, o mais recente no fim.
     do jogo como faltando.
   - Quem pediu lembrou que um dos projetos LAS faz isso. O LASRecompAndroid não faz; falta conferir o
     LASRecomp-Android-Plus (Nycolazs).
-- **Controles de toque estilo FPS** (pedido no Reddit, 2026-10-24) - feito, falta testar no celular: na aba
+- **Controles de toque estilo FPS** (pedido no Reddit, 2026-10-24) - feito e aprovado pelo usuário no POCO (2026-10-25): na aba
   Controles, "Câmera por arrasto" (`drag_frame`: inclinação total a 80% da altura da tela por segundo vezes a
   sensibilidade, suavizada, começando depois de 15% para passar a zona morta do jogo; usa a metade direita inteira),
   "Analógicos só ao tocar" e "Áreas maiores dos analógicos" (cada metade da tela). Ajustar no POCO: a curva e a zona
