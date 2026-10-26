@@ -288,7 +288,7 @@ static const char *host_sym(uint64_t pc, uint64_t *offset) {
 // apart), their lines interleaved, and the first one's abort cut both off in the host backtrace, before the guest
 // registers. Another thread waits here for that abort; the same thread (a fault inside its own report) goes on.
 static void fatal_gate(void) {
-    static _Atomic(uintptr_t) owner;
+    static uintptr_t owner;  // (plain: clang's __atomic builtins take no _Atomic operand)
     uintptr_t me = (uintptr_t)pthread_self(), none = 0;
     if (__atomic_compare_exchange_n(&owner, &none, me, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST) || none == me) return;
     for (;;) plat_sleep_until_ns(plat_now_ns() + 1000000000ull);
