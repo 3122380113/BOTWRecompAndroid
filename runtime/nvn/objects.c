@@ -300,10 +300,12 @@ NVN(nvnSyncWait) {  // NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED
     // newest fence instead - one frame of lag at most. Its translation is waited for above (vk_async_wait_id): every copy
     // of the frame's constants and textures is made before the game writes them again, and the lists were copied when
     // sent (vulkan/async.c snap_list). What the GPU reads in place (vertices in the heap) or writes for the CPU
-    // (readbacks, queries) may be a frame apart. On by default (POCO F7 Ultra, 1.8.2's Great Plateau, in-run A/B: 41.7 ->
-    // 45.6 fps, the image the same); LARECOMP_SYNC_LAG=0 off; LARECOMP_AB=<frames>:synclag alternates.
+    // (readbacks, queries) may be a frame apart - and in play they were: the water turned white and the cliffs showed
+    // stretched "curtains" (2026-10-26, POCO F7 Ultra; BOTW reads GPU results back right after this wait - the water's
+    // colour from a tiny render target, MacNativeGames PR #239). Off by default; LARECOMP_SYNC_LAG=1 on (1.8.2's Great
+    // Plateau, in-run A/B: 41.7 -> 45.6 fps); LARECOMP_AB=<frames>:synclag alternates.
     static int lag = -1;
-    if (lag < 0) lag = getenv("LARECOMP_SYNC_LAG") ? atoi(getenv("LARECOMP_SYNC_LAG")) : 1;
+    if (lag < 0) lag = getenv("LARECOMP_SYNC_LAG") ? atoi(getenv("LARECOMP_SYNC_LAG")) : 0;
     extern int vk_ab(const char *what);
     int ab = vk_ab("synclag");
     bool lag_now = vk_async_on() && !flush && !whole && (ab >= 0 ? ab == 1 : lag > 0);
