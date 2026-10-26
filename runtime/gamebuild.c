@@ -499,7 +499,9 @@ static void mark_done(const Unit *u) {
 #ifdef __ANDROID__
 // Another compiler now? 8 at once closed the app on a 12 GB tablet after ~20 minutes (issue #18) and drew 11 W from a
 // phone until it overheated (issue #25): one more starts only with 1.5 GB of memory available, a second after the last
-// one, and on a phone past 48 degrees no more than half of them run. One always runs.
+// one, and on a hot phone no more than half of them run - Android's thermal status moderate or worse, its headroom
+// near throttling, or the battery past 42 degrees (the activity's, once a second; a CPU zone read 70 degrees on the
+// POCO F7 Ultra from the build's first second, so it doesn't count). One always runs.
 static bool may_start_another(int nrun, int jobs) {
     static uint64_t last_start;
     static int last_cap = -1;  // (0: waiting for memory)
@@ -508,11 +510,12 @@ static bool may_start_another(int nrun, int jobs) {
     if (now - last_start < 1000000000ull) return false;
     PlatDeviceStats s;
     plat_device_stats(&s);
-    bool low = s.avail_mb && s.avail_mb < 1536;
-    int cap = low ? 0 : s.soc_temp_c > 48 ? (jobs + 1) / 2 : jobs;
+    bool low = s.avail_mb && s.avail_mb < (last_cap == 0 ? 1792u : 1536u);  // (on again with 256 MB more: no flapping)
+    bool hot = s.thermal >= 2 || s.headroom >= 0.95f || s.batt_temp_c > 42;
+    int cap = low ? 0 : hot ? (jobs + 1) / 2 : jobs;
     if (cap != last_cap) {
-        LOG("[gamebuild] %s %d compilers (%u MB available, %.0f degrees)\n", low ? "no more than the" : "up to",
-            low ? nrun : cap, s.avail_mb, s.soc_temp_c);
+        LOG("[gamebuild] %s %d compilers (%u MB available, thermal status %d, headroom %.2f, battery %.0f degrees)\n",
+            low ? "no more than the" : "up to", low ? nrun : cap, s.avail_mb, s.thermal, s.headroom, s.batt_temp_c);
         last_cap = cap;
     }
     if (low || nrun >= cap) return false;
