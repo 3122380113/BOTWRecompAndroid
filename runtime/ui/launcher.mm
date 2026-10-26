@@ -1449,6 +1449,11 @@ extern "C" void launcher_run(const char *root) {
         g_font_title = io.Fonts->AddFontFromFileTTF(p, 92 * (b2 ? 2.3f : 1), NULL, ranges);
     }
     if (!g_font_menu) g_font_small = g_font_menu = g_font_title = io.Fonts->AddFontDefault();
+    if (!io.Fonts->Build()) {  // (a font ImGui couldn't read left the atlas empty: its upload crashed - ImGui's own font)
+        fprintf(stderr, "[ui] the start screen's fonts didn't build: ImGui's default font instead\n");
+        io.Fonts->Clear();
+        g_font_small = g_font_menu = g_font_title = io.Fonts->AddFontDefault();
+    }
     ImGuiStyle &st = ImGui::GetStyle();
     st.Colors[ImGuiCol_Header] = ImVec4(0, 0, 0, 0);
     st.Colors[ImGuiCol_HeaderHovered] = ImVec4(1, 1, 1, 0.08f);

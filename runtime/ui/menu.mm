@@ -412,6 +412,11 @@ static void init(void) {
     if (!g_font) g_font = io.Fonts->AddFontDefault();
     if (!g_font_big) g_font_big = g_font;
     if (!g_menu_font || !g_menu_font_big) g_menu_font = g_font, g_menu_font_big = g_font_big;
+    if (!io.Fonts->Build()) {  // (a font ImGui couldn't read left the atlas empty: its upload crashed - ImGui's own font)
+        fprintf(stderr, "[ui] the menu's fonts didn't build: ImGui's default font instead\n");
+        io.Fonts->Clear();
+        g_font = g_font_big = g_menu_font = g_menu_font_big = io.Fonts->AddFontDefault();
+    }
     style_init();
 #ifdef __APPLE__
     ImGui_ImplMetal_Init(dev);
