@@ -283,6 +283,8 @@ NVN(nvnSyncWait) {  // NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED
     if (whole < 0) whole = getenv("LARECOMP_SYNC_ALL") ? 1 : 0;
 #ifdef __ANDROID__
     uint64_t t0 = plat_now_ns();
+    extern void vk_tl(const char *what, uint64_t a, uint64_t b);  // (vulkan/exec.c: LARECOMP_FRAME_TIMELINE)
+    vk_tl("game: SyncWait begin (fence id, submission)", sync_of(A(0))->lseq, sync_of(A(0))->seq);
     kernel_blocking_begin();  // (a long wait: core 0 to the game's other threads, kernel.c)
     if (vk_async_on()) {  // the render thread's translation of the fence first (vulkan/async.c)
         if (flush || whole) vk_async_drain();
@@ -295,6 +297,7 @@ NVN(nvnSyncWait) {  // NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED
     else renderer_wait_seq(sync_of(A(0))->seq);  // only the submission that holds this fence
 #ifdef __ANDROID__
     kernel_blocking_end();
+    vk_tl("game: SyncWait end", sync_of(A(0))->lseq, sync_of(A(0))->seq);
     // LARECOMP_LOG_SYNC: waits over a millisecond in the world (frame 1500 on, 40 of them) - how old the fence was,
     // the waits for its translation and its GPU work
     static int log = -1, logged;

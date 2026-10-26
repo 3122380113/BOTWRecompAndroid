@@ -177,6 +177,42 @@ static int64_t cq_offset;  // host ns - GPU ns (the smallest seen)
 // (x 625 / 384). Writing ns made every GPU time look 1.63x as long.
 static uint64_t ns_to_gpu_ticks(uint64_t ns) { return (uint64_t)((unsigned __int128)ns * 384 / 625); }
 static bool cq_calibrated;
+
+#ifdef __ANDROID__
+// ---- LARECOMP_FRAME_TIMELINE=<frame>: four frames from that one, every step in time order - the game's lists, fences,
+// waits and presents, the render thread's translation and submissions, the GPU's start and end of each submission (its
+// clock moved onto the CPU's: cq_offset) - in ms from the first. Where a frame's time goes between the three.
+uint64_t renderer_present_count(void);
+typedef struct { int64_t t; const char *what; uint64_t a, b; } TlEv;
+static TlEv tl_ev[8192];
+static int tl_n;
+static long tl_from = -2;
+static pthread_mutex_t tl_lock = PTHREAD_MUTEX_INITIALIZER;
+static int tl_cmp(const void *x, const void *y) {
+    const TlEv *p = x, *q = y;
+    return p->t < q->t ? -1 : p->t > q->t;
+}
+static void tl_add(int64_t t, const char *what, uint64_t a, uint64_t b) {
+    if (tl_from == -2) tl_from = getenv("LARECOMP_FRAME_TIMELINE") ? atol(getenv("LARECOMP_FRAME_TIMELINE")) : -1;
+    if (tl_from < 0) return;
+    uint64_t f = renderer_present_count();
+    if ((long)f < tl_from) return;
+    pthread_mutex_lock(&tl_lock);
+    if ((long)f >= tl_from + 6 && tl_n) {  // (two frames' margin for the GPU's late timestamps)
+        qsort(tl_ev, tl_n, sizeof *tl_ev, tl_cmp);
+        LOG("[timeline] frames %ld-%ld, %d events (ms from the first)\n", tl_from, tl_from + 3, tl_n);
+        for (int i = 0; i < tl_n; i++)
+            LOG("[timeline] %8.3f %s %llu %llu\n", (tl_ev[i].t - tl_ev[0].t) / 1e6, tl_ev[i].what,
+                (unsigned long long)tl_ev[i].a, (unsigned long long)tl_ev[i].b);
+        tl_n = 0;
+        tl_from = -1;
+    } else if ((long)f < tl_from + 4 && tl_n < 8192) {
+        tl_ev[tl_n++] = (TlEv){t, what, a, b};
+    }
+    pthread_mutex_unlock(&tl_lock);
+}
+void vk_tl(const char *what, uint64_t a, uint64_t b) { tl_add((int64_t)plat_now_ns(), what, a, b); }
+#endif
 static int counter_mode = -1;  // 0 cpu, 1 frozen, 2 gpu
 static uint64_t stat_counters_gpu;
 
@@ -444,6 +480,33 @@ static void cq_resolve(int i) {  // (cq_lock held) submission slot i is done: it
             double per = g_vk.props.limits.timestampPeriod;
             int64_t s0 = (int64_t)((double)se[0] * per), s1 = (int64_t)((double)se[1] * per);
             if (last_end >= 0 && s0 > last_end) idle += s0 - last_end;
+            if (cq_calibrated) {
+                tl_add(s0 + cq_offset, "gpu: start of submission", q->seq, q->presentation);
+                tl_add(s1 + cq_offset, "gpu: end of submission", q->seq, q->presentation);
+            }
+            {   // LARECOMP_LOG_GPU_IDLE=1: the GPU's idle between submissions, every ~2 s - after a frame's present (the
+                // frame boundary) and inside a frame (the render thread's next chunk late), per frame and the largest
+                static int on = -1;
+                static bool prev_present;
+                static int64_t gi_after, gi_within, gi_max, gi_t0;
+                static int gi_frames, gi_big;
+                if (on < 0) on = getenv("LARECOMP_LOG_GPU_IDLE") != NULL;
+                if (on && last_end >= 0) {
+                    int64_t gap = s0 > last_end ? s0 - last_end : 0;
+                    if (prev_present) gi_after += gap, gi_frames++;
+                    else gi_within += gap;
+                    if (gap > gi_max) gi_max = gap;
+                    gi_big += gap > 1000000;
+                    if (!gi_t0) gi_t0 = s0;
+                    if (s0 - gi_t0 > 2000000000 && gi_frames) {
+                        LOG("[gpu-idle] per frame: %.2f ms after the present, %.2f ms within the frame (%d frames, %d gaps "
+                            "over 1 ms, largest %.2f ms)\n", gi_after / 1e6 / gi_frames, gi_within / 1e6 / gi_frames, gi_frames,
+                            gi_big, gi_max / 1e6);
+                        gi_after = gi_within = gi_max = 0, gi_frames = gi_big = 0, gi_t0 = s0;
+                    }
+                }
+                prev_present = q->presentation;
+            }
             if (s1 > s0) {
                 uint64_t ns = (uint64_t)(s1 - (s0 > last_end ? s0 : last_end > s1 ? s1 : last_end));
                 gpu_busy_total += ns;
@@ -753,6 +816,7 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
 #endif
         VkResult sr = vkQueueSubmit2(g_vk.queue, 1, &si, VK_NULL_HANDLE);
 #ifdef __ANDROID__
+        tl_add((int64_t)plat_now_ns(), wait || signal ? "render: submitted (present)" : "render: submitted", submit_seq + 1, 0);
         if (trace_start) vk_timing_trace_wait(VK_TIMING_SUBMIT, SDL_GetTicksNS() - trace_start);
 #endif
         if (sr == VK_ERROR_DEVICE_LOST) vk_devlost_dump();
