@@ -765,6 +765,17 @@ Pedidos ainda não começados, o mais recente no fim.
   exato do arquivo (760.223 bytes).
 - **Mali** (#39: Dimensity 7050, Mali-G68, 7-10 fps; #34: Mali-G925, crash no código do jogo em `f_100047d40`;
   #29): o caminho da Mali nunca foi ajustado, e não há um celular Mali para testar.
+- **Build no Galaxy S21 (Snapdragon 888)** (Reddit, Salt-Alfalfa-8665, 2026-10-26).
+  - Na 0.1.11, o build **recomeçou do zero** apesar de continuar de onde parou. Suspeitas:
+    - a pasta escolhida de novo apagava os objetos (corrigido em 201e99b, não lançado);
+    - ou a bateria acabou e o app foi morto antes de o `obj.ok` ser escrito.
+  - Ele também escreveu "doesn't fully scan now": a verificação do setup não termina? Falta saber em que tela.
+  - O app **caiu em 81%**. Falta o log, com o motivo do Android (`the last run ended`).
+  - Pede o build **em segundo plano**:
+    - um foreground service com notificação de progresso, para o Android não matar o build com a tela apagada ou o
+      app em segundo plano;
+    - de preferência só carregando. A bateria acabar no meio era a queixa original.
+  - Perguntar o modelo de RAM, e pedir o `botwrecomp-log.txt` e o `botwrecomp-log-previous.txt`.
 
 ## Regras
 
