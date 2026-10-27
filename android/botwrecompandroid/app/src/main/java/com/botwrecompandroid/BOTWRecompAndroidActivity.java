@@ -82,7 +82,10 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
     private static native String nativeSaveDir();  // (this version's save_0, absolute)
     private static native void nativeSaveDone(int result, String detail);
     private static final int REQ_GAME = 0x4c41, REQ_DRIVER = 0x4c42, REQ_MOD = 0x4c46, REQ_LOG = 0x4c47,
-            REQ_DRIVER_RECOVER = 0x4c48, REQ_SAVE_IN = 0x4c49, REQ_SAVE_OUT = 0x4c4a, REQ_SAVE_IN_TREE = 0x4c4c;
+            REQ_DRIVER_RECOVER = 0x4c48, REQ_SAVE_IN = 0x4c49, REQ_SAVE_OUT = 0x4c4a, REQ_SAVE_IN_TREE = 0x4c4c,
+            REQ_DLC = 0x4c4d;
+    private native String nativeBuildDlc(String[] paths, long[] sizes);
+    private static native void nativeDlcDone(int result, String detail);
     private static BOTWRecompAndroidActivity self;
     private WatchMapServer watchMap;
 
@@ -335,6 +338,12 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
                 if (!installDriver(this, f).isEmpty()) restartApp();
                 else runOnUiThread(() -> showDriverError(getString(R.string.driver_not_a_package)));
             }, "driver").start();
+            return;
+        }
+        if (req == REQ_DLC) {
+            Uri tree = result == Activity.RESULT_OK && data != null ? data.getData() : null;
+            if (tree == null) nativeDlcDone(DLC_CANCELLED, "");
+            else new Thread(() -> importDlc(tree), "dlc").start();
             return;
         }
         if (req == REQ_SAVE_IN || req == REQ_SAVE_OUT || req == REQ_SAVE_IN_TREE) {
@@ -650,6 +659,74 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
         } catch (Exception e) {
             Log.e(TAG, "save import", e);
             nativeSaveDone(SAVE_FAILED, e.getMessage() != null ? e.getMessage() : e.toString());
+        }
+    }
+
+    // ---- the DLC (the start screen's Settings > DLC; runtime/services/fs.c open_aoc_storage): the Expansion Pass's data
+    // is the RomFS of its larger pack (01007EF00011F001: the Master Trials' and the Champions' Ballad's content, 7,094
+    // files); the other (01007EF00011F002) holds System/AocVersion.txt alone, the Ballad's unlock. The picked folder's
+    // pack - System/AocVersion.txt with Pack/ beside it, the picked folder or a few levels below - becomes dlc/aoc.bin
+    // as the game's own romfs.bin is made (nativeBuildDlc), the movies loose beside it.
+    private static final int DLC_INSTALLED = 0, DLC_CANCELLED = 2, DLC_NONE = 3, DLC_FAILED = 4, DLC_BALLAD_ONLY = 5;
+
+    public static void pickDlcFolder() {
+        self.runOnUiThread(() -> {
+            try {
+                self.startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_DLC);
+            } catch (Exception e) {
+                Log.e(TAG, "DLC folder picker", e);
+                nativeDlcDone(DLC_FAILED, e.toString());
+            }
+        });
+    }
+
+    private boolean dlcBalladOnly;
+
+    // The pack's romfs: a folder with System/AocVersion.txt and Pack/ (the game's own romfs has System/Version.txt)
+    private Doc findDlc(Uri tree, Doc dir, int depth) {
+        List<Doc> kids = children(tree, dir.id);
+        Doc sys = named(kids, "System"), pack = named(kids, "Pack");
+        if (sys != null && sys.dir && named(children(tree, sys.id), "AocVersion.txt") != null) {
+            if (pack != null && pack.dir) return dir;
+            dlcBalladOnly = true;  // (the Ballad's pack: its unlock only)
+        }
+        if (depth >= 4 || pack != null) return null;  // (a romfs: not into its ~7,000 files)
+        for (Doc k : kids) {
+            if (!k.dir) continue;
+            Doc d = findDlc(tree, k, depth + 1);
+            if (d != null) return d;
+        }
+        return null;
+    }
+
+    private void importDlc(Uri tree) {
+        try {
+            dlcBalladOnly = false;
+            Doc d = findDlc(tree, treeRoot(tree), 0);
+            if (d == null) {
+                nativeDlcDone(dlcBalladOnly ? DLC_BALLAD_ONLY : DLC_NONE, "");
+                return;
+            }
+            romfsTree = tree;
+            romfsFiles.clear();
+            romfsPaths.clear();
+            listFiles(tree, d, "");
+            Log.i(TAG, "DLC: " + romfsFiles.size() + " files");
+            long[] sizes = new long[romfsFiles.size()];
+            for (int i = 0; i < sizes.length; i++) sizes[i] = romfsFiles.get(i).size;
+            String failed;
+            try {
+                failed = nativeBuildDlc(romfsPaths.toArray(new String[0]), sizes);
+            } finally {
+                closeRomfsClient();
+                romfsFiles.clear();
+                romfsPaths.clear();
+            }
+            if (failed != null) nativeDlcDone(DLC_FAILED, failed);
+            else nativeDlcDone(DLC_INSTALLED, Integer.toString(sizes.length));
+        } catch (Exception e) {
+            Log.e(TAG, "DLC import", e);
+            nativeDlcDone(DLC_FAILED, e.getMessage() != null ? e.getMessage() : e.toString());
         }
     }
 

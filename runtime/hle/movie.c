@@ -237,6 +237,12 @@ static void ex_set_data_source(Cpu *c) {
     while (rel && *rel == '/') rel++;
     char host[1024];
     snprintf(host, sizeof host, "%s/%s", g_romfs_dir, rel ? rel : "");
+    {   // the DLC's ("aoc:/Movie/..."): loose beside its data image (services/fs.c fs_aoc_image: <dir>/aoc.bin -> <dir>/romfs)
+        extern const char *fs_aoc_image(void);
+        const char *aoc = path && !strncmp(path, "aoc:", 4) ? fs_aoc_image() : NULL;
+        const char *slash = aoc ? strrchr(aoc, '/') : NULL;
+        if (slash) snprintf(host, sizeof host, "%.*s/romfs/%s", (int)(slash - aoc), aoc, rel ? rel : "");
+    }
     LOG("[movie] open %s -> %s\n", path ? path : "(null)", host);
     if (avformat_open_input(&e->fmt, host, NULL, NULL) < 0 || avformat_find_stream_info(e->fmt, NULL) < 0) {
         LOG("[movie] cannot open %s\n", host);

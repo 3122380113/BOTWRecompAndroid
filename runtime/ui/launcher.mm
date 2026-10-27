@@ -702,6 +702,85 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_botwrecompandroid_BOTWRecompAndroi
     return env->NewStringUTF(what);
 }
 
+// The DLC (Settings > DLC; BOTWRecompAndroidActivity importDlc): its image built as romfs.bin is, at
+// <1.0.0's data root>/dlc/aoc.bin (services/fs.c fs_aoc_image), the movies loose in dlc/romfs (hle/movie.c)
+static std::string g_dlc_msg;  // (g_lock) the last install's result
+extern "C" const char *fs_aoc_image(void);  // (runtime/services/fs.c: the DLC image, NULL when not set up)
+static bool g_dlc_failed, g_dlc_busy;
+static std::atomic<float> g_dlc_frac{-1};
+static std::string dlc_dir(void) {
+    char r[1024];
+    return rt_version_root(100, r, sizeof r) ? std::string(r) + "/dlc" : std::string();
+}
+static void dlc_progress(uint64_t done, uint64_t total) { g_dlc_frac = total ? (float)((double)done / (double)total) : 0; }
+extern "C" JNIEXPORT jstring JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeBuildDlc(
+        JNIEnv *env, jobject act, jobjectArray paths, jlongArray sizes) {
+    int n = env->GetArrayLength(paths);
+    std::vector<std::string> keep_alive(n);
+    std::vector<RomfsEntry> entries(n);
+    std::vector<jlong> sz(n);
+    if (n) env->GetLongArrayRegion(sizes, 0, n, sz.data());
+    for (int i = 0; i < n; i++) {
+        jstring s = (jstring)env->GetObjectArrayElement(paths, i);
+        const char *c = env->GetStringUTFChars(s, NULL);
+        keep_alive[i] = c ? c : "";
+        if (c) env->ReleaseStringUTFChars(s, c);
+        env->DeleteLocalRef(s);
+        entries[i] = {keep_alive[i].c_str(), (uint64_t)sz[i]};
+    }
+    jclass cls = env->GetObjectClass(act);
+    RomfsJni j = {env, act, env->GetMethodID(cls, "openRomfsFile", "(I)I")};
+    env->DeleteLocalRef(cls);
+    if (!j.open) { env->ExceptionClear(); return env->NewStringUTF("Internal error: openRomfsFile missing."); }
+    std::string dir = dlc_dir(), romfs = dir + "/romfs";
+    if (dir.empty()) return env->NewStringUTF("no data folder");
+    mkdir(dir.c_str(), 0755);
+    mkdir(romfs.c_str(), 0755);
+    g_dlc_frac = 0;
+    char why[256] = "";
+    bool ok = romfs_build_entries(entries.data(), n, romfs_jni_open, &j, (dir + "/aoc.bin").c_str(), romfs.c_str(),
+                                  keep_loose, dlc_progress, why, sizeof why);
+    g_dlc_frac = -1;
+    if (ok) return NULL;
+    fprintf(stderr, "[launcher] DLC image: %s\n", why);
+    return env->NewStringUTF(why[0] ? why : "Could not build the DLC's data image. Check free storage and try again.");
+}
+
+extern "C" JNIEXPORT void JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeDlcDone(JNIEnv *env, jclass,
+                                                                                                   jint result, jstring detail) {
+    const char *t = env->GetStringUTFChars(detail, NULL);
+    std::string d = t ? t : "";
+    if (t) env->ReleaseStringUTFChars(detail, t);
+    char msg[600];
+    switch (result) {
+    case 0: snprintf(msg, sizeof msg, "%s", tr("DLC installed. Start the game: the title shows Master Mode.")); break;
+    case 2: msg[0] = 0; break;
+    case 3: snprintf(msg, sizeof msg, "%s", tr("No DLC there: choose the folder with the DLC's romfs (System/AocVersion.txt and Pack).")); break;
+    case 5: snprintf(msg, sizeof msg, "%s", tr("That's only the Champions' Ballad's unlock: choose the larger pack (01007EF00011F001), "
+                                               "which holds both DLCs.")); break;
+    default: snprintf(msg, sizeof msg, tr("That didn't work: %s"), d.c_str()); break;
+    }
+    fprintf(stderr, "[launcher] DLC setup: %d %s\n", (int)result, d.c_str());
+    pthread_mutex_lock(&g_lock);
+    g_dlc_msg = msg, g_dlc_failed = result >= 3, g_dlc_busy = false;
+    pthread_mutex_unlock(&g_lock);
+}
+
+static void remove_tree(const std::string &p) {
+    struct stat st;
+    if (lstat(p.c_str(), &st) != 0) return;
+    if (S_ISDIR(st.st_mode)) {
+        if (DIR *d = opendir(p.c_str())) {
+            while (struct dirent *e = readdir(d))
+                if (strcmp(e->d_name, ".") && strcmp(e->d_name, "..")) remove_tree(p + "/" + e->d_name);
+            closedir(d);
+        }
+        rmdir(p.c_str());
+    } else {
+        remove(p.c_str());
+    }
+}
+
 // The import thread's cause of a failure (an exception: "IOException: ..."), ahead of nativeImportDone
 extern "C" JNIEXPORT void JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeImportDetail(JNIEnv *env, jclass,
                                                                                                          jstring what) {
@@ -1484,6 +1563,47 @@ static void prelaunch_tab(float sc) {
             android_call("pickSaveImportFolder");
         }
         if (sbusy) ImGui::EndDisabled();
+        if (!msg.empty()) {
+            if (failed) ImGui::TextColored(ImVec4(1, 0.5f, 0.4f, 1), "%s", msg.c_str());
+            else ImGui::Text("%s", msg.c_str());
+        }
+        ImGui::PopTextWrapPos();
+    }
+    ImGui::Spacing();
+    ImGui::Spacing();
+    heading("DLC");
+    {
+        pthread_mutex_lock(&g_lock);
+        std::string msg = g_dlc_msg;
+        bool failed = g_dlc_failed, dbusy = g_dlc_busy;
+        pthread_mutex_unlock(&g_lock);
+        bool have = fs_aoc_image() != NULL;
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextDisabled("%s", tr("The Expansion Pass - The Master Trials and The Champions' Ballad - for game versions "
+                                     "1.6.0, 1.8.2 and 1.9.0. Choose the folder with your own DLC's extracted romfs: the "
+                                     "larger pack (01007EF00011F001, 7,094 files, about 1.4 GB) holds both; the other "
+                                     "one is only the Ballad's unlock and isn't needed. The DLC isn't included with "
+                                     "BOTWRecompAndroid."));
+        ImGui::Text("%s", tr(have ? "Installed." : "Not installed."));
+        float f = g_dlc_frac;
+        if (dbusy && f >= 0) ImGui::Text(tr("Installing the DLC... %d%%"), (int)(f * 100));
+        if (dbusy || g_busy) ImGui::BeginDisabled();
+        if (ImGui::Button(tr(have ? "Install again" : "Install DLC"))) {
+            pthread_mutex_lock(&g_lock);
+            g_dlc_busy = true, g_dlc_msg.clear();
+            pthread_mutex_unlock(&g_lock);
+            android_call("pickDlcFolder");  // (then importDlc -> nativeBuildDlc -> nativeDlcDone)
+        }
+        if (have) {
+            ImGui::SameLine();
+            if (ImGui::Button(tr("Remove DLC"))) {
+                remove_tree(dlc_dir());
+                pthread_mutex_lock(&g_lock);
+                g_dlc_msg = tr("DLC removed."), g_dlc_failed = false;
+                pthread_mutex_unlock(&g_lock);
+            }
+        }
+        if (dbusy || g_busy) ImGui::EndDisabled();
         if (!msg.empty()) {
             if (failed) ImGui::TextColored(ImVec4(1, 0.5f, 0.4f, 1), "%s", msg.c_str());
             else ImGui::Text("%s", msg.c_str());
