@@ -541,3 +541,7 @@
  "那里没有 BOTW 存档：请选择包含 0、1、2... 和 option.sav 的文件夹。"},
 {"That didn't work: %s",
  "操作失败：%s"},
+{"Stick dead zone",
+ "摇杆死区"},
+{"A stick held this close to the centre counts as centred, for worn sticks that move Link or the camera on their own (drift). Off: only the game's own.",
+ "离中心这么近的摇杆输入视为居中，用于会让林克或镜头自己移动的老化摇杆（漂移）。关闭：只用游戏自身的。"},

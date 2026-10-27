@@ -541,3 +541,7 @@
  "那裡沒有 BOTW 存檔：請選擇包含 0、1、2... 和 option.sav 的資料夾。"},
 {"That didn't work: %s",
  "操作失敗：%s"},
+{"Stick dead zone",
+ "搖桿死區"},
+{"A stick held this close to the centre counts as centred, for worn sticks that move Link or the camera on their own (drift). Off: only the game's own.",
+ "離中心這麼近的搖桿輸入視為置中，用於會讓林克或鏡頭自己移動的老化搖桿（漂移）。關閉：只用遊戲本身的。"},

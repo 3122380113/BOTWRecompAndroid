@@ -541,3 +541,7 @@
  "Daar staat geen BOTW-opslag: kies de map met 0, 1, 2... en option.sav."},
 {"That didn't work: %s",
  "Dat lukte niet: %s"},
+{"Stick dead zone",
+ "Dode zone van de sticks"},
+{"A stick held this close to the centre counts as centred, for worn sticks that move Link or the camera on their own (drift). Off: only the game's own.",
+ "Een stick zo dicht bij het midden telt als gecentreerd, voor versleten sticks die Link of de camera zelf bewegen (drift). Uit: alleen die van het spel."},

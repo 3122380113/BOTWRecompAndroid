@@ -541,3 +541,7 @@
  "Aucune sauvegarde de BOTW ici : choisissez le dossier qui contient 0, 1, 2... et option.sav."},
 {"That didn't work: %s",
  "Ça n'a pas marché : %s"},
+{"Stick dead zone",
+ "Zone morte des sticks"},
+{"A stick held this close to the centre counts as centred, for worn sticks that move Link or the camera on their own (drift). Off: only the game's own.",
+ "Un stick aussi proche du centre compte comme centré, pour les sticks usés qui font bouger Link ou la caméra tout seuls (drift). Désactivée : seulement celle du jeu."},

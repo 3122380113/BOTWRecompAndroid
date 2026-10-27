@@ -541,3 +541,7 @@
  "거기에는 BOTW 저장 데이터가 없습니다: 0, 1, 2... 와 option.sav가 있는 폴더를 고르세요."},
 {"That didn't work: %s",
  "실패했습니다: %s"},
+{"Stick dead zone",
+ "스틱 데드존"},
+{"A stick held this close to the centre counts as centred, for worn sticks that move Link or the camera on their own (drift). Off: only the game's own.",
+ "이만큼 중앙에 가까운 스틱 입력은 중앙으로 칩니다. 링크나 카메라가 저절로 움직이는 낡은 스틱(드리프트)용입니다. 끔: 게임 자체 데드존만."},

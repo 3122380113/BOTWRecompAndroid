@@ -58,6 +58,8 @@ typedef struct {
     // area a whole half of the screen
     bool touch_drag_camera, touch_sticks_hidden, touch_half_areas;
     float touch_drag_sens;
+    float stick_deadzone;  // a controller's sticks: a round dead zone (share of the travel, 0-0.4), rescaled past it
+                           // (hle/input.c): worn sticks that drift. 0: the game's own only
 #endif
     int language;        // LANG_AUTO or an index into g_language_codes: the game's text language
     bool aspect_asked;   // the start screen's one-time "authentic 16:9 or unlocked?" question was answered

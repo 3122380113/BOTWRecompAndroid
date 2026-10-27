@@ -541,3 +541,7 @@
  "そこに BOTW のセーブデータはありません: 0、1、2... と option.sav があるフォルダーを選んでください。"},
 {"That didn't work: %s",
  "うまくいきませんでした: %s"},
+{"Stick dead zone",
+ "スティックのデッドゾーン"},
+{"A stick held this close to the centre counts as centred, for worn sticks that move Link or the camera on their own (drift). Off: only the game's own.",
+ "この範囲内のスティック操作は中央として扱います。勝手にリンクやカメラが動く、劣化したスティック (ドリフト) 向けです。オフ: ゲーム本来のものだけ。"},
