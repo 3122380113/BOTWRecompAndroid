@@ -212,6 +212,23 @@ static int c0_on = -1;
 static KThread *c0_holder;  // (c0_m) the thread that has core 0, since c0_since
 static uint64_t c0_since;
 
+// Telemetry (c0_m; issue #41: how much of a frame goes to waiting for core 0, against a slow clock): every 30 s one log
+// line - how often core 0 changed hands, the waits for it (total, longest) and how much of the time it was held.
+static struct { uint64_t start, takes, waited, longest, held; } c0_stat;
+static void c0_held_until(uint64_t now) {
+    if (c0_holder) c0_stat.held += now - c0_since;
+}
+static void c0_stat_log(uint64_t now) {
+    if (!c0_stat.start) { c0_stat.start = now; return; }
+    uint64_t span = now - c0_stat.start;
+    if (span < 30000000000ull) return;
+    LOG("[kernel] core 0, last %.0f s: %llu takes, waited %.0f ms in all (longest %.1f ms), held %.0f%% of the time\n",
+        span / 1e9, (unsigned long long)c0_stat.takes, c0_stat.waited / 1e6, c0_stat.longest / 1e6,
+        100.0 * (double)c0_stat.held / (double)span);
+    memset(&c0_stat, 0, sizeof c0_stat);
+    c0_stat.start = now;
+}
+
 // Optional cooperative slices: request a handoff at the next function entry/SVC, never run two owners at once.
 // BOTW's busy waits depend on workers on other cores, handled by SetThreadCoreMask, not by forcing a handoff.
 // (LARECOMP_C0_SLICE_MS: the slice; default 0)
@@ -259,14 +276,14 @@ static void core0_acquire(KThread *t) {
         if (--c0_nevicted == 0) __atomic_fetch_and(&g_fnprof, ~2, __ATOMIC_SEQ_CST);
         if (t->core0_held) {
             t->core0_held = false;
-            c0_holder = NULL;
+            c0_held_until(plat_now_ns()), c0_holder = NULL;
             pthread_cond_broadcast(&c0_cv);
         }
     }
     if (__atomic_load_n(&t->core, __ATOMIC_ACQUIRE) != 0) {
         if (t->core0_held) {
             t->core0_held = false;
-            c0_holder = NULL;
+            c0_held_until(plat_now_ns()), c0_holder = NULL;
             pthread_cond_broadcast(&c0_cv);
         }
         pthread_mutex_unlock(&c0_m);
@@ -282,7 +299,11 @@ static void core0_acquire(KThread *t) {
     uint64_t t0 = plat_now_ns();
     while ((c0_holder || c0_head != t) && __atomic_load_n(&t->core, __ATOMIC_ACQUIRE) == 0 && !g_rt_unwind)
         pthread_cond_wait(&c0_cv, &c0_m);
-    g_blocked_ns += plat_now_ns() - t0;
+    uint64_t now = plat_now_ns(), w = now - t0;
+    g_blocked_ns += w;
+    c0_stat.takes++, c0_stat.waited += w;
+    if (w > c0_stat.longest) c0_stat.longest = w;
+    c0_stat_log(now);
     KThread **p = &c0_head, *prev = NULL;
     while (*p != t) { prev = *p; p = &(*p)->core0_next; }
     *p = t->core0_next;
@@ -295,7 +316,7 @@ static void core0_acquire(KThread *t) {
     }
     t->core0_held = true;
     c0_holder = t;
-    c0_since = plat_now_ns();
+    c0_since = now;
     pthread_mutex_unlock(&c0_m);
 }
 
@@ -314,7 +335,7 @@ static void core0_release(KThread *t) {
     }
     if (t->core0_held) {
         t->core0_held = false;
-        if (c0_holder == t) c0_holder = NULL;
+        if (c0_holder == t) c0_held_until(plat_now_ns()), c0_holder = NULL;
         pthread_cond_broadcast(&c0_cv);
     }
     pthread_mutex_unlock(&c0_m);
