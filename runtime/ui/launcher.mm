@@ -523,6 +523,37 @@ extern "C" JNIEXPORT void JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidAc
     if (g_settings.log_file) android_log_file(true);  // (the file moves to the folder, with this run's lines so far)
 }
 
+// Saves (Settings > Saves; BOTWRecompAndroidActivity importSave / exportSave): this version's save_0, and the result
+static std::string g_save_msg;  // (g_lock) the last import's or export's, shown under the buttons
+static bool g_save_failed, g_save_busy;
+
+extern "C" JNIEXPORT jstring JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeSaveDir(JNIEnv *env, jclass) {
+    char r[1024];
+    std::string d = rt_version_root(rt_game_version(), r, sizeof r) ? std::string(r) + "/save/save_0" : "";
+    return env->NewStringUTF(d.c_str());
+}
+
+extern "C" JNIEXPORT void JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeSaveDone(JNIEnv *env, jclass,
+                                                                                                    jint result, jstring detail) {
+    const char *t = env->GetStringUTFChars(detail, NULL);
+    std::string d = t ? t : "";
+    if (t) env->ReleaseStringUTFChars(detail, t);
+    char msg[600];
+    switch (result) {
+    case 0:
+        if (d.empty()) snprintf(msg, sizeof msg, "%s", tr("Saves imported."));
+        else snprintf(msg, sizeof msg, tr("Saves imported. The ones before are kept beside them as %s."), d.c_str());
+        break;
+    case 1: snprintf(msg, sizeof msg, tr("Saves exported to the folder \"%s\"."), d.c_str()); break;
+    case 2: msg[0] = 0; break;
+    case 3: snprintf(msg, sizeof msg, "%s", tr("No BOTW save there: choose the folder that holds 0, 1, 2... and option.sav.")); break;
+    default: snprintf(msg, sizeof msg, tr("That didn't work: %s"), d.c_str()); break;
+    }
+    pthread_mutex_lock(&g_lock);
+    g_save_msg = msg, g_save_failed = result >= 3, g_save_busy = false;
+    pthread_mutex_unlock(&g_lock);
+}
+
 // The game version of the picked main module's first bytes (game_version_of_build: 0 = not one this app runs)
 extern "C" JNIEXPORT jint JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeGameVersion(JNIEnv *env, jclass, jbyteArray head) {
     if (env->GetArrayLength(head) < 0x48) return 0;
@@ -1388,6 +1419,43 @@ static void prelaunch_tab(float sc) {
             ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
+#ifdef __ANDROID__
+    ImGui::Spacing();
+    ImGui::Spacing();
+    heading("Saves");
+    {
+        pthread_mutex_lock(&g_lock);
+        std::string msg = g_save_msg;
+        bool failed = g_save_failed, sbusy = g_save_busy;
+        pthread_mutex_unlock(&g_lock);
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextDisabled("%s", tr("The saves are in the app's own folder, out of file managers' reach. Export copies this "
+                                     "version's saves to a folder you choose (to keep, edit or move them). Import replaces "
+                                     "them with the saves in a folder you choose - one exported here, or an emulator's (the "
+                                     "folder with 0, 1, 2... and option.sav); the ones before are kept beside them. A save "
+                                     "from a newer version of the game may not load in an older one."));
+        if (sbusy) ImGui::BeginDisabled();
+        if (ImGui::Button(tr("Export saves"))) {
+            pthread_mutex_lock(&g_lock);
+            g_save_busy = true, g_save_msg.clear();
+            pthread_mutex_unlock(&g_lock);
+            android_call("pickSaveExport");  // (then nativeSaveDone)
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(tr("Import saves"))) {
+            pthread_mutex_lock(&g_lock);
+            g_save_busy = true, g_save_msg.clear();
+            pthread_mutex_unlock(&g_lock);
+            android_call("pickSaveImport");
+        }
+        if (sbusy) ImGui::EndDisabled();
+        if (!msg.empty()) {
+            if (failed) ImGui::TextColored(ImVec4(1, 0.5f, 0.4f, 1), "%s", msg.c_str());
+            else ImGui::Text("%s", msg.c_str());
+        }
+        ImGui::PopTextWrapPos();
+    }
+#endif
     ImGui::Spacing();
     ImGui::Spacing();
     heading("Game font");

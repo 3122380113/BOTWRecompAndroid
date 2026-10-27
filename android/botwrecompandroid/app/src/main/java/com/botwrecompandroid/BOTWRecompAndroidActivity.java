@@ -79,8 +79,10 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
     private static native void nativeModImportDone(String message);
     private static native void nativeLogFolderPicked(String name);
 
+    private static native String nativeSaveDir();  // (this version's save_0, absolute)
+    private static native void nativeSaveDone(int result, String detail);
     private static final int REQ_GAME = 0x4c41, REQ_DRIVER = 0x4c42, REQ_MOD = 0x4c46, REQ_LOG = 0x4c47,
-            REQ_DRIVER_RECOVER = 0x4c48;
+            REQ_DRIVER_RECOVER = 0x4c48, REQ_SAVE_IN = 0x4c49, REQ_SAVE_OUT = 0x4c4a;
     private static BOTWRecompAndroidActivity self;
     private WatchMapServer watchMap;
 
@@ -323,6 +325,12 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
             }, "driver").start();
             return;
         }
+        if (req == REQ_SAVE_IN || req == REQ_SAVE_OUT) {
+            Uri tree = result == Activity.RESULT_OK && data != null ? data.getData() : null;
+            if (tree == null) nativeSaveDone(SAVE_CANCELLED, "");
+            else new Thread(() -> { if (req == REQ_SAVE_IN) importSave(tree); else exportSave(tree); }, "saves").start();
+            return;
+        }
         if (req == REQ_LOG) {
             Uri tree = result == Activity.RESULT_OK && data != null ? data.getData() : null;
             if (tree != null) {
@@ -406,6 +414,135 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
         } catch (Exception e) {
             Log.w(TAG, "log file in the picked folder", e);
             return -1;
+        }
+    }
+
+    // ---- saves (the start screen's Settings > Saves): this version's save_0 lives in Android/data/, out of file managers'
+    // reach (issue #49: edited there for cheats, the changes didn't stick), and players bring saves from emulators
+    // (issue #40, the same layout: slots 0/ to 5/ with game_data.sav, option.sav). Export copies it to a folder they
+    // choose; import makes a save found in a chosen folder this version's, the one before kept beside it.
+    private static final int SAVE_IMPORTED = 0, SAVE_EXPORTED = 1, SAVE_CANCELLED = 2, SAVE_NONE = 3, SAVE_FAILED = 4;
+
+    public static void pickSaveImport() { pickTree(REQ_SAVE_IN); }
+
+    public static void pickSaveExport() { pickTree(REQ_SAVE_OUT); }
+
+    private static void pickTree(int req) {
+        self.runOnUiThread(() -> {
+            try {
+                self.startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), req);
+            } catch (Exception e) {
+                Log.e(TAG, "save folder picker", e);
+                nativeSaveDone(SAVE_FAILED, e.toString());
+            }
+        });
+    }
+
+    private Doc treeRoot(Uri tree) {
+        Doc root = new Doc();
+        root.id = DocumentsContract.getTreeDocumentId(tree);
+        root.dir = true;
+        return root;
+    }
+
+    // The folder holding a save: a slot folder (0/ to 7/) with game_data.sav in it - the picked folder or a few levels
+    // below it (an emulator's save path, a save_0/ inside, an exported folder's parent)
+    private Doc findSave(Uri tree, Doc dir, int depth) {
+        List<Doc> kids = children(tree, dir.id);
+        for (Doc k : kids)
+            if (k.dir && k.name != null && k.name.matches("[0-7]") && named(children(tree, k.id), "game_data.sav") != null)
+                return dir;
+        if (depth >= 4) return null;
+        for (Doc k : kids) {
+            if (!k.dir) continue;
+            Doc s = findSave(tree, k, depth + 1);
+            if (s != null) return s;
+        }
+        return null;
+    }
+
+    private void copySaveTree(Uri tree, Doc dir, File to) throws IOException {
+        if (!to.mkdirs() && !to.isDirectory()) throw new IOException("can't make " + to);
+        ContentResolver cr = getContentResolver();
+        for (Doc k : children(tree, dir.id)) {
+            File dst = new File(to, k.name);
+            if (k.dir) {
+                copySaveTree(tree, k, dst);
+                continue;
+            }
+            try (InputStream in = cr.openInputStream(DocumentsContract.buildDocumentUriUsingTree(tree, k.id));
+                 OutputStream o = new FileOutputStream(dst)) {
+                byte[] buf = new byte[1 << 16];
+                for (int r; (r = in.read(buf)) > 0; ) o.write(buf, 0, r);
+            }
+        }
+    }
+
+    private void importSave(Uri tree) {
+        try {
+            Doc s = findSave(tree, treeRoot(tree), 0);
+            if (s == null) {
+                nativeSaveDone(SAVE_NONE, "");
+                return;
+            }
+            File dst = new File(nativeSaveDir()), parent = dst.getParentFile();
+            File tmp = new File(parent, dst.getName() + ".importing");
+            deleteTree(tmp);
+            copySaveTree(tree, s, tmp);  // (all of it first: a copy cut short leaves the save as it was)
+            File keep = new File(parent, dst.getName() + ".before-import");
+            for (int n = 2; keep.exists() && n < 100; n++) keep = new File(parent, dst.getName() + ".before-import-" + n);
+            boolean had = dst.exists();
+            if (had && !dst.renameTo(keep)) throw new IOException("can't move the current save aside");
+            if (!tmp.renameTo(dst)) {
+                if (had) keep.renameTo(dst);
+                throw new IOException("can't put the imported save in place");
+            }
+            Log.i(TAG, "save imported into " + dst + (had ? ", the one before kept as " + keep.getName() : ""));
+            nativeSaveDone(SAVE_IMPORTED, had ? keep.getName() : "");
+        } catch (Exception e) {
+            Log.e(TAG, "save import", e);
+            nativeSaveDone(SAVE_FAILED, e.getMessage() != null ? e.getMessage() : e.toString());
+        }
+    }
+
+    private void exportTree(File dir, Uri to) throws IOException {
+        ContentResolver cr = getContentResolver();
+        File[] kids = dir.listFiles();
+        if (kids == null) return;
+        for (File k : kids) {
+            String mime = k.isDirectory() ? DocumentsContract.Document.MIME_TYPE_DIR : "application/octet-stream";
+            Uri d = DocumentsContract.createDocument(cr, to, mime, k.getName());
+            if (d == null) throw new IOException("can't create " + k.getName());
+            if (k.isDirectory()) {
+                exportTree(k, d);
+                continue;
+            }
+            try (InputStream in = new java.io.FileInputStream(k); OutputStream o = cr.openOutputStream(d)) {
+                if (o == null) throw new IOException("can't write " + k.getName());
+                byte[] buf = new byte[1 << 16];
+                for (int r; (r = in.read(buf)) > 0; ) o.write(buf, 0, r);
+            }
+        }
+    }
+
+    private void exportSave(Uri tree) {
+        try {
+            File src = new File(nativeSaveDir());
+            if (!src.isDirectory()) {
+                nativeSaveDone(SAVE_NONE, "");
+                return;
+            }
+            String name = "BOTWRecompAndroid save " +
+                    new java.text.SimpleDateFormat("yyyy-MM-dd HH.mm", java.util.Locale.ROOT).format(new java.util.Date());
+            Uri parent = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree));
+            Uri d = DocumentsContract.createDocument(getContentResolver(), parent, DocumentsContract.Document.MIME_TYPE_DIR, name);
+            if (d == null) throw new IOException("can't create a folder there");
+            exportTree(src, d);
+            Log.i(TAG, "save exported from " + src + " as " + name);
+            nativeSaveDone(SAVE_EXPORTED, name);
+        } catch (Exception e) {
+            Log.e(TAG, "save export", e);
+            nativeSaveDone(SAVE_FAILED, e.getMessage() != null ? e.getMessage() : e.toString());
         }
     }
 
