@@ -302,12 +302,14 @@ NVN(nvnSyncWait) {  // NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED
     // sent (vulkan/async.c snap_list). What the GPU reads in place (vertices in the heap) or writes for the CPU
     // (readbacks, queries) may be a frame apart - and in play they were: the water turned white and the cliffs showed
     // stretched "curtains" (2026-10-26, POCO F7 Ultra; BOTW reads GPU results back right after this wait - the water's
-    // colour from a tiny render target, MacNativeGames PR #239). Off by default; LARECOMP_SYNC_LAG=1 on (1.8.2's Great
-    // Plateau, in-run A/B: 41.7 -> 45.6 fps); LARECOMP_AB=<frames>:synclag alternates.
+    // colour from a tiny render target, MacNativeGames PR #239). The water came from write-backs dropped when their slots
+    // were full (the curtains show without the lag too, README); since they wait for the GPU instead (vulkan wb_queue) the water is right with the lag (Turnip V38, 2026-10-26:
+    // in-run A/B 46.6 -> 53.6 fps on 1.8.2's Great Plateau). On by default; LARECOMP_SYNC_LAG=0 off;
+    // LARECOMP_AB=<frames>:synclag alternates.
     // LARECOMP_SYNC_LAG=2: the lag, but the wait still covers the newest frame's last draw or dispatch that stores to
     // global memory - on the POCO the game's memory itself, which the CPU reads after this wait (vk_last_gmem_store_seq)
     static int lag = -1;
-    if (lag < 0) lag = getenv("LARECOMP_SYNC_LAG") ? atoi(getenv("LARECOMP_SYNC_LAG")) : 0;
+    if (lag < 0) lag = getenv("LARECOMP_SYNC_LAG") ? atoi(getenv("LARECOMP_SYNC_LAG")) : 1;
     extern int vk_ab(const char *what);
     int ab = vk_ab("synclag");
     bool lag_now = vk_async_on() && !flush && !whole && (ab >= 0 ? ab == 1 : lag > 0);
