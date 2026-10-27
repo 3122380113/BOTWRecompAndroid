@@ -748,6 +748,10 @@ Pedidos ainda não começados, o mais recente no fim.
   - A resposta dele: se pôr o app na lista de jogos do MagicOS muda os clocks.
 - **DLC** (#42, #40, #34; talvez o crash ao chamar o cavalo do #43) - em andamento numa sessão própria (pedido do
   usuário, 2026-10-25). O Modo Mestre vem com o primeiro pacote (#34). Avisar nas issues quando sair.
+  - Os dois pacotes extraídos para testar (2026-10-27, `romfs/` de cada um):
+    `D:\Projetos\Jogos\Android\Updates_Switch\work_dlc_master_trials` e `...\work_dlc_champions_ballad`.
+  - O trabalho em andamento (não commitado): `runtime/services/fs.c`, `runtime/services/misc.c`, `runtime/hle/movie.c`.
+  - Falta: o app instalar os pacotes (escolher a pasta), a imagem do DLC, e testar Modo Mestre, as provações e a Balada.
 - **Importar saves de emulador** (prometido no #40, 2026-10-26): os saves ficam em
   `Android/data/com.botwrecomp.android/files/<versão>/save/save_0`, fora do alcance dos gerenciadores de arquivos (nem
   o adb escreve ali: só o próprio app). Os emuladores de Switch guardam os do BOTW no mesmo formato (`0/` a `5/` com

@@ -274,6 +274,7 @@ typedef struct {
     char src[1100], obj[1100], log[1100];
     unsigned long long bytes;
     bool o0;  // (a file with a giant function: compiled at -O0 - mark_cold)
+    bool alone, marked;  // (a giant function's file: compiled with no other compiler running; mark_cold done)
 } Unit;
 
 typedef struct {
@@ -292,7 +293,7 @@ static void add_unit(Units *us, const char *src, const char *work, const char *s
     snprintf(u->log, sizeof u->log, "%s" SEP "%s.log", work, stem);
     struct stat st;
     u->bytes = stat(src, &st) == 0 ? (unsigned long long)st.st_size : 0;
-    u->o0 = false;
+    u->o0 = u->alone = u->marked = false;
 }
 
 // The flags the game code was built with (GAMELIB_CFLAGS, part of its id). zig cc reads -march=<cpu> with its own CPU
@@ -324,6 +325,12 @@ static void add_cflags(Args *a, const Tools *t) {
 // main_1022.c, NDK clang on the PC: 135-277 s with the function optnone, 15 s for the file at -O0). The lists aren't
 // part of the game code's id (GAMELIB_ID): they change how fast it is built, not what it does.
 #define HEAVY_LABELS 15000
+// ... or over HEAVY_LINES lines: 1.6.0's f_7000fb62f0 has 14,525 labels but 167,749 lines (main_536.c, 12 MB of C).
+// At -O1 it took the PC's NDK clang 526 s and 1.1 GB; on a phone that is most of an hour holding over a gigabyte while
+// the other compilers moved the bar from ~53% to ~80%, where Android ended the app for low memory (issues #25, #47,
+// #51; a Galaxy S21 on Reddit). At -O0: 21 s, though still 1.45 GB - so such a file is also compiled alone (Unit.alone).
+// The next largest function of any version: 12,249 labels, 24,513 lines (1.0.0); the next largest compile 348 MB.
+#define HEAVY_LINES 60000
 static uint64_t *g_hot;
 static size_t g_nhot;
 static unsigned long long g_cold_fns, g_heavy_fns, g_all_fns, g_cold_files;
@@ -380,8 +387,8 @@ static const char *next_def(const char *d, const char *p, uint64_t *addr) {
 // -O0 - it has a giant function, or none of its functions is hot (the same code as all of them optnone, but -O1 would
 // still run its analyses over them: 3 chunks of 1.8.2's main, NDK clang on the PC, -O1 9.1 s, -O0 4.4 s, 87% optnone
 // 6.9 s).
-static bool mark_cold(const char *src, bool *o0) {
-    *o0 = false;
+static bool mark_cold(const char *src, bool *o0, bool *heavy) {
+    *o0 = *heavy = false;
     FILE *f = fopen(src, "rb");
     if (!f) return false;
     fseek(f, 0, SEEK_END);
@@ -402,11 +409,12 @@ static bool mark_cold(const char *src, bool *o0) {
     for (const char *p = next_def(d, d, &a), *q; p && ok; p = q, a = an) {
         q = next_def(d, p + 1, &an);
         const char *stop = q ? q : d + n;
-        unsigned labels = 0;
-        for (const char *l = p; (l = memchr(l, '\n', (size_t)(stop - l))) && labels <= HEAVY_LABELS; l++)
-            labels += l[1] == 'L' && l[2] == '_';
+        unsigned labels = 0, lines = 0;
+        for (const char *l = p; (l = memchr(l, '\n', (size_t)(stop - l))) && labels <= HEAVY_LABELS && lines <= HEAVY_LINES;
+             l++)
+            labels += l[1] == 'L' && l[2] == '_', lines++;
         g_all_fns++, defs++;
-        if (labels > HEAVY_LABELS) g_heavy_fns++, *o0 = true;
+        if (labels > HEAVY_LABELS || lines > HEAVY_LINES) g_heavy_fns++, *o0 = *heavy = true;
         bool cold = g_nhot && !bsearch(&a, g_hot, g_nhot, sizeof *g_hot, cmp_u64);
         if (!cold) { hot++; continue; }
         g_cold_fns++;
@@ -700,8 +708,17 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
             if (!may_start_another(nrun, jobs)) break;
 #endif
 #ifdef __ANDROID__  // (unit 0 is the shipped entry file; a file that can't be marked just stays at -O1)
-            if (next > 0 && !mark_cold(units.u[next].src, &units.u[next].o0))
-                LOG("[gamebuild] couldn't mark cold functions in %s\n", units.u[next].src);
+            Unit *nu = &units.u[next];
+            if (next > 0 && !nu->marked) {
+                nu->marked = true;
+                if (!mark_cold(nu->src, &nu->o0, &nu->alone))
+                    LOG("[gamebuild] couldn't mark cold functions in %s\n", nu->src);
+                if (nu->alone) LOG("[gamebuild] %s has a giant function: at -O0, no other compiler beside it\n", nu->src);
+            }
+            // (a giant function's file waits for the others to finish, and nothing starts beside it: HEAVY_LINES)
+            bool alone_running = false;
+            for (int k = 0; k < nrun; k++) alone_running |= units.u[run[k].unit].alone;
+            if (alone_running || (nu->alone && nrun > 0)) break;
 #endif
             PlatProc p = start_compile(&t, &units.u[next]);
             if (!p) { snprintf(why, why_size, "the compiler didn't start"); ok = false; break; }
