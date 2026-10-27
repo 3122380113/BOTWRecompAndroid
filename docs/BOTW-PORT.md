@@ -783,6 +783,9 @@ Pedidos ainda não começados, o mais recente no fim.
       app em segundo plano;
     - de preferência só carregando. A bateria acabar no meio era a queixa original.
   - Perguntar o modelo de RAM, e pedir o `botwrecomp-log.txt` e o `botwrecomp-log-previous.txt`.
+  - O mesmo em 75-85% no #25 (OnePlus 15, ZenFone 8 Ultra, 1.6.0) e no #47 (Snapdragon 888, 1.6.0). O log do #47
+    diz **"the last run ended: low memory"**: o Android matou o app no build, com 1-1,9 GB livres e status térmico 3.
+    Ideias: um compilador só depois de uma morte por memória, e os arquivos maiores em -O0 nesse caso.
 - **Cortinas de terreno depois da cutscene de uma torre** (2026-10-26, em andamento).
   - Aparecem só quando a ativação toca a cutscene. Carregar um save já com a torre ativada não mostra nenhuma.
   - Com `LARECOMP_TEX_FULLHASH=1` não apareceram. Não é o padrão do #511 do MacNativeGames
@@ -790,12 +793,14 @@ Pedidos ainda não começados, o mais recente no fim.
   - Suspeitas: a comparação por snapshot das texturas dinâmicas (`texture_unchanged`), ou uma corrida com as threads do
     jogo que escrevem texturas enquanto a thread de render as lê.
   - Medindo o custo da verificação completa antes de decidir a correção.
-- **Sync lag seguro** (+9% de fps no Grande Platô, 82b71e2, hoje desligado em a1c4b45).
-  - O jogo lê resultados da GPU logo depois da espera (a cor da água ficou branca). No POCO a GPU escreve direto na
-    memória do jogo, sem um ponto de cópia para atrasar.
-  - Falta achar quais escritas a CPU lê (água, sondas de luz, máscaras da grama) e esperar só por elas.
-- **BOTW 1.9.0** (#28): o MacNativeGames já roda a 1.9.0 (`docs/botw-v1.9.0-port.md` deles). Grande: as rodadas de
-  patches e endereços da versão.
+- **Sync lag**: ligado por padrão desde e5d6f00 (46,6 -> 53,6 fps no A/B com o Turnip V38, a água certa). A água
+  branca vinha dos write-backs descartados com os slots cheios; desde 502088f eles esperam a GPU.
+- **BOTW 1.9.0** (#28, em andamento, 2026-10-27). SDK 21.4.1, main `cd57b23f`, romfs com 41.062 arquivos.
+  - Reconhecida (pasta `v190`, launcher, romfs, am), com o código de 1.8.2 para SDK 20 / NVN 55.
+  - Os endereços de 1.8.2 (pacing, VFR, widescreen, laço de quadros, pausa, telas, eventos, passo do controle) achados
+    por `tools/port_addrs.py`, cada um com uma só correspondência e as mesmas instruções.
+  - Falta: o primeiro boot no celular e as chamadas novas do SDK (o MacNativeGames cita `PopOpenUsers` e
+    `pl::IsRunningOnOunce`; os comandos 12/13 do áudio já respondemos).
 - **Os 16 bytes por draw como push constants:** o jogo reescreve 16 bytes de um constant buffer de 64 KB antes de cada
   draw, e cada draw copia os 64 KB (~16 MB por quadro, ~10% da thread de render). O tradutor de shaders leria esse
   trecho de outro lugar. Médio a grande.

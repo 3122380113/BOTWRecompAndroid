@@ -110,7 +110,7 @@ static uint32_t device_integer_v55(uint32_t which) {
 
 NVN(nvnDeviceGetInteger) {
     uint32_t which = (uint32_t)A(1);
-    uint32_t v = g_game_version == 182 ? device_integer_v55(which) : device_integer(which);
+    uint32_t v = g_game_version >= 182 ? device_integer_v55(which) : device_integer(which);
     if (g_game_version == 160 && which <= 1) v = which ? 311 : 53;  // (v1.6.0 needs NVN 53.x, minor >= 311: its SDK 7.3.2)
     *(int32_t *)AP(2) = (int32_t)v;
 }
@@ -1351,9 +1351,10 @@ NVN(nvnWindowSetPresentInterval) {
     static int force = -1;  // (LARECOMP_FORCE_INTERVAL=<n>, diagnosis: the game's choice replaced - slow motion if it doesn't fit)
     if (force < 0) force = getenv("LARECOMP_FORCE_INTERVAL") ? atoi(getenv("LARECOMP_FORCE_INTERVAL")) : 0;
     if (force > 0) c->x[1] = (uint64_t)force;
-    // BOTW 1.8.2's frame loop (lr 0x7001012a34, x19 = the framework; [fw+0x234] the highest interval it may pick):
-    // never 3 while the runtime sets the game's clock (runtime/hle/framepace.c), as SavageWindRecomp does
-    if (framepace_on() && c->x[30] == GUEST_LO + 0x1012a34ull) {
+    // BOTW 1.8.2's frame loop (lr 0x7001012a34, 1.9.0: 0x70011267c4; x19 = the framework; [fw+0x234] the highest
+    // interval it may pick): never 3 while the runtime sets the game's clock (runtime/hle/framepace.c), as
+    // SavageWindRecomp does
+    if (framepace_on() && c->x[30] == GUEST_LO + (g_game_version == 190 ? 0x11267c4ull : 0x1012a34ull)) {
         uint32_t *max_iv = (uint32_t *)(uintptr_t)(c->x[19] + 0x234);
         if (*max_iv > 2) *max_iv = 2;
     }

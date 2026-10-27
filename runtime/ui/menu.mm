@@ -520,7 +520,7 @@ static void tab_display(void) {
     const char *aspects[] = {"Unlocked", "Original 16:9"};
     opt_choice("Aspect ratio", &g_settings.aspect, aspects, 2, ASPECT_UNLOCKED,
                "Unlocked: the view fills the screen, so wider screens show more of Hyrule, and the HUD moves out to its "
-               "edges (menus stay in the middle). Game version 1.8.2 (1.0.0 and 1.6.0 keep 16:9 with bars); a change applies "
+               "edges (menus stay in the middle). Game versions 1.8.2 and 1.9.0 (1.0.0 and 1.6.0 keep 16:9 with bars); a change applies "
                "when the game starts again (Quit -> Return to start, then Play). Original 16:9: the game's own framing, "
                "with bars.");
 #ifndef __ANDROID__  // (Android: always the whole screen)
@@ -552,14 +552,14 @@ static void tab_display(void) {
         // 30 - their frame loop picks 2 or 3 vsyncs - so a 60 there counts as 30. (On the start screen the version
         // isn't loaded yet: the 1.8.2 choices.)
         extern int g_game_version;
-        bool sixty = g_game_version == 0 || g_game_version == 182;
+        bool sixty = g_game_version == 0 || g_game_version >= 182;
         if (!sixty && g_settings.fps_mode > 1) g_settings.fps_mode = 1;
         static const char *fr[] = {"Auto (20 / 30)", "30 fps"};
         static const char *fr60[] = {"Auto (30 / 60)", "30 fps", "60 fps"};
         opt_choice("Frame rate", &g_settings.fps_mode, sixty ? fr60 : fr, sixty ? 3 : 2, 1,
                    sixty ? "Auto: 60 fps where your device keeps up, 30 where it doesn't (the game's clock stays right "
                            "either way). 30 fps: steady and cooler - the phone heats less. 60 fps: always aims for 60 "
-                           "(game version 1.8.2; 1.0.0 and 1.6.0 run at 30)."
+                           "(game versions 1.8.2 and 1.9.0; 1.0.0 and 1.6.0 run at 30)."
                          : "Auto: the game picks, as on the Switch, and drops to 20 fps where a frame doesn't fit in 30. "
                            "30 fps: always 30 - where a frame takes longer, the game runs slightly slower instead of "
                            "dropping to 20.");

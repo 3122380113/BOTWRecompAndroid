@@ -36,7 +36,7 @@ bool rt_dev_mode(void);           // dev / portable mode (rule 2 above): e.g. a 
 // starting directory or the executable's parent; NULL = shipped builds only). Absolute path in out; false = none.
 bool rt_resource(const char *name, const char *dev_rel, char *out, size_t n);
 
-// Game versions (100, 160, 182: rt.h game_version_of_build)
+// Game versions (100, 160, 182, 190: rt.h game_version_of_build)
 int rt_game_version(void);                                // the one whose folder is the data root
 bool rt_select_game_version(int v);                       // the one the next start runs (the app restarts into it)
 bool rt_version_root(int v, char *out, size_t n);         // its folder (absolute)
