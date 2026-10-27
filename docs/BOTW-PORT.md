@@ -786,6 +786,9 @@ Pedidos ainda não começados, o mais recente no fim.
     com o sync lag desligado, com as leituras no lugar desligadas e com o LRZ desligado. Suspeita: frestas entre os
     tiles do terreno (os vértices da borda de dois tiles vizinhos com alturas um pouco diferentes). Próximo passo:
     comparar as alturas das bordas de dois tiles no shader do terreno (o mesmo caminho do atlas de alturas e das cortinas).
+    **Corrigido** (2026-10-27): com filtragem nearest nos vertex shaders as frestas sumiam; a causa é o peso bilinear
+    (o Switch usa 8 bits de posição sub-texel, o Adreno mais). As coordenadas dos vertex shaders agora são arredondadas a
+    1/256 de texel (`LARECOMP_NO_VS_SNAP=1` desliga). Testado no POCO: sem frestas, terreno normal. Avisar no #21.
 - **#23** (RP Nova T26, 1.0.0): o `ActorInfo.product.sbyml` está na pasta, mas a imagem tinha 39.677 arquivos e o
   jogo para ao carregá-lo. Esperando a mensagem da verificação de setup da 0.1.11 (qual arquivo falta) e o tamanho
   exato do arquivo (760.223 bytes).
