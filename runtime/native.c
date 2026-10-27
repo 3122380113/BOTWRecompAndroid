@@ -23,6 +23,7 @@
 #include "hle.h"
 #include "kernel.h"
 #include "rt.h"
+#include "settings.h"
 
 typedef struct { uint64_t tp; Cpu *cpu; } NativeTabEnt;
 // Open addressing from the hashed slot (native_gate.S: the same hash; up to 64 probes, past the end: no wrap). tp 0:
@@ -35,11 +36,14 @@ static pthread_mutex_t tab_lock = PTHREAD_MUTEX_INITIALIZER;
 void native_enter(Cpu *c, uint64_t addr);  // native_gate.S
 extern char native_svc_gate[], native_hle_gate[];
 
-static int g_on = -1;
-bool native_on(void) {
-    if (g_on < 0) g_on = getenv("LARECOMP_NATIVE") && atoi(getenv("LARECOMP_NATIVE"));
-    return g_on;
+// Chosen per boot (main.c boot): the setting (Native game code), or LARECOMP_NATIVE=0/1 over it
+static bool g_on;
+bool native_wanted(void) {
+    const char *e = getenv("LARECOMP_NATIVE");
+    return e ? atoi(e) != 0 : g_settings.native_code;
 }
+void native_begin_boot(void) { g_on = native_wanted(); }
+bool native_on(void) { return g_on; }
 
 static uint64_t tp_now(void) { uint64_t v; __asm__ volatile("mrs %0, tpidr_el0" : "=r"(v)); return v; }
 static unsigned tab_idx(uint64_t tp) { return (unsigned)(((tp ^ (tp >> 12)) >> 12) & 4095); }
@@ -155,6 +159,75 @@ static uint64_t stub_tls(uint32_t *s, uint64_t at, uint64_t site, int n, int off
     return 80;
 }
 
+// ---- the game's fixes (tools/patches.py, the same ones at the same addresses: there they are C in place of one
+// instruction of the generated code). Here a stub calls native_patch_gate with the fix's number; its handler works on
+// the Cpu and says how to go on: 0 run the original instruction (from the stub) and go on after it, 1 the fix's
+// other address, 2 return from the function (ret), 3 go on after the instruction without running it.
+extern char native_patch_gate[];
+int64_t rt_frame_ticks(int64_t ticks);      // nvn/objects.c
+int rt_frame_wait(void);                    // hle/framepace.c
+void rt_vfr_update(uint64_t vfr);
+void rt_persp_update(uint64_t proj);        // hle/widescreen.c
+uint32_t rt_persp_aspect(uint64_t proj);
+static int fix_clustered_100(Cpu *c) {  // act::ClusteredRenderer's teardown with a null display-list heap
+    if (c->x[0]) return 0;
+    c->x[21] = c->x[20] + 0xc60;
+    return 1;
+}
+static int fix_clustered_160(Cpu *c) {
+    if (c->x[0]) return 0;
+    c->x[8] = *(const uint32_t *)(uintptr_t)(c->x[20] + 0xc9c);
+    return 1;
+}
+static int fix_ticks_100(Cpu *c) { c->x[9] = (uint64_t)rt_frame_ticks(*(const int64_t *)(uintptr_t)(c->x[19] + 0x240)); return 3; }
+static int fix_ticks_160(Cpu *c) { c->x[8] = (uint64_t)rt_frame_ticks(*(const int64_t *)(uintptr_t)(c->x[19] + 0x248)); return 3; }
+static int fix_frame_wait(Cpu *c) { (void)c; return rt_frame_wait() ? 2 : 0; }
+static int fix_vfr(Cpu *c) { rt_vfr_update(c->x[19]); return 0; }
+static int fix_persp_matrix(Cpu *c) { rt_persp_update(c->x[0]); return 0; }
+static int fix_persp_aspect(Cpu *c) { c->v[0] = rt_persp_aspect(c->x[0]); return 3; }
+typedef struct { int version; uint64_t addr, alt; uint32_t word; int (*fn)(Cpu *); const char *what; } Fix;
+static const Fix fixes[] = {  // (canonical addresses, 0x7000000000 + the offset in main)
+    {100, 0x70010c1aa0, 0x70010c1ad8, 0xf9400008, fix_clustered_100, "ClusteredRenderer teardown"},
+    {100, 0x7000c4f4d4, 0, 0xf9412269, fix_ticks_100, "frame duration"},
+    {160, 0x7001861440, 0x7001861470, 0xf9400008, fix_clustered_160, "ClusteredRenderer teardown"},
+    {160, 0x700161495c, 0, 0xf9412668, fix_ticks_160, "frame duration"},
+    {182, 0x7000d811fc, 0, 0xa9bd7bfd, fix_frame_wait, "frame wait"},
+    {182, 0x70014092f4, 0, 0xb9407a68, fix_vfr, "VFR ratio"},
+    {182, 0x7000da13f4, 0, 0xbd409800, fix_persp_matrix, "projection matrix"},
+    {182, 0x7000da13d8, 0, 0xbd40b000, fix_persp_aspect, "projection aspect"},
+    {190, 0x7000e9487c, 0, 0xa9bd7bfd, fix_frame_wait, "frame wait"},
+    {190, 0x700151d494, 0, 0xb9407a68, fix_vfr, "VFR ratio"},
+    {190, 0x7000eb4a44, 0, 0xbd409800, fix_persp_matrix, "projection matrix"},
+    {190, 0x7000eb4a28, 0, 0xbd40b000, fix_persp_aspect, "projection aspect"},
+};
+int native_patch_c(Cpu *c, uint32_t i) { return fixes[i].fn(c); }
+
+static uint64_t stub_fix(uint32_t *s, uint64_t at, uint64_t site, uint32_t id, uint32_t orig, uint64_t alt) {
+    const uint32_t pop[3] = {enc_ldp(16, 17, SP, 0), enc_ldr(30, SP, 16), 0x9100C3FFu};  // (the frame back, add sp #48)
+    s[0] = 0xD100C3FFu;                         // sub sp, sp, #48
+    s[1] = enc_stp(16, 17, SP, 0);
+    s[2] = enc_str(30, SP, 16);
+    s[3] = 0xD2800011u | (id << 5);             // movz x17, #id
+    s[4] = enc_ldr_lit(16, at + 16, at + 112);
+    s[5] = 0xD63F0200u;                         // blr x16 (native_patch_gate: the way on at [sp + 24])
+    s[6] = enc_ldr(16, SP, 24);
+    s[7] = 0xB4000000u | (15 << 5) | 16;        // cbz x16, 22 (+60)
+    s[8] = 0x37080000u | (5 << 5) | 16;         // tbnz w16, #1, 13 (+20)
+    memcpy(&s[9], pop, 12);                     // 1: the fix's other address
+    s[12] = alt ? enc_b(at + 48, alt) : 0xD4200000u;
+    s[13] = 0x37000000u | (5 << 5) | 16;        // tbnz w16, #0, 18 (+20)
+    memcpy(&s[14], pop, 12);                    // 2: return
+    s[17] = 0xD65F03C0u;                        // ret
+    memcpy(&s[18], pop, 12);                    // 3: on, without the instruction
+    s[21] = enc_b(at + 84, site + 4);
+    memcpy(&s[22], pop, 12);                    // 0: the instruction, then on
+    s[25] = orig;
+    s[26] = enc_b(at + 104, site + 4);
+    s[27] = 0xD503201Fu;                        // nop (the literal 8-aligned)
+    memcpy(&s[28], &(uint64_t){(uint64_t)(uintptr_t)native_patch_gate}, 8);
+    return 128;
+}
+
 static void prepare_module(Module *m) {
     uint32_t *text = (uint32_t *)(uintptr_t)(m->base + m->text_off);
     uint64_t nw = m->text_size / 4, nsites = 0;
@@ -163,7 +236,9 @@ static void prepare_module(Module *m) {
         if ((w & 0xFFE0001Fu) == 0xD4000001u || (w & ~31u) == MRS_TPIDR || (w & ~31u) == MRS_TPIDRRO || (w & ~31u) == MSR_TPIDR)
             nsites++;
     }
-    uint64_t area = (m->base + m->size + 0xFFFF) & ~0xFFFFull, asize = (nsites * 80 + 0x3FFF) & ~0x3FFFull;
+    bool is_main = m->base == MAIN_BASE;
+    uint64_t nfix = sizeof fixes / sizeof *fixes;
+    uint64_t area = (m->base + m->size + 0xFFFF) & ~0xFFFFull, asize = (nsites * 80 + nfix * 128 + 0x3FFF) & ~0x3FFFull;
     if (!asize) asize = 0x4000;
     plat_commit(area, asize);
     uint64_t at = area;
@@ -181,13 +256,25 @@ static void prepare_module(Module *m) {
         text[i] = enc_b(site, at);
         at += len;
     }
+    unsigned nfixed = 0;
+    for (uint32_t f = 0; is_main && f < nfix; f++) {
+        if (fixes[f].version != g_game_version) continue;
+        uint64_t site = MAIN_BASE + (fixes[f].addr - 0x7000000000ull);
+        uint64_t alt = fixes[f].alt ? MAIN_BASE + (fixes[f].alt - 0x7000000000ull) : 0;
+        uint32_t *w = (uint32_t *)(uintptr_t)site;
+        if (*w != fixes[f].word) FATAL("[native] fix '%s' at %llx: %08x, not %08x\n", fixes[f].what,
+                                       (unsigned long long)fixes[f].addr, *w, fixes[f].word);
+        at += stub_fix((uint32_t *)(uintptr_t)at, at, site, f, *w, alt);
+        *w = enc_b(site, at - 128);
+        nfixed++;
+    }
     uint64_t t0 = m->base + m->text_off, tsz = (m->text_size + 0xFFF) & ~0xFFFull;
     __builtin___clear_cache((char *)(uintptr_t)t0, (char *)(uintptr_t)(t0 + tsz));
     __builtin___clear_cache((char *)(uintptr_t)area, (char *)(uintptr_t)(area + asize));
     if (mprotect((void *)(uintptr_t)t0, tsz, PROT_READ | PROT_EXEC) || mprotect((void *)(uintptr_t)area, asize, PROT_READ | PROT_EXEC))
         FATAL("[native] %s: the code can't be made executable (errno %d)\n", m->name, errno);
-    LOG("[native] %s: %u svc, %u TLS, %u counter reads rewritten; stubs at %llx (%llu KB)\n", m->name, nsvc, ntls, ncnt,
-        (unsigned long long)area, (unsigned long long)(asize >> 10));
+    LOG("[native] %s: %u svc, %u TLS, %u counter reads rewritten, %u fixes; stubs at %llx (%llu KB)\n", m->name, nsvc,
+        ntls, ncnt, nfixed, (unsigned long long)area, (unsigned long long)(asize >> 10));
 }
 
 // The HLE slots as code: slot i = movz x17, #i; b trampoline (-> native_hle_gate)
@@ -224,6 +311,8 @@ void native_prepare(void) {
 uint64_t native_ticks(void) { uint64_t v; __asm__ volatile("mrs %0, cntvct_el0" : "=r"(v)); return v; }
 #else
 #include "rt.h"
+bool native_wanted(void) { return false; }
+void native_begin_boot(void) {}
 bool native_on(void) { return false; }
 void native_prepare(void) {}
 void native_call(Cpu *c, uint64_t addr) { (void)c; (void)addr; }

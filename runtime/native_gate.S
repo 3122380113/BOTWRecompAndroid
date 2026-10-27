@@ -237,6 +237,47 @@ native_svc_gate:
     ret
     .size native_svc_gate, .-native_svc_gate
 
+// From a fix's stub (native.c stub_fix): the svc gate's frame and registers, x17 = the fix's number; the handler's
+// answer (how to go on) goes back to the stub at [sp + 24].
+    .globl native_patch_gate
+    .hidden native_patch_gate
+    .type native_patch_gate, %function
+native_patch_gate:
+    str x17, [sp, #24]
+    str x15, [sp, #32]
+    CPU_LOOKUP x16, x17, x15
+    ldr x15, [sp, #32]
+    SAVE_X0_15 x16
+    ldp x0, x1, [sp]
+    stp x0, x1, [x16, #128]
+    SAVE_X18_29 x16
+    ldr x0, [sp, #16]
+    str x0, [x16, #240]
+    add x0, sp, #48
+    str x0, [x16, #C_SP]
+    mrs x0, nzcv
+    str x0, [x16, #C_NZCV]
+    SAVE_Q 32, x16, x0
+    str x30, [x16, #C_GATE_RET]
+    mov x19, x16
+    ldr w1, [sp, #24]
+    ldr x18, [x19, #C_HOST_X18]
+    ldr x0, [x19, #C_HOST_SP]
+    mov sp, x0
+    mov x0, x19
+    bl native_patch_c
+    mov x16, x19
+    ldr x1, [x16, #C_SP]
+    sub sp, x1, #48
+    str x0, [sp, #24]
+    ldr x0, [x16, #C_NZCV]
+    msr nzcv, x0
+    LOAD_Q 32, x16, x0
+    ldr x30, [x16, #C_GATE_RET]
+    LOAD_GUEST_X x16
+    ret
+    .size native_patch_gate, .-native_patch_gate
+
 // From an HLE slot (native.c prepare_hle): a call into the runtime. x17 = the slot, x30 = the guest's return, x16 free
 // (as at any call). The arguments go into the Cpu, the function runs on the host stack (native_hle_c), and the
 // registers come back from the Cpu - its results, and whatever the function set there.

@@ -202,10 +202,12 @@ static std::string check_copied_files(const std::string &root) {
     return "";
 }
 
+extern "C" bool native_wanted(void);  // (Native game code: nothing to build - runtime/native.c)
+
 // "" = ready to play, else what is wrong
 static std::string check_game_files(const std::string &root) {
     std::string why = check_copied_files(root);
-    if (why.empty() && !gamelib_present(root.c_str())) return "The game code needs building";
+    if (why.empty() && !native_wanted() && !gamelib_present(root.c_str())) return "The game code needs building";
     return why;
 }
 
@@ -351,6 +353,7 @@ static float extract_progress(void) {
 
 // Builds the game code from the copied files in dir (a few minutes); false = failed (the job line says so)
 static bool build_game_code(const std::string &dir) {
+    if (native_wanted()) return true;  // (the game's own code runs as it is)
     int cores = SDL_GetNumLogicalCPUCores(), ram_gb = SDL_GetSystemRAM() / 1024;
     GameBuildOpts o = {build_progress, cores < ram_gb - 2 ? cores : ram_gb - 2 > 1 ? ram_gb - 2 : 1};
     char why[256] = "";

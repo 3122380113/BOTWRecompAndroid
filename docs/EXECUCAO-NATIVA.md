@@ -123,5 +123,21 @@ certa, sem crash), sem usar o `botwgame.so`.
   issues #25/#47/#51/#53), menos memória e menos espaço. Isso fica para decidir; faltariam os `patches.py` como
   trampolins (60 fps, widescreen, as correções de cada versão), o reinício para a tela inicial e o relatório de crash.
 
+## Depois do P0: sem compilação no celular (2026-10-27)
+
+- **Configuração** "Native game code (experimental)" (Vídeo, Android; `native_code` no ini, desligada por padrão;
+  `LARECOMP_NATIVE=0/1` passa por cima): com ela o boot não carrega o `botwgame.so` e a configuração dos arquivos do
+  jogo pula a compilação (o launcher não pede mais "The game code needs building").
+- **As correções do `tools/patches.py`** viraram stubs (`stub_fix`, `native_patch_gate`): o handler em C trabalha no
+  `Cpu` e escolhe como seguir - a instrução original (copiada no stub), pular ela, o outro endereço da correção, ou
+  `ret`. As 12 (1.0.0: 2, 1.6.0: 2, 1.8.2: 4, 1.9.0: 4) conferem a palavra original antes de trocar.
+- **Reinício** (`LARECOMP_REBOOT_AT=3600:game`): 45 threads paradas em 20 ms, o jogo desmontado e montado de novo,
+  nativo outra vez até a tela de título. As threads param nos `svc` e nas chamadas ao runtime, como antes.
+- **Relatório de crash:** uma falha dentro do código do jogo copia os registradores do sinal para o `Cpu` (o
+  relatório mostra os do jogo e a cadeia de chamadores) e nomeia o pc pelos símbolos dos módulos (`main+offset`).
+- **Testado:** 1.9.0 (título, mundo, reinício) e 1.0.0 (título, mundo). Uma rodada da 1.0.0 caiu depois de ~25 s no
+  mundo (`nvnBufferGetAddress` recebeu do jogo um objeto com 0x600000001 no lugar do ponteiro); a mesma rodada de novo
+  passou de 2 min sem cair: uma corrida que o tempo do nativo expõe. A 1.6.0 e a 1.8.2 não foram testadas.
+
 Créditos, se algo for aproveitado: o reescritor e os stubs do d2r-mobile (MIT, com o aviso dele), as ideias do
 totk-mobile (Apache-2.0: o aviso de licença e um NOTICE se houver código) e do MacNativeGames (MIT), no README.

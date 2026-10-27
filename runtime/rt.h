@@ -112,6 +112,8 @@ int ui_run(void);  // window loop; returns the reboot kind requested (the window
 // ---- helpers
 void guest_call(Cpu *c, uint64_t addr);   // call guest function at addr (saves/restores x30)
 // ---- the game's own code on the CPU (LARECOMP_NATIVE=1, runtime/native.c: a prototype)
+bool native_wanted(void);                 // (the setting, or LARECOMP_NATIVE)
+void native_begin_boot(void);             // native_on() for this boot
 bool native_on(void);
 void native_prepare(void);                // the loaded modules rewritten and made executable
 void native_call(Cpu *c, uint64_t addr);  // guest_call's native path

@@ -519,6 +519,13 @@ void rt_fault_report(const char *what, uint64_t fa, uint64_t pc, uint64_t lr) {
     fatal_gate();
     uint64_t po = 0, lo = 0;
     const char *ps = host_sym(pc, &po), *ls = host_sym(lr, &lo);
+    if (pc >= GUEST_LO && pc < GUEST_HI) {  // (the game's own code, LARECOMP_NATIVE: named by the modules' symbols)
+        ps = loader_symbol_at(pc, &po);
+        if (lr >= GUEST_LO && lr < GUEST_HI) ls = loader_symbol_at(lr, &lo);
+        fprintf(stderr, "\n*** %s accessing %#llx in the game's code\n    guest pc %llx (main+%llx, %s+%llx)\n",
+                what, (unsigned long long)fa, (unsigned long long)pc, (unsigned long long)(pc - MAIN_BASE), ps ? ps : "?",
+                (unsigned long long)po);
+    }
     fprintf(stderr, "\n*** %s accessing %#llx\n    host pc %llx (%s+%llx)\n    host lr %llx (%s)\n", what,
             (unsigned long long)fa, (unsigned long long)pc, ps ? ps : "?", (unsigned long long)po,
             (unsigned long long)lr, ls ? ls : "?");
