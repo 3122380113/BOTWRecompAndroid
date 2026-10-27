@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "../../hle.h"
 #include "../../kernel.h"
 #include "shaders.h"
 #include "vk.h"
@@ -3585,11 +3586,20 @@ static bool ubo_direct(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out
 // copies only the rows the updates write, as they are when it runs (the render thread wrote them through:
 // CMD_UPDATE_UNIFORM_BUFFER), into its stage's patch buffer, which its shaders read those rows from. Only for a buffer
 // whose updated rows fit in 64 in a row, one such buffer per stage; anything else is copied as before.
-// LARECOMP_NO_CB_WINDOW=1: off (shaders as before); LARECOMP_AB=<frames>:cbwin alternates it (the shaders keep the test).
+// LARECOMP_CB_WINDOW=1: on (off by default, below); LARECOMP_AB=<frames>:cbwin alternates it (the shaders keep the test).
+// Off by default since 2026-10-27: in play (1.9.0) the water turned white and the terrain showed stretched "curtains",
+// and objects far away grew spikes on a hit - the buffer read in place while the CPU already writes the next frame's
+// rows there (the sync lag lets the CPU run a frame ahead). LARECOMP_CB_WINDOW=1: on (a test).
 static bool cbwin_wanted(void) {
-    static int off = -1;
-    if (off < 0) off = getenv("LARECOMP_NO_CB_WINDOW") != NULL;
-    return !off && gmem_placed;
+    static int on = -1;
+    if (on < 0) on = getenv("LARECOMP_CB_WINDOW") && atoi(getenv("LARECOMP_CB_WINDOW"));
+    return on && gmem_placed;
+}
+// (the update marks are guest addresses: a reboot's game puts other things there)
+RT_ON_RESET(ubo_inline_reset) {
+    memset((void *)ubo_inline, 0, sizeof ubo_inline);
+    memset((void *)ubo_inline_span, 0, sizeof ubo_inline_span);
+    atomic_fetch_add(&ubo_inline_gen, 1);
 }
 
 // The rows updates write inside [addr, addr + size): the first one's guest address | (the row count (1..64) - 1) << 48,
