@@ -521,6 +521,28 @@ extern "C" const char *vk_gpu_desc(void);  // ("Adreno (TM) 830 - Turnip")
 static std::string g_log_folder;  // its name ("Download/BOTWRecomp"), "" with none
 static bool g_log_folder_read;
 
+static std::string app_version() {  // BOTWRecompAndroidActivity.appVersion, asked once ("0.2.0-beta")
+    static std::string v;
+    static bool read;
+    if (read) return v;
+    read = true;
+    JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
+    jobject act = (jobject)SDL_GetAndroidActivity();
+    if (!env || !act) return v;
+    jclass c = env->GetObjectClass(act);
+    jmethodID m = env->GetStaticMethodID(c, "appVersion", "()Ljava/lang/String;");
+    jstring s = m ? (jstring)env->CallStaticObjectMethod(c, m) : NULL;
+    if (env->ExceptionCheck()) { env->ExceptionClear(); s = NULL; }
+    if (s) {
+        const char *t = env->GetStringUTFChars(s, NULL);
+        if (t) v = t, env->ReleaseStringUTFChars(s, t);
+        env->DeleteLocalRef(s);
+    }
+    env->DeleteLocalRef(c);
+    env->DeleteLocalRef(act);
+    return v;
+}
+
 static void log_folder_read() {  // (BOTWRecompAndroidActivity.logFolderName, once: then from each pick)
     JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
     jobject act = (jobject)SDL_GetAndroidActivity();
@@ -2268,7 +2290,8 @@ extern "C" void launcher_run(const char *root) {
                     if (bold) dl->AddText(font, size, ImVec2(p.x + 0.7f * s, p.y), col, t);
                 };
 #ifdef __ANDROID__
-                std::string ver;  // (the PC version's label: not this app's)
+                std::string ver = app_version();  // this app's versionName, not the PC version's tag
+                if (!ver.empty()) ver = tag_label(ver, true);  // "Version 0.2.0-beta", as the PC version shows its own
 #else
                 std::string ver = tag_label(LARECOMP_VERSION, true);
 #endif

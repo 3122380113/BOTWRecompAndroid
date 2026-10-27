@@ -407,6 +407,14 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
     }
 
     // The folder's name for the settings page ("Download/BOTWRecomp"); "" with none
+    public static String appVersion() {  // versionName ("0.2.0-beta"), for the start screen's corner
+        try {
+            return self.getPackageManager().getPackageInfo(self.getPackageName(), 0).versionName;
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
     public static String logFolderName() {
         Uri tree = logTree();
         if (tree == null) return "";
