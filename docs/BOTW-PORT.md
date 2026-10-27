@@ -748,7 +748,12 @@ Pedidos ainda não começados, o mais recente no fim.
   - Os dois pacotes extraídos para testar (2026-10-27, `romfs/` de cada um):
     `D:\Projetos\Jogos\Android\Updates_Switch\work_dlc_master_trials` e `...\work_dlc_champions_ballad`.
   - O trabalho em andamento (não commitado): `runtime/services/fs.c`, `runtime/services/misc.c`, `runtime/hle/movie.c`.
-  - Falta: o app instalar os pacotes (escolher a pasta), a imagem do DLC, e testar Modo Mestre, as provações e a Balada.
+  - Feito em 15c8323 (2026-10-27): Configurações > DLC instala a imagem (`dlc/aoc.bin`, 52 s no POCO), e a 1.8.2
+    mostra Modo mestre, "Conteúdo extra adquirido" e "DLC Ver.3.0".
+  - Visto uma vez: na tela de título com o Modo mestre escolhido, o menu ficou em câmera lenta (com 30 fps estáveis no
+    log, sem compilações nem esperas) e depois voltou ao normal sozinho; talvez enquanto o jogo carrega os recursos do
+    modo. Observar.
+  - Falta testar jogando: o Modo mestre, a Provação da Espada, a Balada e os itens do DLC (e o cavalo do #43).
 - **Importar saves de emulador** (prometido no #40, 2026-10-26): os saves ficam em
   `Android/data/com.botwrecomp.android/files/<versão>/save/save_0`, fora do alcance dos gerenciadores de arquivos (nem
   o adb escreve ali: só o próprio app). Os emuladores de Switch guardam os do BOTW no mesmo formato (`0/` a `5/` com
