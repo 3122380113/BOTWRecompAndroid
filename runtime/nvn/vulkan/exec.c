@@ -1471,10 +1471,17 @@ static uint64_t wb_max(void) {  // (LARECOMP_WRITEBACK_MAX=<bytes>: a larger lim
 // Link and the NPCs into the ground without them. LARECOMP_WB_LINEAR=0: off.
 #define WB_LINEAR_MAX (512u * 1024)
 #define WB_SLOT (WB_MAX > WB_LINEAR_MAX ? WB_MAX : WB_LINEAR_MAX)
-#define WB_SLOTS 32
-typedef struct { uint64_t seq, addr, pitch; uint32_t wb, hb, bpb, bh, fmt; bool busy; } WbEntry;  // (pitch: linear rows, 0: block-linear)
+// Two pools of slots: WB_SMALL of WB_MAX bytes for the small targets, WB_BIG of WB_SLOT for the linear ones (the terrain
+// heights). A 1.9.0 frame queues ~30 write-backs (1x1 to 24x24: exposure, depth bounds, the feet's 1x1 targets) and 32
+// slots of 512 KB each - all of them sized for a terrain tile - were full every frame once its previous one was still
+// on the GPU: the CPU waited for the GPU ~12 times a second, and the game stuttered (2026-10-27, 8,700 waits in 20
+// minutes). Now four frames of small ones fit, in about as much memory as before.
+#define WB_SMALL 128
+#define WB_BIG 32
+#define WB_SLOTS (WB_SMALL + WB_BIG)
+typedef struct { uint64_t seq, addr, pitch, off; uint32_t wb, hb, bpb, bh, fmt, size; bool busy; } WbEntry;  // (pitch: linear rows, 0: block-linear; off, size: its slot in wb_buf)
 static WbEntry wb_ent[WB_SLOTS];
-static int wb_next;
+static int wb_next_small, wb_next_big;
 static VkBuffer wb_buf;
 static VmaAllocation wb_mem;
 static uint8_t *wb_ptr;
@@ -1510,7 +1517,8 @@ static void wb_queue(NvnTexture *t) {
     TexBackend *b = t->backend;
     pthread_mutex_lock(&wb_lock);
     if (!wb_buf) {
-        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = (VkDeviceSize)WB_SLOT * WB_SLOTS,
+        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                 .size = (VkDeviceSize)WB_MAX * WB_SMALL + (VkDeviceSize)WB_SLOT * WB_BIG,
                                  .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
         VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
                                       .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT};
@@ -1518,7 +1526,14 @@ static void wb_queue(NvnTexture *t) {
         VK_CHECK(vmaCreateBuffer(g_vk.vma, &bi, &ai, &wb_buf, &wb_mem, &info));
         wb_ptr = info.pMappedData;
     }
-    WbEntry *e = &wb_ent[wb_next];
+    // (the slot by the copy's size: a small one when it fits WB_MAX, a big one else)
+    const FormatInfo *qfi = t->layout.fmt;
+    LevelLayout ql = tegra_level(&t->layout, 0);  // (wb_apply reads the level's padded blocks: the larger of the two)
+    uint64_t qbpb = qfi ? qfi->bpb : 16, need = (uint64_t)t->width * t->height * qbpb, padded = (uint64_t)ql.wb * ql.hb * qbpb;
+    bool small = (need > padded ? need : padded) <= WB_MAX;
+    int *next = small ? &wb_next_small : &wb_next_big;
+    int base = small ? 0 : WB_SMALL, count = small ? WB_SMALL : WB_BIG;
+    WbEntry *e = &wb_ent[base + *next];
     if (e->busy) {
         // Every slot still waits for the GPU. Dropped, the target's texels never reached memory: a tower's cutscene
         // draws the region's terrain height tiles (8 levels of 256x256 a tile) in a burst, the heights stayed stale and
@@ -1540,17 +1555,18 @@ static void wb_queue(NvnTexture *t) {
         vk_wait_seq(seq);  // (lands the finished write-backs: cq_resolve_done -> wb_apply)
         wb_apply(seq);
         pthread_mutex_lock(&wb_lock);
-        e = &wb_ent[wb_next];
+        e = &wb_ent[base + *next];
         if (e->busy) { pthread_mutex_unlock(&wb_lock); return; }  // (should not happen: still busy after the wait)
     }
-    int slot = wb_next;
-    wb_next = (wb_next + 1) % WB_SLOTS;
+    int slot = *next;
+    *next = (*next + 1) % count;
+    uint64_t off = small ? (uint64_t)slot * WB_MAX : (uint64_t)WB_MAX * WB_SMALL + (uint64_t)slot * WB_SLOT;
     const FormatInfo *fi = t->layout.fmt;
     LevelLayout l = tegra_level(&t->layout, 0);
     extern uint64_t nvn_linear_rt_pitch(uint64_t row_bytes);
     *e = (WbEntry){.seq = submit_seq + 1, .addr = t->addr, .wb = l.wb, .hb = l.hb, .bpb = fi->bpb,
                    .pitch = (t->flags & 0x10) ? t->stride : (t->flags & 0x40) ? nvn_linear_rt_pitch((uint64_t)l.wb * fi->bpb) : 0,
-                   .bh = l.block_height_log2, .fmt = t->format, .busy = true};
+                   .bh = l.block_height_log2, .fmt = t->format, .off = off, .size = small ? WB_MAX : WB_SLOT, .busy = true};
     atomic_store(&g_wb_seq, e->seq);
     pthread_mutex_unlock(&wb_lock);
     {   // LARECOMP_LOG_WB_FRAME=<n>: every write-back of every n-th frame - size, format, flags, submission (the frame's
@@ -1563,7 +1579,7 @@ static void wb_queue(NvnTexture *t) {
     }
     VkCommandBuffer cb = vk_cmd();
     vk_full_barrier(cb);
-    VkBufferImageCopy c = {.bufferOffset = (VkDeviceSize)slot * WB_SLOT, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+    VkBufferImageCopy c = {.bufferOffset = (VkDeviceSize)off, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                            .imageExtent = {t->width, t->height, 1}};
     vkCmdCopyImageToBuffer(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, wb_buf, 1, &c);
     VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
@@ -1590,17 +1606,17 @@ static void wb_apply(uint64_t done) {
     for (int i = 0; i < WB_SLOTS; i++) {
         WbEntry *e = &wb_ent[i];
         if (!e->busy || e->seq > done) continue;
-        vmaInvalidateAllocation(g_vk.vma, wb_mem, (VkDeviceSize)i * WB_SLOT, WB_SLOT);
+        vmaInvalidateAllocation(g_vk.vma, wb_mem, (VkDeviceSize)e->off, e->size);
         if (e->pitch)
             for (uint32_t y = 0; y < e->hb; y++)
-                memcpy((uint8_t *)(uintptr_t)(e->addr + y * e->pitch), wb_ptr + (size_t)i * WB_SLOT + (size_t)y * e->wb * e->bpb, (size_t)e->wb * e->bpb);
-        else tegra_swizzle(wb_ptr + (size_t)i * WB_SLOT, (uint8_t *)(uintptr_t)e->addr, e->wb, e->hb, 1, e->bpb, e->bh, 0);
+                memcpy((uint8_t *)(uintptr_t)(e->addr + y * e->pitch), wb_ptr + (size_t)e->off + (size_t)y * e->wb * e->bpb, (size_t)e->wb * e->bpb);
+        else tegra_swizzle(wb_ptr + (size_t)e->off, (uint8_t *)(uintptr_t)e->addr, e->wb, e->hb, 1, e->bpb, e->bh, 0);
         {   // LARECOMP_LOG_WB_NAN=1: the auto exposure's small targets - inf / NaN in them, and a black frame (the
             // 2x2 luminance of the previous image near 0) with the 12x1 parameters and the 1x1 average at that point
             static int on = -1;
             if (on < 0) on = getenv("LARECOMP_LOG_WB_NAN") != NULL;
             static float p12[12][3], p1[3];
-            const uint8_t *px = wb_ptr + (size_t)i * WB_SLOT;
+            const uint8_t *px = wb_ptr + (size_t)e->off;
             if (on && e->fmt == 0x3f && e->hb == 1 && (e->wb == 12 || e->wb == 1)) {  // R11G11B10F
                 for (uint32_t k = 0; k < e->wb; k++) {
                     uint32_t v = ((const uint32_t *)px)[k];
