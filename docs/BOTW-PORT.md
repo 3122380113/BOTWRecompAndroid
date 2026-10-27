@@ -794,6 +794,11 @@ Pedidos ainda não começados, o mais recente no fim.
   - E o gerador (Python, dentro do app, ao lado dos compiladores) guardava o C de toda instrução até o fim: 3,3 GB
     na 1.6.0 e 2,1 GB na 1.8.2. Desde 9603800 guarda só os desvios: 1,2 GB e 0,8 GB, a saída idêntica, ~25% mais
     tempo de gerador. Isso vale para todas as versões, inclusive a 1.8.2 do #51.
+  - E o zig cc: com -O0 ele entra no modo Debug e põe UBSan, stack protector e debug info sozinho (e debug info no
+    -O1, que ele compila como -O2). O `main_536` levou 6-8 GB por 20+ minutos no POCO até o Android matar o app
+    ("swap is low and thrashing"). Com `-fno-sanitize=undefined -fno-stack-protector -g0` (6582d40), menos de 20 s.
+  - Testado no POCO (2026-10-27): o build da 1.6.0 terminou (876 s, retomando os 675 arquivos de antes), com o serviço
+    em primeiro plano e a tela apagada, e o jogo roda com esse código.
 - **Cortinas de terreno depois da cutscene de uma torre** (2026-10-26, em andamento).
   - Aparecem só quando a ativação toca a cutscene. Carregar um save já com a torre ativada não mostra nenhuma.
   - Com `LARECOMP_TEX_FULLHASH=1` não apareceram. Não é o padrão do #511 do MacNativeGames
