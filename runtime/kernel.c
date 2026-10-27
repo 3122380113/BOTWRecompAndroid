@@ -812,8 +812,24 @@ static void watchdog_start(void) {
     pthread_detach(th);
 }
 
+// LARECOMP_TEST_CRASH=<seconds> (a test of the crash report, dispatch.c rt_fatal_trace): that long after start, the
+// next two of the game's threads to make an SVC write to address 0 - a fault with a guest context, as a crash in the
+// game's code would be, and two at once as in issue #24 (the report gate).
+static void test_crash(void) {
+    static int64_t at = -1;
+    static int n;
+    if (at < 0) {
+        const char *e = getenv("LARECOMP_TEST_CRASH");
+        at = e && atoi(e) > 0 ? (int64_t)(plat_now_ns() + (uint64_t)atoi(e) * 1000000000ull) : 0;
+    }
+    if (!at || plat_now_ns() < (uint64_t)at || __atomic_fetch_add(&n, 1, __ATOMIC_SEQ_CST) >= 2) return;
+    LOG("[kernel] LARECOMP_TEST_CRASH: a write to address 0 on t%llu\n", (unsigned long long)(t_cur ? t_cur->id : 0));
+    *(volatile uint32_t *)(uintptr_t)0 = 0;
+}
+
 void rt_svc(Cpu *c, uint32_t imm, uint64_t pc) {
     rt_unwind_point();
+    test_crash();
     KThread *me = t_cur;
     if (me) {
         me->svc_since = plat_now_ns();
