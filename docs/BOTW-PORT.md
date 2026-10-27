@@ -864,6 +864,9 @@ Pedidos ainda não começados, o mais recente no fim.
   - **A GPU não é o limite agora:** SGSR no lugar do FSR 1 (`LARECOMP_AB=120:sgsr`) tirou 0,5 ms de GPU (14,15 ->
     13,65) e o período ficou igual (17,91 vs 18,03 ms). O quadro é a cadeia de CPU do jogo (a lógica nas threads
     dele, depois a gravação da lista), a esses clocks.
+  - As threads do jogo que mais rodaram (a cada ~2 s, por `/proc/self/task/<tid>/schedstat`) presas nos 2 núcleos
+    prime (A/B na mesma rodada): 2 threads 17,62 vs 17,62 ms, 4 threads 18,24 vs 18,29 ms. Sem efeito, desfeito.
+    Próximo passo: o que a thread que apresenta espera nesses ~15 ms (o objeto do kernel e quem o sinaliza).
 - **Aquecimento de shaders com listas conhecidas** (como o MacNativeGames): menos travadas no primeiro jogo. Médio.
 - **Pequenos, do SavageWindRecomp e do MacNativeGames:**
   - feitos em b512a4b (falta testar no celular): o desvio do giroscópio em repouso aprendido e descontado, e a zona
