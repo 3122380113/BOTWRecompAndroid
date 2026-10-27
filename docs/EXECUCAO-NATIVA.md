@@ -142,6 +142,11 @@ certa, sem crash), sem usar o `botwgame.so`.
 ## Em jogo pelo usuário (2026-10-27, 1.9.0, Sync lag desligado)
 
 - 58-60 fps estáveis em boa parte, com a CPU a ~1 GHz e 35% de uso; mais quedas que o recompilado.
+- **Correção, mesmo dia:** as pontas na nuvem e na névoa num golpe **não são do nativo**. O usuário as viu no
+  recompilado também, com e sem Sync lag, a 30 e a 60 fps, sem o arredondamento das coordenadas de textura
+  (`LARECOMP_NO_VS_SNAP=1`) e nas versões publicadas 0.2.1 e 0.2.0 (recompiladas com versionCode 19 e 20 para o
+  teste): um defeito antigo que só não tinha sido notado. As cortinas também são o bug antigo. O que segue é o relato
+  como foi feito:
 - **Defeitos só do nativo** (no recompilado, na mesma sessão, nada disso):
   - Num golpe, a nuvem da Montanha da Morte (e a névoa do horizonte) se estica de lado em pontas por **um quadro**
     (gravação 19:30, ~1:11, junto da faísca do acerto). O Link pisca às vezes ao levar ou dar o primeiro golpe.
