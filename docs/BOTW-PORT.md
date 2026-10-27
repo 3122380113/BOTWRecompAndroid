@@ -733,19 +733,16 @@ Pedidos ainda não começados, o mais recente no fim.
     - As notas precisam explicar que os shaders compilam de novo uma vez e que a Saída vira Automática.
   - Antes de lançar, testar no POCO: a verificação do setup num caso que falha (uma cópia em
     `/sdcard/Download/botwtest` com o `Version.txt` trocado; nunca nas pastas do usuário) e o relatório de crash (não
-    há como provocar um crash de propósito: um `LARECOMP_` de teste ajudaria).
+    há como provocar um crash de propósito: `LARECOMP_TEST_CRASH=<s>`, e346bc7, faz duas threads do jogo caírem).
   - Depois de lançar, avisar em #22, #24, #25, #30 e #38.
 - **`uclamp.min` para o #41** (prometido ao autor, 2026-10-26): Snapdragon 8 Gen 3 (Adreno 750, Honor 300 Ultra,
   MagicOS) cai para ~10 fps no mundo com um núcleo ocupado a ~600 MHz. O trabalho por quadro é o mesmo do POCO, ou
   menos (3.000-4.500 draws e ~15 MB enviados por quadro, contra 4.500-6.000 e 20-25 MB a 30 fps), e a sessão do ADPF
-  está ligada: algo acima do escalonador segura o clock (o iAware do MagicOS gerencia o app). Falta:
-  - Uma opção que aplique `sched_setattr` com `SCHED_FLAG_UTIL_CLAMP_MIN` (~50-60) às threads do jogo
-    (`plat_thread_unpin`, `runtime/platform/android.c`), registrando no log se o Android aceita (seccomp, SELinux,
-    o `uclamp.max` do cgroup). No POCO não dá para medir: o clock do 8 Elite já acompanha a carga. Mandar ao autor
-    um build de teste.
-  - A outra proposta dele: medir espera e posse do núcleo 0 (`runtime/kernel.c`, `core0_acquire`), sem mudar o
-    comportamento.
-  - A resposta dele: se pôr o app na lista de jogos do MagicOS muda os clocks.
+  está ligada: algo acima do escalonador segura o clock (o iAware do MagicOS gerencia o app).
+  - Feito em edcbe12 (falta rodar no celular): `LARECOMP_UCLAMP_MIN=<1-1024>` aplica `SCHED_FLAG_UTIL_CLAMP_MIN` às
+    threads de `plat_thread_unpin` e diz no log se o Android aceitou; e o núcleo 0 ganhou uma linha a cada 30 s (trocas,
+    esperas, quanto do tempo ficou ocupado). Mandar ao autor um build de teste.
+  - A lista de jogos e o modo desempenho do MagicOS não mudaram os clocks (resposta dele, 2026-10-27).
 - **DLC** (#42, #40, #34; talvez o crash ao chamar o cavalo do #43) - em andamento numa sessão própria (pedido do
   usuário, 2026-10-25). O Modo Mestre vem com o primeiro pacote (#34). Avisar nas issues quando sair.
   - Os dois pacotes extraídos para testar (2026-10-27, `romfs/` de cada um):
@@ -755,10 +752,11 @@ Pedidos ainda não começados, o mais recente no fim.
 - **Importar saves de emulador** (prometido no #40, 2026-10-26): os saves ficam em
   `Android/data/com.botwrecomp.android/files/<versão>/save/save_0`, fora do alcance dos gerenciadores de arquivos (nem
   o adb escreve ali: só o próprio app). Os emuladores de Switch guardam os do BOTW no mesmo formato (`0/` a `5/` com
-  `caption.jpg`, `caption.sav`, `game_data.sav`, `option.sav`, `tracker/`). Falta: escolher uma pasta (SAF) e copiar
-  para o save da versão atual, guardando o anterior ao lado como o `LARECOMP_SAVE_REPLACE` faz
-  (`save_0.before-replace`). Conferir: uma pasta com `save_0` dentro ou só os slots, e um save mais novo que a versão
-  (um 1.8.2 numa 1.0.0).
+  `caption.jpg`, `caption.sav`, `game_data.sav`, `option.sav`, `tracker/`).
+  - Feito em 3d66b47 (falta testar no celular): Configurações > Saves, com Exportar (uma pasta datada onde o jogador
+    escolher; também o #49, que queria editar os saves) e Importar (acha o slot com `game_data.sav` até quatro níveis
+    abaixo; o save anterior fica como `save_0.before-import`).
+  - Conferir no celular: uma pasta de emulador real, e um save mais novo que a versão (um 1.8.2 numa 1.0.0).
 - **Crash no Snapdragon 8s Gen 4 / Adreno 825** (#24, #30; POCO F7): sempre no mesmo ponto, ~2 s depois de a tela de
   título começar a carregar, em todo driver (Turnip, Qualcomm), com a memória do jogo na GPU ligada ou não e em
   toda resolução. É no código do jogo (1.0.0, `f_100a550e0+0x94`: um append de lista com o elemento nulo, centenas
@@ -782,14 +780,17 @@ Pedidos ainda não começados, o mais recente no fim.
     - ou a bateria acabou e o app foi morto antes de o `obj.ok` ser escrito.
   - Ele também escreveu "doesn't fully scan now": a verificação do setup não termina? Falta saber em que tela.
   - O app **caiu em 81%**. Falta o log, com o motivo do Android (`the last run ended`).
-  - Pede o build **em segundo plano**:
-    - um foreground service com notificação de progresso, para o Android não matar o build com a tela apagada ou o
-      app em segundo plano;
-    - de preferência só carregando. A bateria acabar no meio era a queixa original.
+  - Pede o build **em segundo plano**: feito em 97afeda (falta testar no celular), um foreground service com a
+    porcentagem numa notificação e um wake lock parcial enquanto o build roda. Só carregando: não feito (o texto da
+    notificação pede para deixar carregando).
   - Perguntar o modelo de RAM, e pedir o `botwrecomp-log.txt` e o `botwrecomp-log-previous.txt`.
   - O mesmo em 75-85% no #25 (OnePlus 15, ZenFone 8 Ultra, 1.6.0) e no #47 (Snapdragon 888, 1.6.0). O log do #47
     diz **"the last run ended: low memory"**: o Android matou o app no build, com 1-1,9 GB livres e status térmico 3.
-    Ideias: um compilador só depois de uma morte por memória, e os arquivos maiores em -O0 nesse caso.
+  - Causa provável achada (b8dec17, falta testar no celular): na 1.6.0 o `main_536.c` tem uma função de 167.749 linhas
+    com 14.525 rótulos, abaixo do limite de 15.000, então em -O1: 1,1 GB por 526 s no PC (`tools/cc_memory.py`; o
+    resto da 1.6.0 fica abaixo de 350 MB). No celular, dezenas de minutos com mais de 1 GB enquanto os outros
+    compiladores levavam a barra de ~53% a ~80%. Agora uma função com mais de 60.000 linhas vai para -O0 e o arquivo
+    compila sozinho. A 1.8.2 e a 1.9.0 não têm função assim: se o #51 for da 1.8.2, a causa é outra.
 - **Cortinas de terreno depois da cutscene de uma torre** (2026-10-26, em andamento).
   - Aparecem só quando a ativação toca a cutscene. Carregar um save já com a torre ativada não mostra nenhuma.
   - Com `LARECOMP_TEX_FULLHASH=1` não apareceram. Não é o padrão do #511 do MacNativeGames
@@ -803,17 +804,19 @@ Pedidos ainda não começados, o mais recente no fim.
   - Reconhecida (pasta `v190`, launcher, romfs, am), com o código de 1.8.2 para SDK 20 / NVN 55.
   - Os endereços de 1.8.2 (pacing, VFR, widescreen, laço de quadros, pausa, telas, eventos, passo do controle) achados
     por `tools/port_addrs.py`, cada um com uma só correspondência e as mesmas instruções.
-  - Falta: o primeiro boot no celular e as chamadas novas do SDK (o MacNativeGames cita `PopOpenUsers` e
-    `pl::IsRunningOnOunce`; os comandos 12/13 do áudio já respondemos).
+  - Roda (f0df56c): o título com "Ver. 1.9.0", um jogo novo, e um save da 1.8.2 no Grande Platô a 59,5 fps.
+  - Falta: widescreen, uma sessão longa, e as chamadas novas do SDK (o MacNativeGames cita `PopOpenUsers` e
+    `pl::IsRunningOnOunce`; no log, `ICommonStateGetter` 54/66, `IApplicationFunctions` 67 e `ISelfController` 16
+    sem resposta, e o jogo seguiu).
 - **Os 16 bytes por draw como push constants:** o jogo reescreve 16 bytes de um constant buffer de 64 KB antes de cada
   draw, e cada draw copia os 64 KB (~16 MB por quadro, ~10% da thread de render). O tradutor de shaders leria esse
   trecho de outro lugar. Médio a grande.
 - **Aquecimento de shaders com listas conhecidas** (como o MacNativeGames): menos travadas no primeiro jogo. Médio.
 - **Pequenos, do SavageWindRecomp e do MacNativeGames:**
-  - aprender o desvio do giroscópio em repouso (mira derivando);
-  - zona morta e drift dos analógicos;
-  - campo de visão;
-  - um botão 60/30 nos controles de toque.
+  - feitos em b512a4b (falta testar no celular): o desvio do giroscópio em repouso aprendido e descontado, e a zona
+    morta dos analógicos do controle (Configurações > Controles, 0-40%);
+  - campo de visão: precisa de um patch no código do jogo em cada versão (achar o valor da câmera);
+  - um botão 60/30 nos controles de toque: um controle novo no layout editável.
 
 ## Regras
 
