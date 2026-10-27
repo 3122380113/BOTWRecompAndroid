@@ -778,7 +778,14 @@ Pedidos ainda não começados, o mais recente no fim.
     perto do Link some entre um quadro e outro (as touceiras altas ficam). Igual com `LARECOMP_SYNC_LAG=0` - não é o
     sync lag, e já estava na 0.1.11. Suspeitas: a máscara de densidade da grama, que a GPU desenha e a CPU lê para
     escolher as células (o MacNativeGames trata esse caminho), ou o fade de perto da grama baixa. Próximo passo: um
-    quadro de depuração (F9) com a grama presente e outro sem, e comparar os draws da grama.
+    quadro de depuração (F9) com a grama presente e outro sem, e comparar os draws da grama. O PR #511 do MacNativeGames
+    também corrigiu "grama alta cobrindo a estrada perto do Link": uma cópia amostrada de um tile de material do
+    terreno (128x128) que ficava velha - conferir se o nosso caso é esse.
+  - **A malha de linhas escuras** (#21, desde a 0.1.x): reproduzida no POCO (1.9.0, mesmo lugar, 2026-10-27). Linhas
+    pontilhadas horizontais e verticais presas ao terreno (uma grade no chão), visíveis só ao mexer a câmera. Continua
+    com o sync lag desligado, com as leituras no lugar desligadas e com o LRZ desligado. Suspeita: frestas entre os
+    tiles do terreno (os vértices da borda de dois tiles vizinhos com alturas um pouco diferentes). Próximo passo:
+    comparar as alturas das bordas de dois tiles no shader do terreno (o mesmo caminho do atlas de alturas e das cortinas).
 - **#23** (RP Nova T26, 1.0.0): o `ActorInfo.product.sbyml` está na pasta, mas a imagem tinha 39.677 arquivos e o
   jogo para ao carregá-lo. Esperando a mensagem da verificação de setup da 0.1.11 (qual arquivo falta) e o tamanho
   exato do arquivo (760.223 bytes).
