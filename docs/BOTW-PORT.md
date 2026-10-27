@@ -895,8 +895,11 @@ Pedidos ainda não começados, o mais recente no fim.
   - `LARECOMP_LOG_FS_CB=<fs>:<estágio>:<cbuf>:<linha>:<linhas>` (novo) registra o cbuf por quadro: o `cb10` está são em
     todos os golpes - o hit-stop é o tempo do efeito a 10% (passo 0,05) voltando em rampa 0,1, 0,2, 0,4; no quadro em
     que começa, o tempo ainda andou 0,5 e `cb10[2].w` já diz 0,05.
-  - Próximo: os atributos dos vértices nesse quadro de transição (o buffer de vértices é escrito pela CPU) e o vs
-    calculado na CPU para eles; ou comparar com a tradução do Ryujinx do mesmo shader.
+  - Também descartados: leitura além do fluxo de vértices (o draw usa só o fluxo 0, 120 vértices de 20 bytes, e os
+    índices nunca passaram do tamanho ligado, medido em vários golpes) e textura atualizada sem ser notada
+    (`LARECOMP_TEX_FULLHASH=1`: as pontas continuam).
+  - Parado aqui (cosmético, um quadro). Próximo, se retomado: o vs calculado na CPU com os vértices e cbufs do quadro
+    de transição do hit-stop, ou a tradução do Ryujinx do mesmo shader para comparar.
 - **Aquecimento de shaders com listas conhecidas** (como o MacNativeGames): menos travadas no primeiro jogo. Médio.
 - **Pequenos, do SavageWindRecomp e do MacNativeGames:**
   - feitos em b512a4b (falta testar no celular): o desvio do giroscópio em repouso aprendido e descontado, e a zona
