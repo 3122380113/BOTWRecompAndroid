@@ -866,7 +866,14 @@ Pedidos ainda não começados, o mais recente no fim.
     dele, depois a gravação da lista), a esses clocks.
   - As threads do jogo que mais rodaram (a cada ~2 s, por `/proc/self/task/<tid>/schedstat`) presas nos 2 núcleos
     prime (A/B na mesma rodada): 2 threads 17,62 vs 17,62 ms, 4 threads 18,24 vs 18,29 ms. Sem efeito, desfeito.
-    Próximo passo: o que a thread que apresenta espera nesses ~15 ms (o objeto do kernel e quem o sinaliza).
+  - **O que a thread que apresenta espera** (`LARECOMP_PROF_SVC=1`, `LARECOMP_PROF_SVC_TID=80+82`,
+    `LARECOMP_PROF_SVC_FROM=75`; `[pace] presenting thread` diz qual é): a thread de desenho do jogo (t82, handle
+    0x118) espera ~16 ms por quadro numa variável de condição (chave 3446c5148), sinalizada uma vez por quadro pela
+    thread principal (t80, handle 0x101, chamada do laço de quadros da 1.9.0 em 0x11267c4). Nesse tempo a t80 quase
+    não espera: só sincronizações curtas com os jobs (`WaitForAddress`, 0,3-1 ms) e yields (`SleepThread(-1)`, 1-2
+    ms, que entregam o núcleo 0). **O caminho crítico é a CPU da thread principal do jogo, ~12-15 ms por quadro de
+    código recompilado numa thread só.** Para 60 fps estáveis: deixar esse código mais rápido (o que ele roda: falta
+    um perfil por amostragem da t80, o `fnprof` só conta entradas) ou clocks mais altos nessa thread.
 - **Aquecimento de shaders com listas conhecidas** (como o MacNativeGames): menos travadas no primeiro jogo. Médio.
 - **Pequenos, do SavageWindRecomp e do MacNativeGames:**
   - feitos em b512a4b (falta testar no celular): o desvio do giroscópio em repouso aprendido e descontado, e a zona
