@@ -82,7 +82,7 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
     private static native String nativeSaveDir();  // (this version's save_0, absolute)
     private static native void nativeSaveDone(int result, String detail);
     private static final int REQ_GAME = 0x4c41, REQ_DRIVER = 0x4c42, REQ_MOD = 0x4c46, REQ_LOG = 0x4c47,
-            REQ_DRIVER_RECOVER = 0x4c48, REQ_SAVE_IN = 0x4c49, REQ_SAVE_OUT = 0x4c4a;
+            REQ_DRIVER_RECOVER = 0x4c48, REQ_SAVE_IN = 0x4c49, REQ_SAVE_OUT = 0x4c4a, REQ_SAVE_IN_TREE = 0x4c4c;
     private static BOTWRecompAndroidActivity self;
     private WatchMapServer watchMap;
 
@@ -337,10 +337,14 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
             }, "driver").start();
             return;
         }
-        if (req == REQ_SAVE_IN || req == REQ_SAVE_OUT) {
-            Uri tree = result == Activity.RESULT_OK && data != null ? data.getData() : null;
-            if (tree == null) nativeSaveDone(SAVE_CANCELLED, "");
-            else new Thread(() -> { if (req == REQ_SAVE_IN) importSave(tree); else exportSave(tree); }, "saves").start();
+        if (req == REQ_SAVE_IN || req == REQ_SAVE_OUT || req == REQ_SAVE_IN_TREE) {
+            Uri u = result == Activity.RESULT_OK && data != null ? data.getData() : null;
+            if (u == null) nativeSaveDone(SAVE_CANCELLED, "");
+            else new Thread(() -> {
+                if (req == REQ_SAVE_IN) importSaveZip(u);
+                else if (req == REQ_SAVE_IN_TREE) importSave(u);
+                else exportSaveZip(u);
+            }, "saves").start();
             return;
         }
         if (req == REQ_LOG) {
@@ -431,23 +435,166 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
 
     // ---- saves (the start screen's Settings > Saves): this version's save_0 lives in Android/data/, out of file managers'
     // reach (issue #49: edited there for cheats, the changes didn't stick), and players bring saves from emulators
-    // (issue #40, the same layout: slots 0/ to 5/ with game_data.sav, option.sav). Export copies it to a folder they
-    // choose; import makes a save found in a chosen folder this version's, the one before kept beside it.
+    // (issue #40, the same layout: slots 0/ to 5/ with game_data.sav, option.sav). Export writes it as one .zip where
+    // the player saves it; import makes the save in a .zip - or, from a folder, an emulator's - this version's, the one
+    // before kept beside it.
     private static final int SAVE_IMPORTED = 0, SAVE_EXPORTED = 1, SAVE_CANCELLED = 2, SAVE_NONE = 3, SAVE_FAILED = 4;
 
-    public static void pickSaveImport() { pickTree(REQ_SAVE_IN); }
+    public static void pickSaveImport() {
+        pick(REQ_SAVE_IN, () -> {
+            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            i.addCategory(Intent.CATEGORY_OPENABLE);
+            i.setType("*/*");  // (zip types vary by provider: application/zip, application/x-zip-compressed...)
+            return i;
+        });
+    }
 
-    public static void pickSaveExport() { pickTree(REQ_SAVE_OUT); }
+    public static void pickSaveImportFolder() { pick(REQ_SAVE_IN_TREE, () -> new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)); }
 
-    private static void pickTree(int req) {
+    public static void pickSaveExport() {
+        pick(REQ_SAVE_OUT, () -> {
+            Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+            i.addCategory(Intent.CATEGORY_OPENABLE);
+            i.setType("application/zip");
+            i.putExtra(Intent.EXTRA_TITLE, saveZipName());
+            return i;
+        });
+    }
+
+    private static void pick(int req, java.util.function.Supplier<Intent> intent) {
         self.runOnUiThread(() -> {
             try {
-                self.startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), req);
+                self.startActivityForResult(intent.get(), req);
             } catch (Exception e) {
-                Log.e(TAG, "save folder picker", e);
+                Log.e(TAG, "save picker", e);
                 nativeSaveDone(SAVE_FAILED, e.toString());
             }
         });
+    }
+
+    // "BOTW 1.8.2 save 2026-10-27 09.40.zip": the game version from the save's folder (v182/save/save_0; 1.0.0's has none)
+    private static String saveZipName() {
+        String dir = nativeSaveDir(), ver = "1.0.0";
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("/v(\\d)(\\d)(\\d)/save/").matcher(dir);
+        if (m.find()) ver = m.group(1) + "." + m.group(2) + "." + m.group(3);
+        return "BOTW " + ver + " save " +
+                new java.text.SimpleDateFormat("yyyy-MM-dd HH.mm", java.util.Locale.ROOT).format(new java.util.Date()) + ".zip";
+    }
+
+    // The new save (tmp, complete) in place of this version's, that one kept as save_0.before-import[-n]
+    private void installSave(File tmp) throws IOException {
+        File dst = new File(nativeSaveDir()), parent = dst.getParentFile();
+        File keep = new File(parent, dst.getName() + ".before-import");
+        for (int n = 2; keep.exists() && n < 100; n++) keep = new File(parent, dst.getName() + ".before-import-" + n);
+        boolean had = dst.exists();
+        if (had && !dst.renameTo(keep)) throw new IOException("can't move the current save aside");
+        if (!tmp.renameTo(dst)) {
+            if (had) keep.renameTo(dst);
+            throw new IOException("can't put the imported save in place");
+        }
+        Log.i(TAG, "save imported into " + dst + (had ? ", the one before kept as " + keep.getName() : ""));
+        nativeSaveDone(SAVE_IMPORTED, had ? keep.getName() : "");
+    }
+
+    private File importTmp() {
+        File dst = new File(nativeSaveDir());
+        File tmp = new File(dst.getParentFile(), dst.getName() + ".importing");
+        deleteTree(tmp);
+        return tmp;
+    }
+
+    // A .zip's save: the folder (in it) holding a slot folder 0/ to 7/ with game_data.sav - at the zip's top (one
+    // exported here) or below it (a zipped emulator folder). Read twice: the entries' names, then that folder's files.
+    private void importSaveZip(Uri u) {
+        try {
+            String prefix = null;
+            java.util.regex.Pattern slot = java.util.regex.Pattern.compile("(?:^|.*/)[0-7]/game_data\\.sav$");
+            try (java.util.zip.ZipInputStream z = new java.util.zip.ZipInputStream(getContentResolver().openInputStream(u))) {
+                for (java.util.zip.ZipEntry e; (e = z.getNextEntry()) != null; ) {
+                    String n = e.getName().replace('\\', '/');
+                    if (!slot.matcher(n).matches()) continue;
+                    String p = n.substring(0, n.length() - "0/game_data.sav".length());
+                    if (prefix == null || p.length() < prefix.length()) prefix = p;
+                }
+            }
+            if (prefix == null) {
+                nativeSaveDone(SAVE_NONE, "");
+                return;
+            }
+            File tmp = importTmp();
+            String root = tmp.getCanonicalPath() + File.separator;
+            int files = 0;
+            try (java.util.zip.ZipInputStream z = new java.util.zip.ZipInputStream(getContentResolver().openInputStream(u))) {
+                for (java.util.zip.ZipEntry e; (e = z.getNextEntry()) != null; ) {
+                    String n = e.getName().replace('\\', '/');
+                    if (!n.startsWith(prefix) || n.length() == prefix.length()) continue;
+                    File f = new File(tmp, n.substring(prefix.length()));
+                    if (!f.getCanonicalPath().startsWith(root)) throw new IOException("a bad path in the zip: " + n);
+                    if (e.isDirectory()) {
+                        f.mkdirs();
+                        continue;
+                    }
+                    f.getParentFile().mkdirs();
+                    try (OutputStream o = new FileOutputStream(f)) {
+                        byte[] buf = new byte[1 << 16];
+                        for (int r; (r = z.read(buf)) > 0; ) o.write(buf, 0, r);
+                    }
+                    files++;
+                }
+            }
+            Log.i(TAG, "save zip: " + files + " files from \"" + prefix + "\"");
+            installSave(tmp);
+        } catch (Exception e) {
+            Log.e(TAG, "save import (zip)", e);
+            nativeSaveDone(SAVE_FAILED, e.getMessage() != null ? e.getMessage() : e.toString());
+        }
+    }
+
+    private void zipTree(java.util.zip.ZipOutputStream z, File dir, String prefix) throws IOException {
+        File[] kids = dir.listFiles();
+        if (kids == null) return;
+        java.util.Arrays.sort(kids);
+        for (File k : kids) {
+            String n = prefix + k.getName();
+            if (k.isDirectory()) {
+                z.putNextEntry(new java.util.zip.ZipEntry(n + "/"));
+                z.closeEntry();
+                zipTree(z, k, n + "/");
+                continue;
+            }
+            z.putNextEntry(new java.util.zip.ZipEntry(n));
+            try (InputStream in = new FileInputStream(k)) {
+                byte[] buf = new byte[1 << 16];
+                for (int r; (r = in.read(buf)) > 0; ) z.write(buf, 0, r);
+            }
+            z.closeEntry();
+        }
+    }
+
+    private void exportSaveZip(Uri u) {
+        try {
+            File src = new File(nativeSaveDir());
+            if (!src.isDirectory()) {
+                nativeSaveDone(SAVE_NONE, "");
+                return;
+            }
+            try (OutputStream o = getContentResolver().openOutputStream(u, "wt")) {
+                if (o == null) throw new IOException("can't write there");
+                java.util.zip.ZipOutputStream z = new java.util.zip.ZipOutputStream(o);
+                zipTree(z, src, "");  // (the slots at the zip's top, as the save folder holds them)
+                z.finish();
+            }
+            String name = u.getLastPathSegment();
+            try (Cursor c = getContentResolver().query(u, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+                if (c != null && c.moveToFirst()) name = c.getString(0);
+            } catch (Exception ignored) {
+            }
+            Log.i(TAG, "save exported from " + src + " as " + name);
+            nativeSaveDone(SAVE_EXPORTED, name);
+        } catch (Exception e) {
+            Log.e(TAG, "save export", e);
+            nativeSaveDone(SAVE_FAILED, e.getMessage() != null ? e.getMessage() : e.toString());
+        }
     }
 
     private Doc treeRoot(Uri tree) {
@@ -497,63 +644,11 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
                 nativeSaveDone(SAVE_NONE, "");
                 return;
             }
-            File dst = new File(nativeSaveDir()), parent = dst.getParentFile();
-            File tmp = new File(parent, dst.getName() + ".importing");
-            deleteTree(tmp);
+            File tmp = importTmp();
             copySaveTree(tree, s, tmp);  // (all of it first: a copy cut short leaves the save as it was)
-            File keep = new File(parent, dst.getName() + ".before-import");
-            for (int n = 2; keep.exists() && n < 100; n++) keep = new File(parent, dst.getName() + ".before-import-" + n);
-            boolean had = dst.exists();
-            if (had && !dst.renameTo(keep)) throw new IOException("can't move the current save aside");
-            if (!tmp.renameTo(dst)) {
-                if (had) keep.renameTo(dst);
-                throw new IOException("can't put the imported save in place");
-            }
-            Log.i(TAG, "save imported into " + dst + (had ? ", the one before kept as " + keep.getName() : ""));
-            nativeSaveDone(SAVE_IMPORTED, had ? keep.getName() : "");
+            installSave(tmp);
         } catch (Exception e) {
             Log.e(TAG, "save import", e);
-            nativeSaveDone(SAVE_FAILED, e.getMessage() != null ? e.getMessage() : e.toString());
-        }
-    }
-
-    private void exportTree(File dir, Uri to) throws IOException {
-        ContentResolver cr = getContentResolver();
-        File[] kids = dir.listFiles();
-        if (kids == null) return;
-        for (File k : kids) {
-            String mime = k.isDirectory() ? DocumentsContract.Document.MIME_TYPE_DIR : "application/octet-stream";
-            Uri d = DocumentsContract.createDocument(cr, to, mime, k.getName());
-            if (d == null) throw new IOException("can't create " + k.getName());
-            if (k.isDirectory()) {
-                exportTree(k, d);
-                continue;
-            }
-            try (InputStream in = new java.io.FileInputStream(k); OutputStream o = cr.openOutputStream(d)) {
-                if (o == null) throw new IOException("can't write " + k.getName());
-                byte[] buf = new byte[1 << 16];
-                for (int r; (r = in.read(buf)) > 0; ) o.write(buf, 0, r);
-            }
-        }
-    }
-
-    private void exportSave(Uri tree) {
-        try {
-            File src = new File(nativeSaveDir());
-            if (!src.isDirectory()) {
-                nativeSaveDone(SAVE_NONE, "");
-                return;
-            }
-            String name = "BOTWRecompAndroid save " +
-                    new java.text.SimpleDateFormat("yyyy-MM-dd HH.mm", java.util.Locale.ROOT).format(new java.util.Date());
-            Uri parent = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree));
-            Uri d = DocumentsContract.createDocument(getContentResolver(), parent, DocumentsContract.Document.MIME_TYPE_DIR, name);
-            if (d == null) throw new IOException("can't create a folder there");
-            exportTree(src, d);
-            Log.i(TAG, "save exported from " + src + " as " + name);
-            nativeSaveDone(SAVE_EXPORTED, name);
-        } catch (Exception e) {
-            Log.e(TAG, "save export", e);
             nativeSaveDone(SAVE_FAILED, e.getMessage() != null ? e.getMessage() : e.toString());
         }
     }
