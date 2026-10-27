@@ -139,5 +139,18 @@ certa, sem crash), sem usar o `botwgame.so`.
   mundo (`nvnBufferGetAddress` recebeu do jogo um objeto com 0x600000001 no lugar do ponteiro); a mesma rodada de novo
   passou de 2 min sem cair: uma corrida que o tempo do nativo expõe. A 1.6.0 e a 1.8.2 não foram testadas.
 
+## Em jogo pelo usuário (2026-10-27, 1.9.0, Sync lag desligado)
+
+- 58-60 fps estáveis em boa parte, com a CPU a ~1 GHz e 35% de uso; mais quedas que o recompilado.
+- **Defeitos só do nativo** (no recompilado, na mesma sessão, nada disso):
+  - Num golpe, a nuvem da Montanha da Morte (e a névoa do horizonte) se estica de lado em pontas por **um quadro**
+    (gravação 19:30, ~1:11, junto da faísca do acerto). O Link pisca às vezes ao levar ou dar o primeiro golpe.
+  - As **cortinas** do terreno ([[botw-stretched-vertices]]) aparecem com frequência: na conversa com o velho logo
+    depois da torre e ao longe no Grande Platô. Para esse bug antigo o modo nativo é quase uma reprodução garantida.
+- Descartados: o Sync lag (desligado, continua), o caminho dos 64 KB (desligado), o FPCR (o jogo liga o FZ, bit 24,
+  nas suas threads - o recompilado também respeita), uma espera por cerca ainda não enviada (nunca aconteceu).
+- Próximo passo, se for retomado: um quadro de depuração (F9) no instante do golpe com e sem o nativo, comparando os
+  constant buffers da nuvem; para as cortinas, a mesma captura na conversa depois da torre.
+
 Créditos, se algo for aproveitado: o reescritor e os stubs do d2r-mobile (MIT, com o aviso dele), as ideias do
 totk-mobile (Apache-2.0: o aviso de licença e um NOTICE se houver código) e do MacNativeGames (MIT), no README.
