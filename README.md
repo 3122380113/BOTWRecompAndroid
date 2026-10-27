@@ -31,6 +31,10 @@ Windows, Linux or macOS may still be used as development hosts with the Android 
 - **Known gaps:** setting the game up on the phone compiles the game code there, and that has not been timed or
   tested with BOTW yet (expect a long wait and a hot phone); GPUs other than Adreno 8xx take slower, safer paths;
   thumbnails of saves made in the app are black; the audio still uses a simplified mixer.
+- **Known issue: stretched terrain after a Sheikah Tower.** Right after a tower's activation cutscene, the terrain
+  can show vertical "curtains" or spikes (cliffs and distant mountains stretched up into the sky). It happens with
+  every Vulkan driver and is being investigated. **Workaround:** once the tower is activated, load the save (the
+  autosave from right after the activation is fine) and the terrain is drawn correctly again.
 
 > [!IMPORTANT]
 > Like LAS Recomp, this project is made almost entirely with AI (Claude, by Anthropic, through Claude Code), directed,
