@@ -321,9 +321,23 @@ class Module:
                     return True
                 if (w & 0x9F000000) == 0x10000000:  # ADR
                     return True
-                return False
+                if self._writes_x(a, w, rn):
+                    return False
             a -= 4
         return False
+
+    def _writes_x(self, a, w, rn):
+        """Whether the instruction at a writes x<rn>: its low five bits are rn, but in a store or an FP / SIMD load
+        they name the data register. (1.8.2's f_700109c774: `stp s9, s8, [sp, #0x80]` between the table math and
+        `br x9` read as x9's last write, the jump went to plain dispatch, and the game stopped with "no function at
+        0x700109c954" on the way to Kakariko - issues #46, #48.)"""
+        ins = self.lift(a)
+        if ins.kind == 'op':
+            return re.search(r'c->x\[%d\] =' % rn, ins.code) is not None
+        if lifter.is_ldst(w):  # (an FP / SIMD load or store: x<rn> written only as a written-back base)
+            wb = bits(w, 23, 1) if bits(w, 27, 3) == 0b101 else (bits(w, 24, 1) == 0 and bits(w, 10, 1) == 1)
+            return bool(wb) and bits(w, 5, 5) == rn
+        return True
 
     def scan(self, entry, end):
         """Collect labels and external entries referenced by a function."""
