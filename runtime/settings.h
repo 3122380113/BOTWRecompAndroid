@@ -13,7 +13,7 @@ enum { UPSCALE_BILINEAR = 0, UPSCALE_METALFX = 1 /* macOS */, UPSCALE_FSR1 = 2 /
 #else
 #define UPSCALE_SHARP UPSCALE_FSR1
 #endif
-enum { AA_OFF = 0, AA_SMAA = 1 };
+enum { AA_OFF = 0, AA_SMAA = 1, AA_FXAA = 2 };
 // System language served to the game (runtime/services/am.c GetDesiredLanguage, services/hid_set.c GetLanguageCode):
 // the game picks its text language from it, as it would from the Switch's own system setting. LANG_AUTO follows the
 // host locale ($LC_ALL / $LC_MESSAGES / $LANG); the rest are the codes of the languages the game has text for.

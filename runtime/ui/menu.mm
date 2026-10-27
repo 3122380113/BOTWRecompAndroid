@@ -648,10 +648,11 @@ static void tab_display(void) {
 #endif
         if (opt_choice("Output resolution", &oi, outs, 5, OUT_DEFAULT, od, false)) g_settings.out_lines = out_lines[oi];
     }
-    static const char *aa[] = {"Off", "SMAA"};
-    opt_choice("Anti-aliasing", &g_settings.antialias, aa, 2, AA_OFF,
+    static const char *aa[] = {"Off", "SMAA", "FXAA"};
+    opt_choice("Anti-aliasing", &g_settings.antialias, aa, 3, AA_OFF,
                "Smooths jagged edges of the game image before it is scaled to the window. SMAA: finds the edges and "
-               "blends only along them, so textures stay sharp. Most useful at a lower internal resolution.");
+               "blends only along them, so textures stay sharp. FXAA: a single, cheaper pass that also softens the image "
+               "a little. Most useful at a lower internal resolution.");
 #ifdef __ANDROID__
     opt_toggle("32-bit shader math", &g_settings.shader_int32, false,
                "Translates the game's shaders with 32-bit address math, the path used for drivers without 64-bit "

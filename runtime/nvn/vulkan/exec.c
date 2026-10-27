@@ -6296,7 +6296,7 @@ static void post_pass(VkCommandBuffer cb, const char *fs, const VkImageView *src
 // size in the window (its crop is drawn into the viewport).
 static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, double oh_d) {
     VkImageView v = raw_view(b);
-    bool smaa = g_settings.antialias == AA_SMAA;
+    bool smaa = g_settings.antialias == AA_SMAA, fxaa = g_settings.antialias == AA_FXAA;
     uint32_t ow = (uint32_t)lround(ow_d), oh = (uint32_t)lround(oh_d);
     if (ow > 16384) ow = 16384;
     if (oh > 16384) oh = 16384;
@@ -6314,8 +6314,8 @@ static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, 
     }
     int up = pmode == 99 ? g_settings.upscaler : pmode;
     if (pmode == UPSCALE_BILINEAR) fsr = false;
-    if (!smaa && !fsr) return v;
-    gp_mark(cb, "present: %s%s %ux%u -> %ux%u", smaa ? "smaa " : "", !fsr ? "" : up == UPSCALE_SGSR1 ? "sgsr1" : "easu+rcas",
+    if (!smaa && !fxaa && !fsr) return v;
+    gp_mark(cb, "present: %s%s %ux%u -> %ux%u", smaa ? "smaa " : fxaa ? "fxaa " : "", !fsr ? "" : up == UPSCALE_SGSR1 ? "sgsr1" : "easu+rcas",
             b->width, b->height, ow, oh);
     extern void vk_frame_suspend(void);
     extern void vk_frame_resume(void);
@@ -6331,6 +6331,13 @@ static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, 
         post_pass(cb, "smaa_weight.frag", wi, 3, weights, m, true);
         VkImageView bi[3] = {v, post_view(weights)};
         post_pass(cb, "smaa_blend.frag", bi, 2, out, m, false);
+        v = post_view(out);
+    } else if (fxaa) {  // FXAA (shaders.c fxaa.frag): one pass
+        float w = (float)b->width, h = (float)b->height;
+        float m[8] = {1.0f / w, 1.0f / h, w, h};
+        TexBackend *out = post_image(2, b->width, b->height, VK_FORMAT_R8G8B8A8_UNORM);
+        VkImageView in[3] = {v};
+        post_pass(cb, "fxaa.frag", in, 1, out, m, false);
         v = post_view(out);
     }
     if (fsr && up == UPSCALE_SGSR1) {
@@ -6356,10 +6363,10 @@ static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, 
     {
         static uint32_t piw, pih, pow_, poh;
         static int psm = -1, pfs = -1;
-        if (b->width != piw || b->height != pih || ow != pow_ || oh != poh || smaa != psm || fsr != pfs)
-            LOG("[post] %ux%u%s%s -> %ux%u\n", b->width, b->height, smaa ? " smaa" : "",
+        if (b->width != piw || b->height != pih || ow != pow_ || oh != poh || g_settings.antialias != psm || fsr != pfs)
+            LOG("[post] %ux%u%s%s -> %ux%u\n", b->width, b->height, smaa ? " smaa" : fxaa ? " fxaa" : "",
                 !fsr ? "" : up == UPSCALE_SGSR1 ? " sgsr1" : " fsr1", ow, oh);
-        piw = b->width; pih = b->height; pow_ = ow; poh = oh; psm = smaa; pfs = fsr;
+        piw = b->width; pih = b->height; pow_ = ow; poh = oh; psm = g_settings.antialias; pfs = fsr;
     }
     return v;
 }
