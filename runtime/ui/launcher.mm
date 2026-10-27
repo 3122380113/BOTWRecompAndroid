@@ -329,8 +329,17 @@ static unsigned long long g_phase_base;
 static std::atomic<float> g_build_frac{-1};  // -1: not building
 static bool g_copy_skipped;                  // (only the game code to build: the bar is all of that)
 static void setup_progress(uint64_t done, uint64_t) { g_done = g_phase_base + done; }
+#ifdef __ANDROID__
+static void android_call(const char *method);
+static void android_call_int(const char *method, int v);
+#endif
 static void build_progress(double f, const char *step) {
     g_build_frac = (float)f;
+#ifdef __ANDROID__
+    static int pct = -1;  // (the foreground service's notification, a whole percent at a time)
+    int p = (int)(f * 100);
+    if (p != pct) pct = p, android_call_int("buildServiceProgress", p);
+#endif
     static const char *last;
     if (step != last) last = step, set_job(step);
 }
@@ -346,7 +355,13 @@ static bool build_game_code(const std::string &dir) {
     GameBuildOpts o = {build_progress, cores < ram_gb - 2 ? cores : ram_gb - 2 > 1 ? ram_gb - 2 : 1};
     char why[256] = "";
     g_build_frac = 0;
+#ifdef __ANDROID__
+    android_call("buildServiceStart");  // (BuildService: on with the screen off or the app in the background)
+#endif
     bool ok = gamebuild_run(dir.c_str(), &o, why, sizeof why);
+#ifdef __ANDROID__
+    android_call("buildServiceStop");
+#endif
     if (!ok) {
         fprintf(stderr, "[launcher] game code: %s\n", why);
         std::string detail = why;
@@ -476,6 +491,18 @@ static void android_call(const char *method) {  // a static method of the activi
     jclass c = env->GetObjectClass(act);
     jmethodID m = env->GetStaticMethodID(c, method, "()V");
     if (m) env->CallStaticVoidMethod(c, m);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    env->DeleteLocalRef(c);
+    env->DeleteLocalRef(act);
+}
+
+static void android_call_int(const char *method, int v) {  // (one int argument)
+    JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
+    jobject act = (jobject)SDL_GetAndroidActivity();
+    if (!env || !act) return;
+    jclass c = env->GetObjectClass(act);
+    jmethodID m = env->GetStaticMethodID(c, method, "(I)V");
+    if (m) env->CallStaticVoidMethod(c, m, (jint)v);
     if (env->ExceptionCheck()) env->ExceptionClear();
     env->DeleteLocalRef(c);
     env->DeleteLocalRef(act);

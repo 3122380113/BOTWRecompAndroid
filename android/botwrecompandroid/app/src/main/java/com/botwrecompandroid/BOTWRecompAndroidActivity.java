@@ -227,6 +227,18 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
         for (String n : names) copyAssetTree(from + "/" + n, new File(to, n));
     }
 
+    // ---- the game code build's foreground service (BuildService; runtime/ui/launcher.mm build_game_code)
+    public static void buildServiceStart() {
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            self.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
+            self.runOnUiThread(() -> self.requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 0x4c4b));
+        BuildService.start(self);
+    }
+
+    public static void buildServiceStop() { BuildService.stop(self); }
+
+    public static void buildServiceProgress(int percent) { BuildService.progress(self, percent); }
+
     // ---- pickers (called from the start screen, on SDL's thread)
     public static void pickGameFolder() {
         self.runOnUiThread(() -> {
