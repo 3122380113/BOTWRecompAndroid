@@ -22,7 +22,12 @@
 // code (main_012.c 4.3 s -> 0.7 s, 806 of 812 objects byte-identical: LAS Recomp for Android d2da382, from
 // LASRecomp-Android-Plus, MIT). BOTW 1.8.2's files (NDK clang on the PC): the same objects, the same times - kept
 // for a file of that kind.
-#define GAMELIB_CFLAGS "-target aarch64-linux-musl -O1 -fno-strict-aliasing -Wno-return-type -Wno-unused-label -fvisibility=hidden -fPIC -mllvm -dag-maps-huge-region=500"
+// -fno-sanitize=undefined -fno-stack-protector -g0: zig cc reads -O0 as its Debug mode and then adds UBSan
+// (-fsanitize=undefined), -fstack-protector-strong and DWARF debug info on its own. 1.6.0's main_536.c (a giant
+// function, at -O0: HEAVY_LINES) took 6-8 GB on the POCO F7 Ultra for over 20 minutes, until Android ended the app
+// ("swap is low and thrashing", 2026-10-27) - on the PC's NDK clang with those flags, 23 GB and a failure; without
+// them 1.45 GB in 19 s. None of it belongs in the game code (UBSan also checks every operation at run time).
+#define GAMELIB_CFLAGS "-target aarch64-linux-musl -O1 -fno-strict-aliasing -Wno-return-type -Wno-unused-label -fvisibility=hidden -fPIC -mllvm -dag-maps-huge-region=500 -fno-sanitize=undefined -fno-stack-protector -g0"
 #define GAMELIB_SHARED "-target aarch64-linux-musl -shared -nostdlib -Wl,-z,max-page-size=16384"
 #endif
 // From the Makefile: the flags the game code is compiled and linked with (as `make` builds it in a source checkout)
