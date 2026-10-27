@@ -836,9 +836,15 @@ Pedidos ainda não começados, o mais recente no fim.
   - Falta: widescreen, uma sessão longa, e as chamadas novas do SDK (o MacNativeGames cita `PopOpenUsers` e
     `pl::IsRunningOnOunce`; no log, `ICommonStateGetter` 54/66, `IApplicationFunctions` 67 e `ISelfController` 16
     sem resposta, e o jogo seguiu).
-- **Os 16 bytes por draw como push constants:** o jogo reescreve 16 bytes de um constant buffer de 64 KB antes de cada
-  draw, e cada draw copia os 64 KB (~16 MB por quadro, ~10% da thread de render). O tradutor de shaders leria esse
-  trecho de outro lugar. Médio a grande.
+- **Os 16 bytes por draw (feito, 2026-10-27):** o jogo reescreve 16 bytes de um constant buffer de 64 KB antes de cada
+  draw, e cada draw copiava os 64 KB (~14 MB por quadro). Na 1.9.0 as escritas caem em linhas diferentes dos primeiros
+  656 bytes (não só +0x70), então em vez de push constants: o buffer é lido no lugar no heap, e o draw copia só as
+  linhas que as escritas alcançam (até 64) para um buffer de remendo por estágio (binding 23, `CBP`), de onde os
+  shaders com esse buffer indexado por registrador as leem (`maxwell_cb_window`, `cbwin_bind`). A/B na mesma rodada
+  (`LARECOMP_AB=60:cbwin`, 1.9.0 no Grande Platô, celular a ~88 °C): render 13,81 -> 13,49 ms, GPU 14,82 -> 14,57 ms,
+  período 19,28 -> 18,94 ms; imagem igual. Ganho pequeno: o memcpy era mais barato do que a estimativa. O período
+  (~19 ms) passa da soma esperada: a thread de render (~13,5 ms) e a GPU (~14,6 ms) ainda andam em parte em série.
+  `LARECOMP_NO_CB_WINDOW=1` desliga, `LARECOMP_LOG_CBWIN=1` mostra o que fica copiado.
 - **Aquecimento de shaders com listas conhecidas** (como o MacNativeGames): menos travadas no primeiro jogo. Médio.
 - **Pequenos, do SavageWindRecomp e do MacNativeGames:**
   - feitos em b512a4b (falta testar no celular): o desvio do giroscópio em repouso aprendido e descontado, e a zona
