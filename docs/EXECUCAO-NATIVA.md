@@ -97,5 +97,31 @@ Num branch, atrás de `LARECOMP_NATIVE=1`, na 1.0.0 (a versão mais simples) e d
 4. **P3 - completar.** Reinício para a tela inicial, relatório de crash, as outras versões, DLC, e só então trocar o
    padrão (a compilação no celular vira o caminho de reserva).
 
+## Resultado do P0 (branch `native-p0`, 2026-10-27, POCO F7 Ultra, 1.9.0)
+
+`LARECOMP_NATIVE=1` (`runtime/native.c`, `runtime/native_gate.S`): o `main` e o `sdk` originais, reescritos no
+carregamento, rodam direto na CPU. **O jogo chegou à tela de título e ao mundo** (o save do Grande Platô, a imagem
+certa, sem crash), sem usar o `botwgame.so`.
+
+- Reescrito: 152 `svc` (stubs que entram em `native_svc_gate`), 129 leituras/escritas de `tpidrro_el0`/`tpidr_el0`
+  (stubs que acham o `Cpu` da thread por `TPIDR_EL0` numa tabela com sondagem), 43 `mrs cntpct_el0` (viram
+  `cntvct_el0`: o contador do Snapdragon é de 19,2 MHz, o mesmo do Switch). O `x18` ficou com o jogo (~38.000 usos):
+  o Linux o preserva, e as portas devolvem o do host enquanto o C roda.
+- As funções do runtime (HLE, NVN) viraram código nos endereços falsos de `HLE_BASE`; `guest_call` entra pelo
+  `native_enter`. `kernel.c`, serviços, NVN e Vulkan não mudaram.
+- Bugs achados: (1) chamadas aninhadas (o runtime chamando o jogo de dentro de uma porta) perdiam os registradores
+  preservados - o `native_exit` agora os devolve ao `Cpu`; (2) duas threads no mesmo slot da tabela - agora com
+  sondagem.
+- **Desempenho: sem ganho.** Rodadas alternadas, mesmo save, mesmo calor (~62-66 °C): nativo 51,5 e 52,2 fps,
+  recompilado 55,1 e 55,4 fps (render ~11,8 e GPU ~14,3 ms nos dois). A thread principal continua ~70% ocupada
+  (~13 ms por quadro) fora das esperas de svc, como no recompilado: o tempo dela não é o código do jogo em si. O
+  mais provável é a espera ativa pelos workers de job (a `t80` gira em `SleepThread(-1)` e `WaitForAddress` esperando
+  os jobs, que também já rodavam bem recompilados) e o custo das portas (cada `svc` salva ~800 bytes e passa pelo
+  revezamento do núcleo 0).
+- Pelo critério do protótipo (a thread principal 25% mais rápida), **o caminho nativo não se paga como ganho de fps**.
+  O que ele daria é outra coisa: nenhuma compilação no celular (sem os 10-15 min, sem o fim por falta de memória das
+  issues #25/#47/#51/#53), menos memória e menos espaço. Isso fica para decidir; faltariam os `patches.py` como
+  trampolins (60 fps, widescreen, as correções de cada versão), o reinício para a tela inicial e o relatório de crash.
+
 Créditos, se algo for aproveitado: o reescritor e os stubs do d2r-mobile (MIT, com o aviso dele), as ideias do
 totk-mobile (Apache-2.0: o aviso de licença e um NOTICE se houver código) e do MacNativeGames (MIT), no README.

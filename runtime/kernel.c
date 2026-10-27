@@ -77,7 +77,8 @@ void kernel_signal(KObject *o) {
 // ------------------------------------------------------------------ time
 
 uint64_t rt_ticks(void) {
-    // 19.2 MHz system tick
+    // 19.2 MHz system tick (running the game's own code: the counter its rewritten reads see, native.c)
+    if (native_on()) return native_ticks();
     uint64_t ns = plat_now_ns();
     static double scale = -1;
     if (scale < 0) scale = getenv("LARECOMP_TICK_SCALE") ? atof(getenv("LARECOMP_TICK_SCALE")) : 1.0;
@@ -378,6 +379,7 @@ static void *thread_main(void *arg) {
         guest_call(&t->cpu, t->entry);
     }
     core0_release(t);
+    native_thread_end();
 #else
     if (!setjmp(t->unwind)) guest_call(&t->cpu, t->entry);
 #endif

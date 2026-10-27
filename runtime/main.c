@@ -182,6 +182,7 @@ static void boot(const char *root) {
     { extern void settings_load(void); settings_load(); }
     kernel_init();
     dispatch_init();
+    native_prepare();  // (LARECOMP_NATIVE=1: the game's own code made runnable)
 
     uint32_t stack_size = 0x100000;
     int prio = 44;
