@@ -75,12 +75,21 @@ const char *const g_language_names[N_LANGUAGES] = {"Auto", "Japanese", "English"
                                                    "Italian", "Dutch", "Russian", "Korean", "Chinese (Simplified)",
                                                    "Chinese (Traditional)", "Portuguese (Brazil)"};
 
+// The app's own menus (ui/i18n.mm): the game's Language when one is chosen - one setting for both, read once (the menus
+// change when the app starts again) - else the phone's first preferred language, which is the app's own when Android
+// 13+ has one set for it (res/xml/locales_config.xml)
 const char *settings_menu_language(void) {
 #ifdef __ANDROID__
     static const char *lang;
     if (!lang) {
         char l[16] = "", country[16] = "";
         const char *e = getenv("LARECOMP_HOST_LANG");
+        int chosen = g_settings.language;
+        if (!(e && *e) && chosen > LANG_AUTO && chosen < N_LANGUAGES) {
+            static const char *const menu[N_LANGUAGES] = {"en", "ja", "en", "es", "fr", "de", "it", "nl", "ru", "ko",
+                                                          "zh-Hans", "zh-Hant", "pt"};  // (g_language_codes' order)
+            return lang = menu[chosen];
+        }
         if (e && *e) {
             snprintf(l, sizeof l, "%s", e);
             char *dash = strchr(l, '-');
@@ -117,8 +126,17 @@ static const char *host_language(void) {
     return "en-US";
 #endif
 #ifdef __ANDROID__
-    // (Android: no locale variables; the system's language is a property, "pt-BR", "es-US", "zh-Hant-TW")
+    // (Android: no locale variables. The app's preferred language first - the phone's, or the app's own one set in
+    // Android 13+'s per-app languages - then the system's as a property, "pt-BR", "es-US", "zh-Hant-TW")
     static char prop[PROP_VALUE_MAX];
+    if (!prop[0]) {
+        int n = 0;
+        SDL_Locale **loc = SDL_GetPreferredLocales(&n);
+        if (loc && n > 0 && loc[0]->language)
+            snprintf(prop, sizeof prop, "%s%s%s", loc[0]->language, loc[0]->country ? "-" : "",
+                     loc[0]->country ? loc[0]->country : "");
+        SDL_free(loc);
+    }
     if (!prop[0] && __system_property_get("persist.sys.locale", prop) <= 0) __system_property_get("ro.product.locale", prop);
     const char *e = prop;
 #else

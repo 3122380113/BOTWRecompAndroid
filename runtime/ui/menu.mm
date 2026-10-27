@@ -729,8 +729,8 @@ static void tab_about(void) {
         for (int i = 1; i < N_LANGUAGES; i++) names[i] = g_language_names[i];
         if (choice("Language", &g_settings.language, names, N_LANGUAGES)) settings_save();
     }
-    hint("The game's text language, as its own system setting. Applies when the game restarts: Quit -> Title "
-         "screen, then Play.");
+    hint("The game's text language, as its own system setting, and the app's menus' too (Auto: the phone's). The game's "
+         "text changes when the game restarts (Quit -> Title screen, then Play); the menus when the app starts again.");
     ImGui::Spacing();
     header("Controls");
     if (toggle("Motion controls", &g_settings.motion)) settings_save();  // (runtime/hle/motion.c)
