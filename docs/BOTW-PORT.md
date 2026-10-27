@@ -857,6 +857,13 @@ Pedidos ainda não começados, o mais recente no fim.
     rodadas separadas): 18,21 vs 18,27 ms - também não é o limite.
   - GPU ~14,2 ms de 16,7, render ~11,8 ms. O que sobra: menos trabalho de GPU e de lógica a clocks baixos; o calor
     (90+ °C em poucos minutos, carregando) corta os clocks pela metade.
+  - Passes da GPU (`LARECOMP_GPUPROF_AT=3000`, com `LARECOMP_GPUPROF_DRAWS=1`): os três passes do G-buffer (6 alvos,
+    1600x900, ~2.400 draws) ~6,6 ms; a saída com FSR 1 (EASU 0,70 + RCAS 0,26 ms) e FXAA para 2560x1440 (0,80 ms);
+    nenhum shader domina (o maior 10%, ~4 us por draw no resto): a GPU paga por draw. A primeira linha do quadro (~3
+    ms) é ociosidade esperando a próxima submissão.
+  - **A GPU não é o limite agora:** SGSR no lugar do FSR 1 (`LARECOMP_AB=120:sgsr`) tirou 0,5 ms de GPU (14,15 ->
+    13,65) e o período ficou igual (17,91 vs 18,03 ms). O quadro é a cadeia de CPU do jogo (a lógica nas threads
+    dele, depois a gravação da lista), a esses clocks.
 - **Aquecimento de shaders com listas conhecidas** (como o MacNativeGames): menos travadas no primeiro jogo. Médio.
 - **Pequenos, do SavageWindRecomp e do MacNativeGames:**
   - feitos em b512a4b (falta testar no celular): o desvio do giroscópio em repouso aprendido e descontado, e a zona
