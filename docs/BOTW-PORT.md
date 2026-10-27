@@ -874,6 +874,13 @@ Pedidos ainda não começados, o mais recente no fim.
     ms, que entregam o núcleo 0). **O caminho crítico é a CPU da thread principal do jogo, ~12-15 ms por quadro de
     código recompilado numa thread só.** Para 60 fps estáveis: deixar esse código mais rápido (o que ele roda: falta
     um perfil por amostragem da t80, o `fnprof` só conta entradas) ou clocks mais altos nessa thread.
+  - **Referência: [totk-mobile](https://github.com/OJZen/totk-mobile)** (OJZen, Apache-2.0; o núcleo vem do
+    d2r-mobile, MIT) e o [MacNativeGames](https://github.com/ly05010419/MacNativeGames) (MIT) não recompilam: rodam o
+    código ARM64 do jogo direto na CPU, com um reescritor estático do módulo (`core/tools/patch_nso.py`: x18 e
+    `tpidr_el0` em slots da thread, `mrs tpidrro_el0` no TLR do Horizon, `svc` e `mrs cntpct_el0` em portas para o
+    host). Para o nosso caminho crítico (a thread principal do jogo) seria o maior ganho possível, e acabaria com a
+    compilação do código do jogo no celular - mas é outra arquitetura. Existe um port para Android do MacNativeGames
+    (deivid22srk/MacNativeGames-Android) a estudar antes. Nada foi copiado deles até agora.
 - **Aquecimento de shaders com listas conhecidas** (como o MacNativeGames): menos travadas no primeiro jogo. Médio.
 - **Pequenos, do SavageWindRecomp e do MacNativeGames:**
   - feitos em b512a4b (falta testar no celular): o desvio do giroscópio em repouso aprendido e descontado, e a zona

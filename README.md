@@ -74,6 +74,9 @@ android/run_boot.sh 120                               # start the game, log to a
 - [Revivedx](https://github.com/Revivedx) for [SavageWindRecomp](https://github.com/Revivedx/SavageWindRecomp) (MIT),
   the reference for 1.8.2: frame pacing, internal resolution, the SDK 20 kernel fixes, setjmp.
 - [Nycolazs](https://github.com/Nycolazs) for LASRecomp-Android-Plus (MIT): Vulkan driver compatibility.
+- [ly05010419](https://github.com/ly05010419) for [MacNativeGames](https://github.com/ly05010419/MacNativeGames) (MIT),
+  whose fixes and notes for BOTW and TOTK pointed the way for several here: the sync lag (its PR #680), GPU results
+  the CPU reads back (PR #239), the terrain's height map texture (PR #511), texture layout, and the gyroscope's drift.
 - The [zeldaret/botw](https://github.com/zeldaret/botw) decompilation and [open-ead/sead](https://github.com/open-ead/sead),
   for what is known about the game's code.
 - Dusklight's launcher, the start screen's style.
