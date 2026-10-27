@@ -774,6 +774,11 @@ Pedidos ainda não começados, o mais recente no fim.
   Falta o log da próxima versão (4a27085) para ver o passo em que para.
 - **#43** (Adreno 740, 1.8.2, Turnip V38): a grama some de vez em quando ao andar, e chamar o cavalo trava com um
   save da 1.6.0. Esperando o log (e se o cavalo usa equipamento de DLC).
+  - **A grama:** reproduzida no POCO (1.9.0, Grande Platô, os degraus ao lado da torre, 2026-10-27): a grama baixa
+    perto do Link some entre um quadro e outro (as touceiras altas ficam). Igual com `LARECOMP_SYNC_LAG=0` - não é o
+    sync lag, e já estava na 0.1.11. Suspeitas: a máscara de densidade da grama, que a GPU desenha e a CPU lê para
+    escolher as células (o MacNativeGames trata esse caminho), ou o fade de perto da grama baixa. Próximo passo: um
+    quadro de depuração (F9) com a grama presente e outro sem, e comparar os draws da grama.
 - **#23** (RP Nova T26, 1.0.0): o `ActorInfo.product.sbyml` está na pasta, mas a imagem tinha 39.677 arquivos e o
   jogo para ao carregá-lo. Esperando a mensagem da verificação de setup da 0.1.11 (qual arquivo falta) e o tamanho
   exato do arquivo (760.223 bytes).
