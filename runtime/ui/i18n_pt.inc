@@ -572,3 +572,5 @@
  "Nenhum DLC ali: escolha a pasta com o romfs do DLC (System/AocVersion.txt e Pack)."},
 {"That's only the Champions' Ballad's unlock: choose the larger pack (01007EF00011F001), which holds both DLCs.",
  "Esse é só o desbloqueio da Balada dos Campeões: escolha o pacote maior (01007EF00011F001), que tem os dois DLCs."},
+{"The game starts its next frame while the GPU still finishes the last one: a few more fps. What the game reads back from the GPU then comes a frame late, and Link's legs can sink into the ground while he stands still. Turn it off if that bothers you. Applies at once.",
+ "O jogo começa o próximo quadro enquanto a GPU ainda termina o anterior: alguns fps a mais. O que o jogo lê de volta da GPU chega então um quadro atrasado, e as pernas do Link podem afundar no chão quando ele está parado. Desligue se isso incomodar. Vale na hora."},

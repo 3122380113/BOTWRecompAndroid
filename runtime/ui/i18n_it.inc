@@ -571,3 +571,5 @@
  "Nessun DLC qui: scegli la cartella con il romfs del DLC (System/AocVersion.txt e Pack)."},
 {"That's only the Champions' Ballad's unlock: choose the larger pack (01007EF00011F001), which holds both DLCs.",
  "Questo è solo lo sblocco de L'Ode ai Campioni: scegli il pacchetto più grande (01007EF00011F001), che contiene entrambi i DLC."},
+{"The game starts its next frame while the GPU still finishes the last one: a few more fps. What the game reads back from the GPU then comes a frame late, and Link's legs can sink into the ground while he stands still. Turn it off if that bothers you. Applies at once.",
+ "Il gioco inizia il fotogramma successivo mentre la GPU finisce ancora il precedente: qualche fps in più. Ciò che il gioco rilegge dalla GPU arriva allora con un fotogramma di ritardo, e le gambe di Link possono affondare nel terreno quando è fermo. Disattivalo se ti dà fastidio. Si applica subito."},

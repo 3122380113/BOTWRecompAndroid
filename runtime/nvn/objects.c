@@ -305,14 +305,18 @@ NVN(nvnSyncWait) {  // NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED
     // colour from a tiny render target, MacNativeGames PR #239). The water came from write-backs dropped when their slots
     // were full (the curtains show without the lag too, README); since they wait for the GPU instead (vulkan wb_queue)
     // the water is right with the lag (Turnip V38, 2026-10-26: in-run A/B 46.6 -> 53.6 fps on 1.8.2's Great Plateau).
-    // But Link's legs sank into the ground standing still (2026-10-27, 1.9.0; not with the lag off): the foot placement
-    // renders a tiny target and reads it right after this wait, with no invalidate (MacNativeGames' "sinking legs", their
-    // PR #511) - with the lag that read is a frame early. Off by default again until that read is waited for;
-    // LARECOMP_SYNC_LAG=1 on; LARECOMP_AB=<frames>:synclag alternates.
-    // LARECOMP_SYNC_LAG=2: the lag, but the wait still covers the newest frame's last draw or dispatch that stores to
-    // global memory - on the POCO the game's memory itself, which the CPU reads after this wait (vk_last_gmem_store_seq)
-    static int lag = -1;
-    if (lag < 0) lag = getenv("LARECOMP_SYNC_LAG") ? atoi(getenv("LARECOMP_SYNC_LAG")) : 0;
+    // But the CPU reads GPU results right after this wait, and with the lag they are a frame old: Link's legs sank into
+    // the ground standing still (2026-10-27, 1.9.0; not with the lag off). Every write-back the CPU reads - the terrain
+    // heights, the 1x1 linear targets, the depth bounds, the exposure - is copied in the frame's last one or two of ~10
+    // submissions (LARECOMP_LOG_WB_FRAME), so waiting for them leaves nothing to overlap: 38.1 -> 37.8 fps with that
+    // guard, 42.3 -> 44.4 without (same run each, POCO, 1.9.0's Plateau). So the lag is the player's choice: Video >
+    // Sync lag (settings.sync_lag, on by default: a few more fps, the legs may sink).
+    // LARECOMP_SYNC_LAG=<n> (measurements, over the setting): 0 off, 1 on, 2 the wait also covers the newest frame's last
+    // store to global memory (vk_last_gmem_store_seq), 3 the wait covers its write-backs (vk_last_writeback_seq);
+    // LARECOMP_AB=<frames>:synclag alternates.
+    static int env_lag = -2;
+    if (env_lag == -2) env_lag = getenv("LARECOMP_SYNC_LAG") ? atoi(getenv("LARECOMP_SYNC_LAG")) : -1;
+    int lag = env_lag >= 0 ? env_lag : g_settings.sync_lag ? 1 : 0;
     extern int vk_ab(const char *what);
     int ab = vk_ab("synclag");
     bool lag_now = vk_async_on() && !flush && !whole && (ab >= 0 ? ab == 1 : lag > 0);
@@ -322,21 +326,40 @@ NVN(nvnSyncWait) {  // NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED
     if (newest) prev_newest_seq = sync_of(A(0))->seq;
     if (lag_now && newest) {
         uint64_t seq = sync_of(A(0))->seq, target = newest_prev < seq ? newest_prev : seq;
-        if (lag != 1) {  // (2, or the A/B: the stores guarded)
+        // (3: the newest frame's write-backs waited for - they land once their submission is done, vulkan/exec.c wb_apply)
+        extern uint64_t vk_last_writeback_seq(void);
+        static uint64_t n, wb_n, wb_pos, st_n, st_pos;  // (LARECOMP_LOG_SYNC_LAG: how often, how far into the frame)
+        static int log = -1;
+        if (log < 0) log = getenv("LARECOMP_LOG_SYNC_LAG") != NULL;
+        n++;
+        uint64_t wb = vk_last_writeback_seq();
+        {   // (LARECOMP_LOG_WB_FRAME=<n>: the newest frame's submissions, beside vulkan/exec.c's [wb-frame] lines)
+            static int every = -1;
+            if (every < 0) every = getenv("LARECOMP_LOG_WB_FRAME") ? atoi(getenv("LARECOMP_LOG_WB_FRAME")) : 0;
+            extern uint64_t renderer_present_count(void);
+            if (every > 0 && renderer_present_count() % (uint64_t)every == 0)
+                LOG("[synclag-frame] %llu: submissions %llu..%llu\n", (unsigned long long)renderer_present_count(),
+                    (unsigned long long)newest_prev, (unsigned long long)seq);
+        }
+        if (wb > target && lag == 3) {
+            wb_n++;
+            if (seq > newest_prev) wb_pos += 100 * ((wb < seq ? wb : seq) - newest_prev) / (seq - newest_prev);
+            target = wb < seq ? wb : seq;
+        }
+        if (lag == 2) {  // (the stores guarded)
             extern uint64_t vk_last_gmem_store_seq(void);
             uint64_t st = vk_last_gmem_store_seq();
-            static uint64_t n, guarded, pos_sum;  // (LARECOMP_LOG_SYNC_LAG: how far into the frame its last store is)
-            static int log = -1;
-            if (log < 0) log = getenv("LARECOMP_LOG_SYNC_LAG") != NULL;
-            n++;
             if (st > target) {
-                guarded++;
-                if (seq > newest_prev) pos_sum += 100 * (st - newest_prev) / (seq - newest_prev);
+                st_n++;
+                if (seq > newest_prev) st_pos += 100 * ((st < seq ? st : seq) - newest_prev) / (seq - newest_prev);
                 target = st < seq ? st : seq;
             }
-            if (log && n % 120 == 0)
-                LOG("[synclag] %llu of 120 frames waited for a store in the newest frame, at %llu%% of its submissions on average\n",
-                    (unsigned long long)guarded, (unsigned long long)(guarded ? pos_sum / guarded : 0)), guarded = pos_sum = 0;
+        }
+        if (log && n % 120 == 0) {
+            LOG("[synclag] of 120 frames: %llu waited for a write-back (at %llu%% of the newest frame's submissions), %llu for "
+                "a store (at %llu%%)\n", (unsigned long long)wb_n, (unsigned long long)(wb_n ? wb_pos / wb_n : 0),
+                (unsigned long long)st_n, (unsigned long long)(st_n ? st_pos / st_n : 0));
+            wb_n = wb_pos = st_n = st_pos = 0;
         }
         renderer_wait_seq(target);
     } else

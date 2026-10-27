@@ -571,3 +571,5 @@
  "Здесь нет DLC: выберите папку с romfs DLC (System/AocVersion.txt и Pack)."},
 {"That's only the Champions' Ballad's unlock: choose the larger pack (01007EF00011F001), which holds both DLCs.",
  "Это только разблокировка «Баллады о героях»: выберите больший пакет (01007EF00011F001), в нём оба DLC."},
+{"The game starts its next frame while the GPU still finishes the last one: a few more fps. What the game reads back from the GPU then comes a frame late, and Link's legs can sink into the ground while he stands still. Turn it off if that bothers you. Applies at once.",
+ "Игра начинает следующий кадр, пока GPU ещё заканчивает предыдущий: немного больше fps. То, что игра читает обратно с GPU, тогда приходит на кадр позже, и ноги Линка могут проваливаться в землю, когда он стоит. Выключите, если это мешает. Действует сразу."},

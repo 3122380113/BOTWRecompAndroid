@@ -571,3 +571,5 @@
  "거기에는 DLC가 없습니다: DLC의 romfs (System/AocVersion.txt와 Pack)가 있는 폴더를 고르세요."},
 {"That's only the Champions' Ballad's unlock: choose the larger pack (01007EF00011F001), which holds both DLCs.",
  "그것은 영걸들의 노래 잠금 해제뿐입니다: 두 DLC가 모두 든 큰 쪽 팩 (01007EF00011F001)을 고르세요."},
+{"The game starts its next frame while the GPU still finishes the last one: a few more fps. What the game reads back from the GPU then comes a frame late, and Link's legs can sink into the ground while he stands still. Turn it off if that bothers you. Applies at once.",
+ "GPU가 이전 프레임을 마무리하는 동안 게임이 다음 프레임을 시작합니다. fps가 조금 오릅니다. 대신 게임이 GPU에서 다시 읽는 결과가 한 프레임 늦게 와서, 링크가 가만히 서 있을 때 다리가 땅에 잠길 수 있습니다. 거슬리면 끄세요. 바로 적용됩니다."},

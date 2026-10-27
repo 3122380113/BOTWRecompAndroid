@@ -571,3 +571,5 @@
  "そこに DLC はありません: DLC の romfs (System/AocVersion.txt と Pack) があるフォルダーを選んでください。"},
 {"That's only the Champions' Ballad's unlock: choose the larger pack (01007EF00011F001), which holds both DLCs.",
  "それは「英傑たちの詩」の解放だけです: 両方の DLC が入った大きいほうのパック (01007EF00011F001) を選んでください。"},
+{"The game starts its next frame while the GPU still finishes the last one: a few more fps. What the game reads back from the GPU then comes a frame late, and Link's legs can sink into the ground while he stands still. Turn it off if that bothers you. Applies at once.",
+ "GPU が前のフレームを仕上げている間に、ゲームが次のフレームを始めます。fps が少し上がります。その代わり、ゲームが GPU から読み戻す結果が 1 フレーム遅れ、立ち止まっているリンクの足が地面に沈むことがあります。気になる場合はオフにしてください。すぐに反映されます。"},

@@ -1482,6 +1482,10 @@ static pthread_mutex_t wb_lock = PTHREAD_MUTEX_INITIALIZER;
 static NvnTexture *wb_pass[8];
 static int wb_npass;
 static uint64_t stat_wb, stat_wb_dropped;
+// The submission of the latest write-back queued: the sync lag's wait covers it (objects.c nvnSyncWait) - the CPU reads
+// these right after that wait (the terrain heights the feet stand on, the water's colour), so they must have landed
+static _Atomic uint64_t g_wb_seq;
+uint64_t vk_last_writeback_seq(void) { return atomic_load(&g_wb_seq); }
 
 static bool wb_on(void) {
     static int on = -1;
@@ -1547,7 +1551,16 @@ static void wb_queue(NvnTexture *t) {
     *e = (WbEntry){.seq = submit_seq + 1, .addr = t->addr, .wb = l.wb, .hb = l.hb, .bpb = fi->bpb,
                    .pitch = (t->flags & 0x10) ? t->stride : (t->flags & 0x40) ? nvn_linear_rt_pitch((uint64_t)l.wb * fi->bpb) : 0,
                    .bh = l.block_height_log2, .fmt = t->format, .busy = true};
+    atomic_store(&g_wb_seq, e->seq);
     pthread_mutex_unlock(&wb_lock);
+    {   // LARECOMP_LOG_WB_FRAME=<n>: every write-back of every n-th frame - size, format, flags, submission (the frame's
+        // submissions: nvnSyncWait's [synclag-frame] line), to tell which ones the CPU needs before the next frame
+        static int every = -1;
+        if (every < 0) every = getenv("LARECOMP_LOG_WB_FRAME") ? atoi(getenv("LARECOMP_LOG_WB_FRAME")) : 0;
+        if (every > 0 && renderer_present_count() % (uint64_t)every == 0)
+            LOG("[wb-frame] %llu: %ux%u f%#x flags %#x at %llx, submission %llu\n", (unsigned long long)renderer_present_count(),
+                t->width, t->height, t->format, t->flags, (unsigned long long)t->addr, (unsigned long long)e->seq);
+    }
     VkCommandBuffer cb = vk_cmd();
     vk_full_barrier(cb);
     VkBufferImageCopy c = {.bufferOffset = (VkDeviceSize)slot * WB_SLOT, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},

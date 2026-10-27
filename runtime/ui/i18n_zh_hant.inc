@@ -571,3 +571,5 @@
  "那裡沒有 DLC：請選擇包含 DLC 的 romfs（System/AocVersion.txt 和 Pack）的資料夾。"},
 {"That's only the Champions' Ballad's unlock: choose the larger pack (01007EF00011F001), which holds both DLCs.",
  "那只是英傑之詩的解鎖：請選擇包含兩個 DLC 的較大的包（01007EF00011F001）。"},
+{"The game starts its next frame while the GPU still finishes the last one: a few more fps. What the game reads back from the GPU then comes a frame late, and Link's legs can sink into the ground while he stands still. Turn it off if that bothers you. Applies at once.",
+ "GPU 還在完成上一幀時，遊戲就開始下一幀：fps 會高一些。代價是遊戲從 GPU 讀回的結果會晚一幀，林克站著不動時腿可能陷進地面。介意的話請關閉。立即生效。"},

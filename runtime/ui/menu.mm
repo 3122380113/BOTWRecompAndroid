@@ -654,6 +654,10 @@ static void tab_display(void) {
                "blends only along them, so textures stay sharp. FXAA: a single, cheaper pass that also softens the image "
                "a little. Most useful at a lower internal resolution.");
 #ifdef __ANDROID__
+    opt_toggle("Sync lag", &g_settings.sync_lag, true,
+               "The game starts its next frame while the GPU still finishes the last one: a few more fps. What the game reads "
+               "back from the GPU then comes a frame late, and Link's legs can sink into the ground while he stands "
+               "still. Turn it off if that bothers you. Applies at once.");
     opt_toggle("32-bit shader math", &g_settings.shader_int32, false,
                "Translates the game's shaders with 32-bit address math, the path used for drivers without 64-bit "
                "integers (Adreno 6xx / 7xx and Mali stock drivers). Try it if lighting, grass or text are missing or wrong "
