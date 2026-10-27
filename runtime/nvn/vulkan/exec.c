@@ -3457,6 +3457,28 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
             LOG("\n");
         }
     }
+    {   // LARECOMP_LOG_FS_CB=<fs hash>:<stage 0 vs / 1 fs>:<cbuf>:<first row>:<rows> (diagnosis): that cbuf of the first
+        // draw of that fragment shader each frame, as floats - a value that jumps for one frame shows here
+        static uint64_t want = ~0ull, last_frame = ~0ull;
+        static int wstage, wk, wrow, wrows;
+        if (want == ~0ull) {
+            const char *e = getenv("LARECOMP_LOG_FS_CB");
+            want = 0;
+            if (e) {
+                unsigned long long h;
+                if (sscanf(e, "%llx:%d:%d:%d:%d", &h, &wstage, &wk, &wrow, &wrows) == 5) want = h;
+            }
+        }
+        if (want && g_cur_fs_hash == want && stage == wstage && k == wk && renderer_present_count() != last_frame) {
+            last_frame = renderer_present_count();
+            char line[2048];
+            int n = 0;
+            const float *f = (const float *)(uintptr_t)r.addr;
+            for (int i = wrow * 4; i < (wrow + wrows) * 4 && (uint64_t)(i * 4) < size && n < (int)sizeof line - 32; i++)
+                n += snprintf(line + n, sizeof line - n, "%s%g", i % 4 ? " " : " | ", f[i]);
+            LOG("[fscb] frame %llu cb%d:%s\n", (unsigned long long)last_frame, k, line);
+        }
+    }
     {   // LARECOMP_LOG_CBUF=<fs hash>: the first floats of the draws of that fragment shader get in cb3 (its stage's
         // first game buffer), as copied - a race with the game's writes shows here without a debug frame's timing
         static uint64_t want = ~0ull;

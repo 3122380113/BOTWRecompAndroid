@@ -883,6 +883,20 @@ Pedidos ainda não começados, o mais recente no fim.
     host). Para o nosso caminho crítico (a thread principal do jogo) seria o maior ganho possível, e acabaria com a
     compilação do código do jogo no celular - mas é outra arquitetura. Existe um port para Android do MacNativeGames
     (deivid22srk/MacNativeGames-Android) a estudar antes. Nada foi copiado deles até agora.
+- **Pontas na nuvem da Montanha da Morte e na névoa do horizonte num golpe** (2026-10-27, em aberto; cosmético,
+  um quadro). Visto pelo usuário na 0.2.0, 0.2.1 e no branch native-p0, recompilado e nativo, a 30 e 60 fps.
+  - Descartados (cada um num teste em jogo): Sync lag, `LARECOMP_SYNC_ALL=1` (a GPU esperada por inteiro: não é
+    corrida CPU/GPU), `LARECOMP_FRAMEPACE=0` (o relógio do próprio jogo), `LARECOMP_NO_VS_SNAP=1`, o caminho dos 64 KB,
+    o modo FMZ do FMUL/FFMA (implementado e testado, sem efeito, desfeito).
+  - O draw: passe de meia resolução 800x450 (o 209 de 269 no quadro de depuração 9490), 354 vértices, 8 atributos,
+    fs `8d989710b28bd28a`, vs em 0x36e610000 (`LARECOMP_DUMP_FS`): partículas - idade = `cb10[2].x` (tempo do
+    efeito) - nascimento (`a5.w`), vida `a4.w`, arrasto `cb9[12].x`, eixos de câmera de `cb10[8..10]`, duas texturas
+    lidas no VS.
+  - `LARECOMP_LOG_FS_CB=<fs>:<estágio>:<cbuf>:<linha>:<linhas>` (novo) registra o cbuf por quadro: o `cb10` está são em
+    todos os golpes - o hit-stop é o tempo do efeito a 10% (passo 0,05) voltando em rampa 0,1, 0,2, 0,4; no quadro em
+    que começa, o tempo ainda andou 0,5 e `cb10[2].w` já diz 0,05.
+  - Próximo: os atributos dos vértices nesse quadro de transição (o buffer de vértices é escrito pela CPU) e o vs
+    calculado na CPU para eles; ou comparar com a tradução do Ryujinx do mesmo shader.
 - **Aquecimento de shaders com listas conhecidas** (como o MacNativeGames): menos travadas no primeiro jogo. Médio.
 - **Pequenos, do SavageWindRecomp e do MacNativeGames:**
   - feitos em b512a4b (falta testar no celular): o desvio do giroscópio em repouso aprendido e descontado, e a zona
