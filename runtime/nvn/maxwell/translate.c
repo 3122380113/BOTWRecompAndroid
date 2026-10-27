@@ -651,6 +651,20 @@ static void glsl_sample(Ctx *c, char *out, int slot, const char *const *co, cons
     } else if (n == 2) {
         if (off) snprintf(xs, sizeof xs, "(vec2(%s, %s) + vec2(%s)%s / vec2(tsize%d(%s).xy))", co[0], co[1], off, off_scale(c, slot, 2), slot, L);
         else snprintf(xs, sizeof xs, "vec2(%s, %s)", co[0], co[1]);
+        // Vertex stage: the coordinates rounded to 1/256 of a texel, as the Switch's texture unit weighs a bilinear
+        // lookup (8 bits of sub-texel position). The terrain's tiles read their heights at a shared edge each from its
+        // own texture, at what is meant to be a texel's centre; a hair off from float rounding, the Switch still gets
+        // that texel exactly, while the Adreno's finer weights blended in a trace of the next one - the edges' heights
+        // differed and the ground showed a grid of dotted cracks, denser at higher resolutions (issue #21; with nearest
+        // filtering they were gone, 2026-10-27). LARECOMP_NO_VS_SNAP=1: not rounded.
+        static int snap = -1;
+        if (snap < 0) snap = getenv("LARECOMP_NO_VS_SNAP") == NULL;
+        if (snap && c->stage == STAGE_VERTEX && !t->shadow && lod_kind == 1) {
+            char raw[1600];
+            snprintf(raw, sizeof raw, "%s", xs);
+            snprintf(xs, sizeof xs, "(floor((%s) * vec2(tsize%d(%s).xy) * 256.0f + 0.5f) / (vec2(tsize%d(%s).xy) * 256.0f))",
+                     raw, slot, L, slot, L);
+        }
     } else {
         if (off && !cube) snprintf(xs, sizeof xs, "vec3(vec2(%s, %s) + vec2(%s)%s / vec2(tsize%d(%s).xy), %s)", co[0], co[1], off, off_scale(c, slot, 2), slot, L, co[2]);
         else snprintf(xs, sizeof xs, "vec3(%s, %s, %s)", co[0], co[1], co[2]);  // cube lookups take no offset
