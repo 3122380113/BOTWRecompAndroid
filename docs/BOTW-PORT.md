@@ -791,6 +791,9 @@ Pedidos ainda não começados, o mais recente no fim.
     resto da 1.6.0 fica abaixo de 350 MB). No celular, dezenas de minutos com mais de 1 GB enquanto os outros
     compiladores levavam a barra de ~53% a ~80%. Agora uma função com mais de 60.000 linhas vai para -O0 e o arquivo
     compila sozinho. A 1.8.2 e a 1.9.0 não têm função assim: se o #51 for da 1.8.2, a causa é outra.
+  - E o gerador (Python, dentro do app, ao lado dos compiladores) guardava o C de toda instrução até o fim: 3,3 GB
+    na 1.6.0 e 2,1 GB na 1.8.2. Desde 9603800 guarda só os desvios: 1,2 GB e 0,8 GB, a saída idêntica, ~25% mais
+    tempo de gerador. Isso vale para todas as versões, inclusive a 1.8.2 do #51.
 - **Cortinas de terreno depois da cutscene de uma torre** (2026-10-26, em andamento).
   - Aparecem só quando a ativação toca a cutscene. Carregar um save já com a torre ativada não mostra nenhuma.
   - Com `LARECOMP_TEX_FULLHASH=1` não apareceram. Não é o padrão do #511 do MacNativeGames
