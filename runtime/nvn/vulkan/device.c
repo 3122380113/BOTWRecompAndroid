@@ -1368,6 +1368,8 @@ void backend_present(NvnTexture *t) {
 #endif
     extern void vk_level_change_check(void);
     vk_level_change_check();
+    extern void vk_dump_watch_frame(void);  // (exec.c: LARECOMP_WATCH_TEXADDR's texture on request)
+    vk_dump_watch_frame();
     static long shot_every = -1;
     if (shot_every < 0) { const char *e = getenv("LARECOMP_SCREENSHOT_EVERY"); shot_every = e ? atol(e) : 0; }
     extern bool g_debug_frame;

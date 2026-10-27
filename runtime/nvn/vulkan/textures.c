@@ -548,6 +548,17 @@ int vk_texture_count(void) {
     }
     return g_nlive;
 }
+// (diagnosis, exec.c vk_dump_watch_frame) the live texture over guest address addr with the most levels x layers
+NvnTexture *vk_texture_at(uint64_t addr) {
+    NvnTexture *best = NULL;
+    for (int i = 0; i < g_nlive; i++) {
+        NvnTexture *t = g_live[i];
+        if (t->addr != addr || !t->backend) continue;
+        if (!best || t->levels * t->layout.layers > best->levels * best->layout.layers) best = t;
+    }
+    return best;
+}
+
 static void live_add(NvnTexture *t, TexBackend *b) {
     if (g_nlive == g_cap_live) { g_cap_live = g_cap_live ? g_cap_live * 2 : 1024; g_live = realloc(g_live, g_cap_live * sizeof *g_live); }
     g_live[g_nlive++] = t;

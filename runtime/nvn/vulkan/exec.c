@@ -1653,6 +1653,49 @@ static void dump_layers_raw(TexBackend *b) {  // every layer, level 0, as stored
     }
     LOG("[vk] dumped %u layers of %ux%u vkformat %d (%u bytes a texel)\n", nl, b->width, b->height, (int)b->format, bpp);
 }
+// (diagnosis) LARECOMP_WATCH_TEXADDR's texture, every layer of every level, as stored: build/watch_L<layer>_lv<level>.raw,
+// when the file dump_watch appears next to the data folder (adb can write there: touch files/dump_watch) - its contents
+// at the moment something looks wrong on screen (the terrain height atlas after a tower's cutscene). Checked every 30
+// frames; the file's change time, so each touch dumps once.
+void vk_dump_watch_frame(void) {
+    extern uint64_t nvn_watch_texaddr(void);
+    extern NvnTexture *vk_texture_at(uint64_t addr);
+    static uint64_t n;
+    static time_t last;
+    uint64_t wa = nvn_watch_texaddr();
+    if (!wa || ++n % 30) return;
+    struct stat sb;
+    if (stat("../dump_watch", &sb) || sb.st_mtime == last) return;
+    last = sb.st_mtime;
+    NvnTexture *t = vk_texture_at(wa);
+    TexBackend *b = t ? t->backend : NULL;
+    if (!b || !b->image) { LOG("[vk] dump_watch: no texture at %llx\n", (unsigned long long)wa); return; }
+    uint32_t bpp = b->format == VK_FORMAT_R16_UNORM || b->format == VK_FORMAT_R16_SFLOAT ? 2 : b->format == VK_FORMAT_R8_UNORM ? 1
+                 : b->format == VK_FORMAT_R16G16B16A16_SFLOAT ? 8 : 4;
+    uint32_t nl = b->layers ? b->layers : 1;
+    for (uint32_t lv = 0; lv < b->levels; lv++) {
+        uint32_t w = b->width >> lv ? b->width >> lv : 1, h = b->height >> lv ? b->height >> lv : 1;
+        uint64_t one = (uint64_t)w * h * bpp;
+        VkCommandBuffer cb = vk_cmd();
+        vk_end_pass();
+        vk_full_barrier(cb);
+        VkSpan out = vk_readback(one * nl);
+        for (uint32_t l = 0; l < nl; l++) {
+            VkBufferImageCopy c = {.bufferOffset = out.off + one * l, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, l, 1},
+                                   .imageExtent = {w, h, 1}};
+            vkCmdCopyImageToBuffer(vk_cmd(), b->image, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &c);
+        }
+        renderer_flush();
+        for (uint32_t l = 0; l < nl; l++) {
+            char p[128];
+            snprintf(p, sizeof p, "build/watch_L%u_lv%u.raw", l, lv);
+            FILE *f = fopen(p, "wb");
+            if (f) { fwrite((const uint8_t *)out.ptr + one * l, 1, one, f); fclose(f); }
+        }
+    }
+    LOG("[vk] dump_watch frame %llu: %ux%u, %u layers, %u levels, vkformat %d (%u bytes a texel)\n",
+        (unsigned long long)renderer_present_count(), b->width, b->height, nl, b->levels, (int)b->format, bpp);
+}
 static void vk_end_pass_at(int line);
 static void save_texture_raw(TexBackend *b, const char *path);
 static TexBackend *pass_dump_b;  // (debug frame) the color target the open pass draws into
