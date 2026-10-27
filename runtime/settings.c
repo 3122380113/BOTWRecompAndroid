@@ -47,6 +47,7 @@ Settings g_settings = {
     .gpu_heap = -1,
     .inplace_reads = -1,
     .turnip_lrz = -1,
+    .event_fps_unlock = false,  // (some events count frames: hle/framepace.c in_event)
     .fps_mode = 1,  // (30: the game's own choice dropped the overworld to 20, where the GPU's clocks settled low)
     .res_mode = 1,  // (1x: the Switch's 900p scene, the HUD at the screen's resolution - Match display drew the scene at
                     // 2560x1440 on the POCO F7 Ultra: 22 fps)
@@ -198,6 +199,7 @@ void settings_reset_defaults(void) {
     g_settings.touch_controls = d->touch_controls;
     g_settings.overlay_style = d->overlay_style;
     g_settings.fps_mode = d->fps_mode;
+    g_settings.event_fps_unlock = d->event_fps_unlock;
     g_settings.shader_int32 = d->shader_int32;
     g_settings.sync_lag = d->sync_lag;
     g_settings.native_code = d->native_code;
@@ -239,6 +241,7 @@ void settings_load(void) {
 #endif
 #ifdef __ANDROID__
         else if (!strcmp(key, "touch_controls")) g_settings.touch_controls = atoi(val) != 0;
+        else if (!strcmp(key, "cutscenes_60")) g_settings.event_fps_unlock = atoi(val) != 0;
         else if (!strcmp(key, "frame_rate")) g_settings.fps_mode = !strcmp(val, "30") ? 1 : !strcmp(val, "60") ? 2 : 0;
         else if (!strcmp(key, "shader_int32")) g_settings.shader_int32 = atoi(val) != 0;
         else if (!strcmp(key, "sync_lag")) g_settings.sync_lag = atoi(val) != 0;
@@ -322,6 +325,7 @@ void settings_save(void) {
 #ifdef __ANDROID__
     fprintf(f, "touch_controls = %d\n", g_settings.touch_controls);
     fprintf(f, "frame_rate = %s\n", g_settings.fps_mode == 1 ? "30" : g_settings.fps_mode == 2 ? "60" : "auto");
+    fprintf(f, "cutscenes_60 = %d\n", g_settings.event_fps_unlock);
     fprintf(f, "shader_int32 = %d\nsync_lag = %d\nnative_code = %d\n", g_settings.shader_int32, g_settings.sync_lag,
             g_settings.native_code);
     static const char *const tri[] = {"auto", "0", "1"};  // (-1 / 0 / 1)

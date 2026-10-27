@@ -563,6 +563,11 @@ static void tab_display(void) {
                          : "Auto: the game picks, as on the Switch, and drops to 20 fps where a frame doesn't fit in 30. "
                            "30 fps: always 30 - where a frame takes longer, the game runs slightly slower instead of "
                            "dropping to 20.");
+        if (sixty)
+            opt_toggle("Cutscenes at 60 fps (experimental)", &g_settings.event_fps_unlock, false,
+                       "In-game cutscenes and talks run at the chosen frame rate instead of 30. Some of them count frames "
+                       "and may run shorter or out of step with their sound (at 60 fps the new game's opening gave Link "
+                       "control 2 s early). Videos and menus stay at 30. Applies at once.");
     }
 #endif
 
