@@ -3558,27 +3558,32 @@ bool vk_heap_place(uint64_t size) {
     if (!size) return false;
     vk_wait_ready();
     if (gmem_buf) return true;
-    if (!g_vk.map_placed || getenv("LARECOMP_VK_NO_PLACED")) return false;
+    // Not placed: the heap stays CPU memory copied for the GPU, and the vertex cache and the texture checks need the
+    // OS's write tracking - vk_exec_init turns it on only without placed memory at all, so a Turnip that has it but
+    // isn't an Adreno 8xx (Automatic) had neither: every vertex and index buffer copied each frame, ~150 MB, 7-9 fps
+    // on an Adreno 730 (issue #31). A page not tracked yet counts as written, so turning it on late is safe.
+#define NOT_PLACED() (gcopy_mode ? plat_write_tracking_enable(HEAP_BASE, HEAP_BASE + HEAP_MAX) : (void)0, false)
+    if (!g_vk.map_placed || getenv("LARECOMP_VK_NO_PLACED")) return NOT_PLACED();
     extern bool vk_turnip_path_on(int setting);
     if (!vk_turnip_path_on(g_settings.gpu_heap)) {
         // (the start screen's Driver compatibility: Automatic leaves it to the Adreno 8xx it was made on)
         LOG("[vk] guest heap as GPU memory: off (%s) - shader global memory through CPU copies\n",
             g_settings.gpu_heap < 0 ? "automatic: not an Adreno 8xx" : "settings");
-        return false;
+        return NOT_PLACED();
     }
     uint64_t align = g_vk.placed_align > 65536 ? g_vk.placed_align : 65536;
     size = (size + align - 1) & ~(align - 1);
     if ((HEAP_BASE & (align - 1)) || size > HEAP_MAX) {
         LOG("[vk] heap placement: %llx / %llu MB doesn't fit (alignment %llu)\n", (unsigned long long)HEAP_BASE,
             (unsigned long long)(size >> 20), (unsigned long long)align);
-        return false;
+        return NOT_PLACED();
     }
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size,
                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                                       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
                                       VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT};  // (ubo_direct)
     VkBuffer buf;
-    if (vkCreateBuffer(g_vk.dev, &bi, NULL, &buf) != VK_SUCCESS) return false;
+    if (vkCreateBuffer(g_vk.dev, &bi, NULL, &buf) != VK_SUCCESS) return NOT_PLACED();
     VkMemoryRequirements mr;
     vkGetBufferMemoryRequirements(g_vk.dev, buf, &mr);
     VkPhysicalDeviceMemoryProperties mp;
@@ -3608,7 +3613,7 @@ bool vk_heap_place(uint64_t size) {
         if (mem) vkFreeMemory(g_vk.dev, mem, NULL);  // (freeing a placed map unmaps it: the window gets its pages back)
         if (p == (void *)(uintptr_t)HEAP_BASE) plat_reset_guest(HEAP_BASE, HEAP_BASE + size);
         vkDestroyBuffer(g_vk.dev, buf, NULL);
-        return false;
+        return NOT_PLACED();
     }
     gmem_buf = buf;
     gmem_mem = mem;
@@ -3621,6 +3626,7 @@ bool vk_heap_place(uint64_t size) {
         (unsigned long long)(g_vk.props.limits.maxStorageBufferRange >> 20), gwin_mode ? "; draws reach global memory through windows" : "");
     return true;
 }
+#undef NOT_PLACED
 #endif
 
 static VkDescriptorBufferInfo gmem_info(void) {
