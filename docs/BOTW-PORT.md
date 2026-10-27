@@ -845,6 +845,18 @@ Pedidos ainda não começados, o mais recente no fim.
   período 19,28 -> 18,94 ms; imagem igual. Ganho pequeno: o memcpy era mais barato do que a estimativa. O período
   (~19 ms) passa da soma esperada: a thread de render (~13,5 ms) e a GPU (~14,6 ms) ainda andam em parte em série.
   `LARECOMP_NO_CB_WINDOW=1` desliga, `LARECOMP_LOG_CBWIN=1` mostra o que fica copiado.
+- **Onde vai o quadro de 60 fps (1.9.0, Grande Platô, 2026-10-27, celular a 75-93 °C):**
+  - Linha do tempo (`LARECOMP_FRAME_TIMELINE=4000`), ~19 ms por quadro, em série: o jogo grava a lista do quadro
+    (~3,9 ms, uma lista só), a thread de render traduz (~11 ms, 6-8 submissões pelo split de 3 ms) e apresenta (~0,8
+    ms). O jogo só volta ~3 ms depois do fim do present: antes disso a thread que apresenta fica ~15 ms bloqueada
+    esperando as outras threads do jogo (a lógica), não a nossa. Nenhuma thread satura (`top -H`: a mais ocupada 74%),
+    e o núcleo prime fica em ~2,2 de 4,1 GHz.
+  - Testado sem ganho (A/B na mesma rodada): a sessão ADPF com as 8 threads do jogo mais ocupadas e o período real do
+    quadro como trabalho (17,94 vs 17,83 ms; com as ~40 threads o Android recusa a sessão); o período sozinho (18,05
+    vs 18,06). O HyperOS não sobe os clocks por essas dicas. Sem o revezamento do núcleo 0 (`LARECOMP_NO_CORE0=1`,
+    rodadas separadas): 18,21 vs 18,27 ms - também não é o limite.
+  - GPU ~14,2 ms de 16,7, render ~11,8 ms. O que sobra: menos trabalho de GPU e de lógica a clocks baixos; o calor
+    (90+ °C em poucos minutos, carregando) corta os clocks pela metade.
 - **Aquecimento de shaders com listas conhecidas** (como o MacNativeGames): menos travadas no primeiro jogo. Médio.
 - **Pequenos, do SavageWindRecomp e do MacNativeGames:**
   - feitos em b512a4b (falta testar no celular): o desvio do giroscópio em repouso aprendido e descontado, e a zona
