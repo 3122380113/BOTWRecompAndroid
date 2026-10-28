@@ -1000,8 +1000,10 @@ VkSpan vk_readback(uint64_t size) {
         if (buf) { vk_wait_seq(submit_seq); vmaDestroyBuffer(g_vk.vma, buf, mem); }
         cap = (size + (16 << 20) - 1) & ~((16ull << 20) - 1);
         VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = cap, .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+        // (coherent: read with no invalidate - on Mali the cached type isn't: the global memory arena, gres_init)
         VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
-                                      .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT};
+                                      .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                                      .requiredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT};
         VmaAllocationInfo info;
         VK_CHECK(vmaCreateBuffer(g_vk.vma, &bi, &ai, &buf, &mem, &info));
         ptr = info.pMappedData;
@@ -4032,10 +4034,16 @@ static bool gres_init(void) {
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = GA_SIZE,
                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
+    // (coherent: the CPU writes its copies into it and reads the GPU's stores back with no flush or invalidate. Mali
+    // has no memory both cached and coherent - types 0x7 and 0xb - and cached was the incoherent one: the GPU read
+    // copies still in the CPU's cache and the CPU took stale lines for the GPU's results, written into the game's
+    // memory - null pointers in a different place each run, doubled text (issue #71, Mali-G925; #54, #62, #67).
+    // Adreno's Turnip has a cached coherent type, taken as before.)
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
                                   .flags = (getenv("LARECOMP_GA_UNCACHED") ? VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
                                                                            : VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT) |
-                                           VMA_ALLOCATION_CREATE_MAPPED_BIT};  // (cached: read back; LARECOMP_GA_UNCACHED=1, a test)
+                                           VMA_ALLOCATION_CREATE_MAPPED_BIT,  // (cached: read back; LARECOMP_GA_UNCACHED=1, a test)
+                                  .requiredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT};
     VmaAllocationInfo inf;
     if (vmaCreateBuffer(g_vk.vma, &bi, &ai, &ga_buf, &ga_mem, &inf) != VK_SUCCESS || !inf.pMappedData) {
         LOG("[vk] global memory arena: not available\n");
@@ -4043,7 +4051,10 @@ static bool gres_init(void) {
     }
     ga_ptr = inf.pMappedData;
     gres_state = 1;
-    LOG("[vk] global memory arena: %llu MB (what shaders store stays on the GPU)\n", (unsigned long long)(GA_SIZE >> 20));
+    VkMemoryPropertyFlags mf;
+    vmaGetMemoryTypeProperties(g_vk.vma, inf.memoryType, &mf);
+    LOG("[vk] global memory arena: %llu MB (what shaders store stays on the GPU), memory type %u (flags 0x%x)\n",
+        (unsigned long long)(GA_SIZE >> 20), inf.memoryType, (unsigned)mf);
     return true;
 }
 
