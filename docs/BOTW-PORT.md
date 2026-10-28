@@ -789,6 +789,28 @@ Pedidos ainda não começados, o mais recente no fim.
     **Corrigido** (2026-10-27): com filtragem nearest nos vertex shaders as frestas sumiam; a causa é o peso bilinear
     (o Switch usa 8 bits de posição sub-texel, o Adreno mais). As coordenadas dos vertex shaders agora são arredondadas a
     1/256 de texel (`LARECOMP_NO_VS_SNAP=1` desliga). Testado no POCO: sem frestas, terreno normal. Avisar no #21.
+  - **Os pontinhos que ficaram** (2026-10-28, POCO, 1.9.0, recompilado e nativo, cena a 1600x900): fileiras de pontos
+    escuros em perspectiva, alinhadas ao terreno, **só no chão gramado** (não na rocha, nem do lado da pedra sem grama),
+    mais visíveis em resoluções acima de 50%. Não é o mesmo defeito das frestas:
+    - Descartados, um por vez: `LARECOMP_VS_NEAREST=1`, `LARECOMP_NO_VS_SNAP=1`, o arredondamento também nos fragment
+      shaders (`LARECOMP_FS_SNAP=1`, diagnóstico novo), buracos na profundidade (o fbdepth do quadro de depuração quase
+      não tem), a profundidade em meia resolução (800x450 R32F, limpa), o depth bias (`LARECOMP_D16_BIAS_SCALE=256`,
+      diagnóstico novo; o jogo nem usa polygon offset nas sombras: factor 0, units 0), a comparação com o mapa de
+      sombra (a iluminação diferida `aaed7dc1f198ccc2` com o sol sempre "aceso", por `LARECOMP_SHADER_SUBST`), a
+      máscara de densidade da grama lida pela CPU (`LARECOMP_WRITEBACK_MAX=1048576`: a 512x512 volta, os pontos
+      ficam), os cartões de grama (`LARECOMP_SKIP_FSHASH=477912f75d2e8819`) e o índice de material do terreno gramado
+      lido por `texelFetch` (substituição do fs `60f90627d72c7d08`).
+    - Onde estão: o terreno gramado é desenhado por `50fc37edcd79cf02` / `60f90627d72c7d08` (pulando os dois e o
+      `477912...`, o chão gramado some e a rocha fica); os pontos já estão na iluminação em meia resolução (pass 167,
+      800x450) e no primeiro passe de cor depois dela. O terreno não grava normal no alvo de normais do G-buffer
+      (1600x900 f0x25 @3cda43600: preto no chão).
+    - Próximo passo: substituir o `50fc37...` do mesmo jeito (o outro terreno gramado), e comparar os outros alvos do
+      G-buffer (f0x38, f0x3f, f0xa) dentro e fora da grama. Ferramentas: `LARECOMP_DUMP_FS=<hash>+<hash>` (agora aceita
+      vários), `LARECOMP_SHADER_SUBST=<pasta>` (`<code>_fs.glsl`), `LARECOMP_DUMP_SAMPLED=<w>x<h>:<fmt>[@<addr>]`.
+  - **A grama que só aparece de perto** (relato de 2026-10-28): a camada de 50 a 130 m depende da máscara de densidade
+    (512x512 RGBA8 e 256x256 RG8) que a CPU lê de volta; o runtime só devolve alvos até 4 KB (ou lineares), então ela
+    nunca volta. O MacNativeGames corrigiu o mesmo (f1043e5, e o PR #829 tira a espera). A fazer: devolver esses alvos,
+    de preferência ao fim da submissão deles, sem esperar a GPU.
 - **#23** (RP Nova T26, 1.0.0): o `ActorInfo.product.sbyml` está na pasta, mas a imagem tinha 39.677 arquivos e o
   jogo para ao carregá-lo. Esperando a mensagem da verificação de setup da 0.1.11 (qual arquivo falta) e o tamanho
   exato do arquivo (760.223 bytes).

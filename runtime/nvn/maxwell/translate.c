@@ -658,9 +658,11 @@ static void glsl_sample(Ctx *c, char *out, int slot, const char *const *co, cons
         // that texel exactly, while the Adreno's finer weights blended in a trace of the next one - the edges' heights
         // differed and the ground showed a grid of dotted cracks, denser at higher resolutions (issue #21; with nearest
         // filtering they were gone, 2026-10-27). LARECOMP_NO_VS_SNAP=1: not rounded.
-        static int snap = -1;
+        static int snap = -1, fs_snap = -1;
         if (snap < 0) snap = getenv("LARECOMP_NO_VS_SNAP") == NULL;
-        if (snap && c->stage == STAGE_VERTEX && !t->shadow && lod_kind == 1) {
+        if (fs_snap < 0) fs_snap = getenv("LARECOMP_FS_SNAP") != NULL;  // (diagnosis: fragment lookups too, at level 0's texels)
+        if ((snap && c->stage == STAGE_VERTEX && !t->shadow && lod_kind == 1) ||
+            (fs_snap && c->stage == STAGE_FRAGMENT && !t->shadow)) {
             char raw[1600];
             snprintf(raw, sizeof raw, "%s", xs);
             snprintf(xs, sizeof xs, "(floor((%s) * vec2(tsize%d(%s).xy) * 256.0f + 0.5f) / (vec2(tsize%d(%s).xy) * 256.0f))",
@@ -1518,6 +1520,19 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
             }
             if (d != RZ) { c->reg_used[d] = 1; sp(&c->body, "      r%d = uint(sum);\n", d); }
             sp(&c->body, "    }\n");
+        } else if (OPM(0x5cc0000000000000ull, 0xfff0000000000000ull) && bits(w, 31, 8)) {
+            // (SavageWindRecomp 7ce70fa, MIT) register form with a shift or half selects: .RS / .LS (bits 37-38) shift
+            // the first two operands' sum 16 bits right / left before the third is added; bits 35-36, 33-34, 31-32 pick
+            // a / b / c's low or high half (1 low, 2 high). The compiler's division by a constant ends in IADD3.RS:
+            // without the shift the quotient was wrong (BOTW's beach shell sprites drawn as huge walls, their #147).
+            static const char *const half[4] = {"", " & 0xFFFFu", " >> 16", ""};
+            int sh = (int)bits(w, 37, 2);
+            char ra[96], rb[96], rc[96];
+            snprintf(ra, sizeof ra, "%s(%s%s)", bits(w, 51, 1) ? "-" : "", R(a), half[bits(w, 35, 2)]);  // (half, then negate)
+            snprintf(rb, sizeof rb, "%s(%s%s)", bits(w, 50, 1) ? "-" : "", B(false), half[bits(w, 33, 2)]);
+            snprintf(rc, sizeof rc, "%s(%s%s)", bits(w, 49, 1) ? "-" : "", R((int)bits(w, 39, 8)), half[bits(w, 31, 2)]);
+            sprintf(t, "(((%s + %s)%s) + %s)", ra, rb, sh == 1 ? " >> 16u" : sh == 2 ? " << 16u" : "", rc);
+            set_reg(c, d, t);
         } else {
             sprintf(t, "(%s%s + %s%s + %s%s)", bits(w, 51, 1) ? "-" : "", R(a), bits(w, 50, 1) ? "-" : "", B(false),
                     bits(w, 49, 1) ? "-" : "", R((int)bits(w, 39, 8)));

@@ -2263,6 +2263,7 @@ typedef struct {
     uint32_t fs_out_mask;  // fi->out_mask: the render targets the fragment shader writes (read by every draw; in
                            // ShaderInfo it sits 1.4 KB in, past the 64 textures - a cache miss each draw, ~7% of the
                            // render thread on the POCO F7 Ultra: draw_writes)
+    uint8_t fs_gather;  // (up_fix) the fragment stage's first gathered texture: 0 not looked yet, 1 none, 2 + its slot
     _Atomic int state;  // 0 building, 1 ready, 2 failed
 } Prog;
 
@@ -2441,7 +2442,12 @@ static void translate_program(void *arg) {
         // shader's) to build/fs_<hash>.glsl, for looking at a slow one
         const char *want = getenv("LARECOMP_DUMP_FS");
         uint64_t h = hmix(1469598103934665603ull, (const void *)(uintptr_t)(p->code[1] + 0x30), 0x200);
-        if (want && strtoull(want, NULL, 16) == h) {
+        bool hit = false;  // (several: "+"-separated)
+        for (const char *e = want; e && *e && !hit;) {
+            hit = strtoull(e, (char **)&e, 16) == h;
+            while (*e == '+' || *e == ',') e++;
+        }
+        if (hit) {
             char path[96];
             snprintf(path, sizeof path, "build/fs_%016llx.glsl", (unsigned long long)h);
             FILE *f = fopen(path, "wb");
@@ -3410,6 +3416,72 @@ static uint64_t cbwin_row_(uint64_t addr, uint64_t size);
 static struct { uint32_t m[4], rows[64][4]; } cbw_patch[2];
 
 // Constant buffer k of a stage (renderer.m bind_cbufs), copied into transient memory.
+// BOTW's half-size passes on a scaled scene (from SavageWindRecomp's up_fix, MIT): the draws that bring its half-size
+// buffers (lighting, the sun's shadow mask, the clouds) back to the full image pick, per pixel, the half-size texel whose
+// depth is nearest (the deferred lighting's fs 966dae9aeabc743a and its variants, the clouds' fs c233c59930c7a676:
+// textureGather of the half-size depth, then the sample point moved toward the best texel). The gather reads the scaled
+// image's texels; the move is in the game's: the vertex shader takes the texel grid from a constant row (c[3] row 18 =
+// 1600, 900, 1/1600, 1/900), the clouds their step from a fragment constant (1/800, 1/450). Scaled - Video > Internal
+// resolution above the game's 1600x900 (75% or 100% of a 3200x1440 screen) - each pixel's lighting came from texels off
+// at every depth edge: a dark mesh of dotted lines over the ground and along edges, gone at 50% (players, 2026-10-28).
+// In draws that gather from a texture at their target's scale, a vertex constant row (w, h, 1/w, 1/h) with (w, h) the
+// target's size times 1/4 .. 4 becomes that size times the gathered texture's own scale, and a fragment constant pair
+// (1/w, 1/h) of the gathered texture's size its allocated texel. At the game's own size nothing changes.
+// LARECOMP_NO_UPSAMPLE_FIX=1: as before.
+static struct { uint32_t gw, gh; float sx, sy; uint32_t tw, th, aw, ah; } up_fix;  // (the draw in progress; sx 0: not one)
+
+static bool up_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out) {  // the vertex stage's texel grid
+    const float *g = (const float *)(uintptr_t)addr;
+    static float buf[0x10000 / 4];
+    static int nlog;
+    bool found = false;
+    uint64_t nw = (size < sizeof buf ? size : sizeof buf) / 4;
+    for (uint64_t i = 0; i + 3 < nw; i += 4) {  // (a vec4: 16-byte aligned)
+        float w = g[i], h = g[i + 1];
+        if (!(w >= 16 && h >= 16) || fabsf(w * g[i + 2] - 1) > 1e-5f || fabsf(h * g[i + 3] - 1) > 1e-5f) continue;
+        bool match = false;
+        for (int k = -2; k <= 2 && !match; k++) {
+            float f = k < 0 ? 1.0f / (float)(1 << -k) : (float)(1 << k);
+            match = w == (float)up_fix.gw * f && h == (float)up_fix.gh * f;
+        }
+        if (!match) continue;
+        if (!found) memcpy(buf, g, nw * 4);
+        found = true;
+        buf[i] = w * up_fix.sx, buf[i + 1] = h * up_fix.sy;
+        buf[i + 2] = g[i + 2] / up_fix.sx, buf[i + 3] = g[i + 3] / up_fix.sy;
+        if (nlog < 4) {
+            nlog++;
+            LOG("[upsample] %ux%u target at %.2fx%.2f: texel grid %gx%g -> %gx%g (vertex constant buffer row %llu)\n", up_fix.gw,
+                up_fix.gh, up_fix.sx, up_fix.sy, w, h, buf[i], buf[i + 1], (unsigned long long)(i / 4));
+        }
+    }
+    if (found) *out = ubo_span(vk_transient_copy(buf, nw * 4, 256), nw * 4);
+    return found;
+}
+
+static bool up_patch_frag(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out) {  // the fragment stage's step
+    if (!up_fix.tw || !up_fix.th || (up_fix.tw == up_fix.aw && up_fix.th == up_fix.ah)) return false;
+    const float *g = (const float *)(uintptr_t)addr;
+    float tx = 1.0f / (float)up_fix.tw, ty = 1.0f / (float)up_fix.th;
+    static float buf[0x10000 / 4];
+    static int nlog;
+    bool found = false;
+    uint64_t nw = (size < sizeof buf ? size : sizeof buf) / 4;
+    for (uint64_t i = 0; i + 1 < nw; i += 2) {  // (a vec2: 8-byte aligned)
+        if (fabsf(g[i] - tx) > tx * 1e-5f || fabsf(g[i + 1] - ty) > ty * 1e-5f) continue;
+        if (!found) memcpy(buf, g, nw * 4);
+        found = true;
+        buf[i] = 1.0f / (float)up_fix.aw, buf[i + 1] = 1.0f / (float)up_fix.ah;
+        if (nlog < 4) {
+            nlog++;
+            LOG("[upsample] %ux%u texture at %ux%u: fragment texel size %g %g -> %g %g (word %llu)\n", up_fix.tw, up_fix.th,
+                up_fix.aw, up_fix.ah, tx, ty, buf[i], buf[i + 1], (unsigned long long)i);
+        }
+    }
+    if (found) *out = ubo_span(vk_transient_copy(buf, nw * 4, 256), nw * 4);
+    return found;
+}
+
 static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32_t gx, uint32_t gy, uint32_t gz) {
     static const uint8_t zeros[0x10000];
     if (k == 0) {
@@ -3509,6 +3581,10 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
             for (int i = 0; i < 40 && i * 4 < (int)size; i++) n += snprintf(line + n, sizeof line - n, "%s%.3f", i % 4 ? " " : " | ", f[i]);
             LOG("[cbuf] vs %llx size %llx:%s\n", (unsigned long long)r.addr, (unsigned long long)size, line);
         }
+    }
+    if (up_fix.sx > 0 && (stage == 0 || stage == 1)) {  // (a scaled scene's half-size upsample: up_fix - before the
+        VkDescriptorBufferInfo d;                       //  in-place reads, which would bind the game's own values)
+        if (stage == 0 ? up_patch(r.addr, size, &d) : up_patch_frag(r.addr, size, &d)) return d;
     }
 #ifdef __ANDROID__
     {
@@ -5687,6 +5763,13 @@ static void draw_(CmdRec *r, bool indexed) {
         if (off < 0) off = getenv("LARECOMP_NO_DEPTH_BIAS") != NULL;
         bool on = (st.poly[3] & 4) && !off;
         if (on) memcpy(f, st.poly_offset, sizeof f);
+        {   // (diagnosis) LARECOMP_D16_BIAS_SCALE=<k>: the constant bias times k on D16 targets (the shadow maps) - a
+            // driver taking D16's unit as 24-bit depth's would leave them 256 times less bias (acne along the terrain)
+            static float k16 = -1;
+            if (k16 < 0) k16 = getenv("LARECOMP_D16_BIAS_SCALE") ? (float)atof(getenv("LARECOMP_D16_BIAS_SCALE")) : 0;
+            if (k16 > 0 && on && st.rt.depth && st.rt.depth->backend &&
+                ((TexBackend *)st.rt.depth->backend)->format == VK_FORMAT_D16_UNORM) f[1] *= k16;
+        }
         if (equal_tol) { f[1] -= 8; on = true; }  // (see the EQUAL comment above: a few depth ulps nearer)
         if (g_vk.eds2 && ss_need(SS_DBE, ss.dbe == (VkBool32)on)) { ss.dbe = on; vkCmdSetDepthBiasEnable(cb, on); }
         if (ss_need(SS_DB, !memcmp(ss.db, f, sizeof f))) { memcpy(ss.db, f, sizeof f); vkCmdSetDepthBias(cb, f[1], f[2], f[0]); }
@@ -5718,6 +5801,29 @@ static void draw_(CmdRec *r, bool indexed) {
         float sc[2]; uint32_t wh[2];
         texture_info(1, pr->fi, i, &fii[i], sc, wh);
         tex_sc[1][i][0] = sc[0]; tex_sc[1][i][1] = sc[1]; tex_wh[1][i][0] = wh[0]; tex_wh[1][i][1] = wh[1];
+    }
+    up_fix.sx = 0;
+    {   // a scaled scene's half-size buffers brought back by nearest depth: the texel grid and step scaled (up_fix)
+        static int off = -1;
+        if (off < 0) off = getenv("LARECOMP_NO_UPSAMPLE_FIX") != NULL;
+        bool scaled = !off && st.rt.ncolor && st.rt.color[0] && (pass_sx > 1.001f || pass_sy > 1.001f);
+        if (scaled && !pr->fs_gather) {  // (the first gathered texture's slot, from the translated source: 2 + slot)
+            const char *p = pr->fi->msl ? strstr(pr->fi->msl, "textureGather(t") : NULL;
+            int slot = p ? atoi(p + 15) : -1;
+            pr->fs_gather = slot >= 0 && slot < pr->fi->ntex && slot < 64 ? (uint8_t)(2 + slot) : 1;
+        }
+        int gs = scaled ? pr->fs_gather - 2 : -1;
+        NvnTexture *gt = gs >= 0 && fabsf(tex_sc[1][gs][0] - pass_sx) < 0.01f * pass_sx &&
+                         fabsf(tex_sc[1][gs][1] - pass_sy) < 0.01f * pass_sy ? shader_texture_object(1, &pr->fi->tex[gs]) : NULL;
+        TexBackend *gb = gt ? gt->backend : NULL;
+        if (gb && gt->width && gt->height) {
+            up_fix.gw = st.rt.color[0]->width, up_fix.gh = st.rt.color[0]->height;
+            up_fix.sx = (float)gb->width / (float)gt->width, up_fix.sy = (float)gb->height / (float)gt->height;
+            up_fix.tw = gt->width, up_fix.th = gt->height, up_fix.aw = gb->width, up_fix.ah = gb->height;
+            ndv = 0;  // (the vertex set again, with its constants patched)
+            memset(cbw_patch, 0, sizeof cbw_patch);
+            vset = stage_set(pr, pr->set_layout[0], 0, 0, pr->vi, NULL, NULL, 0, 0, 0, NULL, dyn, &ndv);
+        }
     }
     if (prof) prof_tex += SDL_GetTicksNS() - prof_tx_;
     if (fabsf(pass_sx - pass_sy) > 0.01f * pass_sy && st.rt.ncolor && renderer_texture_presented(st.rt.color[0])) {
@@ -5768,6 +5874,7 @@ static void draw_(CmdRec *r, bool indexed) {
     float rs0[4] = {vp_sx, vp_sy, vp_ox, vp_oy};
     uint64_t prof_t1_ = prof ? SDL_GetTicksNS() : 0;
     VkDescriptorSet fset = stage_set(pr, pr->set_layout[1], 1, 1, pr->fi, rs0, tint, 0, 0, 0, fii, dyn + ndv, &ndf);
+    up_fix.sx = 0;
     if (prof) prof_sets += SDL_GetTicksNS() - prof_t1_;
     VkDescriptorSet sets[2] = {vset, fset};
     // (the same sets and offsets as the previous draw - the set cache, stage_set: not bound again)
