@@ -678,7 +678,7 @@ arquivos de outro dono, #77), 54e90d8 (sem pontas nas partículas no hit-stop).
   provavelmente o mesmo defeito: conferir.
 - ~~Vértices tremendo no impacto de um golpe~~: as pontas na fumaça da Montanha da Morte, na névoa e na fumaça dos
   monstros no hit-stop (corrigido, ver a fila).
-- Tela de Game Over mostrando só "ME" (visto em 2026-10-28; talvez ligado ao aspecto livre ou ao texto da tela de morte).
+- Tela de Game Over mostrando só "ME" (visto em 2026-10-28; intermitente, ver as issues novas abaixo).
 - FPS mais alto e mais estável.
 - Texturas piscando (raro).
 - Aspecto livre: no menu aparece um recorte e o inventário não se estende; na tela de morte e no menu principal as
@@ -712,6 +712,17 @@ arquivos de outro dono, #77), 54e90d8 (sem pontas nas partículas no hit-stop).
 - **#82**: pedido de escolher um `.nsp`/`.xci` e extrair exefs e romfs no celular (com as `prod.keys` do usuário), como
   o LASRecomp Android Plus. Decisão do usuário (chaves e o que entra no app).
 - **#70** (Adreno 650): abre com "Memória do jogo na GPU" ligada, mas a 7-10 fps na caverna.
+- **#83** (Mi 9T Pro, Snapdragon 855, Adreno 640, 6 GB, 1.6.0, 0.2.2): no modo nativo chega ao título, mas cai quando
+  o mapa termina de carregar (save) ou pouco antes de o Link acordar (jogo novo); o log diz "signaled (reason 2,
+  status 9)" com ~3,9 GB de RAM: o Android matou o app por memória, com muitos "shader still building" antes. No
+  recompilado cai na hora. A fazer: baixar menos memória em celulares de 6 GB (quanto o app usa no carregamento do
+  mundo, as compilações de shader simultâneas). Log e screenshot anexados (não baixados).
+- **#85** (Helio G100, Mali-G57 MC2, 8 GB, 1.9.0, 0.2.2; o mesmo no comentário novo do #1): com o driver
+  PanVK-FristOneRR-V.3.5 (sem ele, fecha ao dar Play) chega à primeira cutscene e aparece uma mensagem de erro.
+  Screenshot anexada (não baixada). A arena da Mali (056a9a0) não vale para o PanVK, que não é o driver da Arm: ver o
+  erro.
+- **Tela de Game Over com só "ME"** (usuário, 2026-10-28): numa segunda morte o texto saiu inteiro; a gravação só
+  pegou o começo da animação. Intermitente: falta saber se ficou parado assim, e a quantos fps.
 
 **Esperando log ou resposta:** #22 (vídeo da torre no Adreno 840), #24/#30 (8s Gen 4), #23 (RP Nova T26), #41
 (build de teste com `uclamp.min`), #68 (S23 a 5-10 fps), #64 (build no Mali-G57).
