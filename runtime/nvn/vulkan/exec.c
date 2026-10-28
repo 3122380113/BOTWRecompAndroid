@@ -1481,9 +1481,10 @@ static uint64_t wb_max(void) {  // (LARECOMP_WRITEBACK_MAX=<bytes>: a larger lim
 #define WB_SMALL 128
 #define WB_BIG 32
 #define WB_SLOTS (WB_SMALL + WB_BIG)
-typedef struct { uint64_t seq, addr, pitch, off; uint32_t wb, hb, bpb, bh, fmt, size; bool busy; } WbEntry;  // (pitch: linear rows, 0: block-linear; off, size: its slot in wb_buf)
+typedef struct { uint64_t seq, addr, pitch, off, order; uint32_t wb, hb, bpb, bh, fmt, size; bool busy; } WbEntry;  // (pitch: linear rows, 0: block-linear; off, size: its slot in wb_buf; order: when queued)
 static WbEntry wb_ent[WB_SLOTS];
 static int wb_next_small, wb_next_big;
+static uint64_t wb_order;
 static VkBuffer wb_buf;
 static VmaAllocation wb_mem;
 static uint8_t *wb_ptr;
@@ -1568,7 +1569,8 @@ static void wb_queue(NvnTexture *t) {
     extern uint64_t nvn_linear_rt_pitch(uint64_t row_bytes);
     *e = (WbEntry){.seq = submit_seq + 1, .addr = t->addr, .wb = l.wb, .hb = l.hb, .bpb = fi->bpb,
                    .pitch = (t->flags & 0x10) ? t->stride : (t->flags & 0x40) ? nvn_linear_rt_pitch((uint64_t)l.wb * fi->bpb) : 0,
-                   .bh = l.block_height_log2, .fmt = t->format, .off = off, .size = small ? WB_MAX : WB_SLOT, .busy = true};
+                   .bh = l.block_height_log2, .fmt = t->format, .off = off, .size = small ? WB_MAX : WB_SLOT,
+                   .order = ++wb_order, .busy = true};
     atomic_store(&g_wb_seq, e->seq);
     pthread_mutex_unlock(&wb_lock);
     {   // LARECOMP_LOG_WB_FRAME=<n>: every write-back of every n-th frame - size, format, flags, submission (the frame's
@@ -1605,9 +1607,19 @@ static void wb_queue(NvnTexture *t) {
 static void wb_apply(uint64_t done) {
     if (!wb_ptr) return;
     pthread_mutex_lock(&wb_lock);
+    // In the order they were queued, not the slots': once the 128 small slots wrapped, a target written back twice
+    // (a frame's and the next one's, both landed) took the older texels last - the water turned white and Link's feet
+    // sank, with the sync lag off too (2026-10-27, 0.2.1 / issue #43: the 32-slot ring was full every frame, and its
+    // wait kept them in order)
+    int ready[WB_SLOTS], nready = 0;
     for (int i = 0; i < WB_SLOTS; i++) {
-        WbEntry *e = &wb_ent[i];
-        if (!e->busy || e->seq > done) continue;
+        if (!wb_ent[i].busy || wb_ent[i].seq > done) continue;
+        int k = nready++;
+        for (; k > 0 && wb_ent[ready[k - 1]].order > wb_ent[i].order; k--) ready[k] = ready[k - 1];
+        ready[k] = i;
+    }
+    for (int r = 0; r < nready; r++) {
+        WbEntry *e = &wb_ent[ready[r]];
         vmaInvalidateAllocation(g_vk.vma, wb_mem, (VkDeviceSize)e->off, e->size);
         if (e->pitch)
             for (uint32_t y = 0; y < e->hb; y++)
