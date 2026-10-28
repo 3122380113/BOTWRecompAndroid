@@ -715,12 +715,15 @@ arquivos de outro dono, #77), 54e90d8 (sem pontas nas partículas no hit-stop).
 - **#83** (Mi 9T Pro, Snapdragon 855, Adreno 640, 6 GB, 1.6.0, 0.2.2): no modo nativo chega ao título, mas cai quando
   o mapa termina de carregar (save) ou pouco antes de o Link acordar (jogo novo); o log diz "signaled (reason 2,
   status 9)" com ~3,9 GB de RAM: o Android matou o app por memória, com muitos "shader still building" antes. No
-  recompilado cai na hora. A fazer: baixar menos memória em celulares de 6 GB (quanto o app usa no carregamento do
-  mundo, as compilações de shader simultâneas). Log e screenshot anexados (não baixados).
+  recompilado cai na hora. O log anexado: Turnip v26 R5, `guest heap 3120 MB is GPU memory` - a "Memória do jogo na
+  GPU" ligada à mão (o Automático só liga no Adreno 8xx), 3,1 GB de memória da GPU reservados de uma vez num celular
+  de 6 GB; a sessão anterior terminou com 3.664 MB de PSS. A fazer: responder pedindo para desligar essa opção; e o
+  app não deixar ligá-la (ou avisar) com menos de ~8 GB de RAM.
 - **#85** (Helio G100, Mali-G57 MC2, 8 GB, 1.9.0, 0.2.2; o mesmo no comentário novo do #1): com o driver
   PanVK-FristOneRR-V.3.5 (sem ele, fecha ao dar Play) chega à primeira cutscene e aparece uma mensagem de erro.
-  Screenshot anexada (não baixada). A arena da Mali (056a9a0) não vale para o PanVK, que não é o driver da Arm: ver o
-  erro.
+  A screenshot: `vkWaitSemaphores: -4 (device lost)` - o trabalho da GPU travou ou falhou no PanVK, na primeira
+  cutscene (vídeo ou os primeiros shaders do mundo). Sem um Mali para testar; pedir o log
+  (`botwrecomp-log-previous.txt`) e se com outro PanVK passa.
 - **Tela de Game Over com só "ME"** (usuário, 2026-10-28): numa segunda morte o texto saiu inteiro; a gravação só
   pegou o começo da animação. Intermitente: falta saber se ficou parado assim, e a quantos fps.
 
