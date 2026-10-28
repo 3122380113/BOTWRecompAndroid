@@ -668,7 +668,7 @@ A lista corrente; a fila abaixo guarda o histórico de cada item.
 Mali coerente), fa56eb3 + f1d15ba (mods que adicionam arquivos, mods do DLC, arquivos do jogo e mods no lugar),
 2901800 (SavageWind: upsample, IADD3), 1ff912a (gathers a 1/256 de texel: os pontos na grama), 7e3c35d (saves com
 arquivos de outro dono, #77), 54e90d8 (sem pontas nas partículas no hit-stop), 833cb5d (memória do jogo
-na GPU só com 7 GB ou mais de RAM, #83).
+na GPU só com 7 GB ou mais de RAM, #83), 05cb1b6 (giroscópio do celular com controle sem giroscópio, #78).
 - Antes: testar no POCO os mods "no lugar" (nunca testados) e ver se o resto da tela continua igual com os gathers
   arredondados (sombras, água, reflexos). Os shaders compilam de novo uma vez (o GLSL dos gathers mudou): dizer nas notas.
 - Depois: postar as respostas de `docs/RESPOSTAS-ISSUES-2026-10-28.md` (#43, #70/#72/#75, #71/#67/#62/#54, #74, #65)
@@ -705,6 +705,9 @@ na GPU só com 7 GB ou mais de RAM, #83).
     inteira); o Exportar explica o mesmo. Resposta no rascunho de 28/10.
 - **#78**: o giroscópio não funciona com um controle USB-C encaixado no celular (GameSir X5 Lite, que não tem
   giroscópio próprio, ao que parece). Usar o giroscópio do celular quando o controle não tiver um.
+  Feito em 05cb1b6 (sem controle assim para testar): os sensores do controle só substituem os do celular depois que o
+  giroscópio dele se move; um controle que diz ter giroscópio e manda zeros segurava os do celular. Perguntar se a
+  opção Controles de movimento está ligada.
 - **#79** (Samsung, Android 16, tela 2340x1080): as Configurações da tela inicial ficam pretas, com só um canto do
   painel aparecendo embaixo à direita: o layout sai da tela. Pedir o modelo e se é dobrável, DeX ou janela.
 - **#80** (AYN Odin 3, Adreno 830, 1.8.2): as linhas pretas na grama são os pontos corrigidos em 1ff912a. Responder
