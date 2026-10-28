@@ -676,7 +676,9 @@ arquivos de outro dono, #77).
 **Gráficos (lista do usuário, 2026-10-28; recompilado e nativo, salvo indicação):**
 - ~~A malha de pontos acima de 50% de resolução~~ (1ff912a). As linhas pretas que correm no chão à frente do Link são
   provavelmente o mesmo defeito: conferir.
-- Vértices tremendo no impacto de um golpe (ver também as pontas na nuvem e na névoa num golpe, na fila: talvez o mesmo).
+- ~~Vértices tremendo no impacto de um golpe~~: as pontas na fumaça da Montanha da Morte, na névoa e na fumaça dos
+  monstros no hit-stop (corrigido, ver a fila).
+- Tela de Game Over mostrando só "ME" (visto em 2026-10-28; talvez ligado ao aspecto livre ou ao texto da tela de morte).
 - FPS mais alto e mais estável.
 - Texturas piscando (raro).
 - Aspecto livre: no menu aparece um recorte e o inventário não se estende; na tela de morte e no menu principal as
@@ -986,6 +988,17 @@ Pedidos ainda não começados, o mais recente no fim.
     (`LARECOMP_TEX_FULLHASH=1`: as pontas continuam).
   - Parado aqui (cosmético, um quadro). Próximo, se retomado: o vs calculado na CPU com os vértices e cbufs do quadro
     de transição do hit-stop, ou a tradução do Ryujinx do mesmo shader para comparar.
+  - **Corrigido** (2026-10-28). O `8d989710` era o draw errado: pulado (`LARECOMP_SKIP_FSHASH`), a fumaça e a névoa
+    continuavam. A história do pixel na nuvem achou o `775680b66449d03a` (fluxo 800x450 f0x29; pulado, a nuvem larga
+    some), que estica cada partícula pela velocidade (`a6.xyz`, girada pela matriz do emissor) vezes `1 / cb10[2].w`.
+    `cb10[2].w` é o delta frame do jogo (1,0 a 30 fps, 0,5 a 60) vezes o multiplicador de tempo mais lento: no hit-stop
+    0,05, então o esticamento cresce 10x por alguns quadros (a fumaça dos monstros derrotados também). A 30 fps estica
+    igual: é do próprio jogo. A pedido do usuário, o tradutor lê esse passo, só no recíproco de `c[10][0x2c]` dos vertex
+    shaders, como no mínimo 0,5 (`LARECOMP_NO_STEP_CLAMP=1` desliga). Só shaders de partículas leem `cb10[2].w`; os
+    outros o usam como `idade + w`, que fica igual. Testado no POCO a 60 fps: sem pontas.
+    Ferramentas novas: `LARECOMP_DEBUG_ON_FS_CB=<fs>:<estágio>:<cbuf>:<float>:<abaixo>` (quadro de depuração quando o
+    valor cai: o início do hit-stop), `LARECOMP_LOG_FS_VB=<fs>:<fluxo>`, `LARECOMP_SHADER_PATCH=<arquivo>` (troca de texto
+    no GLSL dos programas com aquele fs), e o `LARECOMP_DEBUG_DATA` mostra os fluxos por instância (2 a 7).
 - **Aquecimento de shaders com listas conhecidas** (como o MacNativeGames): menos travadas no primeiro jogo. Médio.
 - **Pequenos, do SavageWindRecomp e do MacNativeGames:**
   - feitos em b512a4b (falta testar no celular): o desvio do giroscópio em repouso aprendido e descontado, e a zona

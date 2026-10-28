@@ -2461,6 +2461,37 @@ static void translate_program(void *arg) {
     }
     subst_glsl(p->vi, p->code[0], "vs");
     subst_glsl(p->fi, p->code[1], "fs");
+    {   // LARECOMP_SHADER_PATCH=<file> (diagnosis): lines "<fs hash> <vs|fs> <old text>\t<new text>" - every first
+        // occurrence of the old text replaced in that stage of the programs with that fragment shader. The effects
+        // that share one (BOTW's particles) each have their own vertex shader, at addresses that change from frame to
+        // frame: LARECOMP_SHADER_SUBST's files can't name them.
+        const char *pf = getenv("LARECOMP_SHADER_PATCH");
+        FILE *f = pf ? fopen(pf, "rb") : NULL;
+        uint64_t h = f ? hmix(1469598103934665603ull, (const void *)(uintptr_t)(p->code[1] + 0x30), 0x200) : 0;
+        char line[1024];
+        while (f && fgets(line, sizeof line, f)) {
+            unsigned long long lh;
+            char st[4];
+            int at = 0;
+            if (sscanf(line, "%llx %3s %n", &lh, st, &at) != 2 || lh != h || !at) continue;
+            char *from = line + at, *tab = strchr(from, '\t'), *to;
+            if (!tab) continue;
+            *tab = 0, to = tab + 1;
+            to[strcspn(to, "\r\n")] = 0;
+            ShaderInfo *si = !strcmp(st, "vs") ? p->vi : p->fi;
+            char *hit = strstr(si->msl, from);
+            if (!hit) { LOG("[shader] patch %llx %s: \"%s\" not found\n", lh, st, from); continue; }
+            size_t nf = strlen(from), nt = strlen(to), n = strlen(si->msl);
+            char *s = malloc(n - nf + nt + 1);
+            memcpy(s, si->msl, (size_t)(hit - si->msl));
+            memcpy(s + (hit - si->msl), to, nt);
+            strcpy(s + (hit - si->msl) + nt, hit + nf);
+            free(si->msl);
+            si->msl = s;
+            LOG("[shader] patch %llx %s (code %llx): \"%s\" -> \"%s\"\n", lh, st, (unsigned long long)p->code[0], from, to);
+        }
+        if (f) fclose(f);
+    }
 #endif
     p->vs_uses_vid = strstr(p->vi->msl, "gl_VertexIndex") != NULL;
     save_glsl(p->vi->msl, p->code[0], "vs");
@@ -3563,6 +3594,33 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
             for (int i = wrow * 4; i < (wrow + wrows) * 4 && (uint64_t)(i * 4) < size && n < (int)sizeof line - 32; i++)
                 n += snprintf(line + n, sizeof line - n, "%s%g", i % 4 ? " " : " | ", f[i]);
             LOG("[fscb] frame %llu cb%d:%s\n", (unsigned long long)last_frame, k, line);
+        }
+    }
+    {   // LARECOMP_DEBUG_ON_FS_CB=<fs hash>:<stage>:<cbuf>:<float index>:<below> (diagnosis): a debug frame (as F9) the
+        // frame after that float of the first draw of that fragment shader drops under <below> - the moment a hit-stop
+        // starts (cb10's time step), caught without timing a key press. Three times a run at most.
+        static uint64_t want = ~0ull, last_frame = ~0ull;
+        static int wstage, wk, wi, fired;
+        static float below, prev = 1e30f;
+        if (want == ~0ull) {
+            const char *e = getenv("LARECOMP_DEBUG_ON_FS_CB");
+            want = 0;
+            if (e) {
+                unsigned long long h;
+                if (sscanf(e, "%llx:%d:%d:%d:%f", &h, &wstage, &wk, &wi, &below) == 5) want = h;
+            }
+        }
+        if (want && g_cur_fs_hash == want && stage == wstage && k == wk && renderer_present_count() != last_frame &&
+            (uint64_t)(wi * 4 + 4) <= size) {
+            last_frame = renderer_present_count();
+            float v = ((const float *)(uintptr_t)r.addr)[wi];
+            if (v < below && prev >= below && fired < 3) {
+                extern volatile int g_debug_frame_request;
+                g_debug_frame_request = 1;
+                fired++;
+                LOG("[fscb] frame %llu cb%d[%d] %g -> %g: debug frame next\n", (unsigned long long)last_frame, k, wi, prev, v);
+            }
+            prev = v;
         }
     }
     {   // LARECOMP_LOG_CBUF=<fs hash>: the first floats of the draws of that fragment shader get in cb3 (its stage's
@@ -5439,6 +5497,24 @@ static void draw_(CmdRec *r, bool indexed) {
             }
         }
         for (int i = 0; i < nskip; i++) if (last_hash == skip[i]) { stat_skipped++; return; }
+        {   // LARECOMP_LOG_FS_VB=<fs hash>:<stream> (diagnosis): that vertex stream's first 4 floats for the first draw of
+            // that fragment shader each frame, as the draw reads them (beside LARECOMP_LOG_FS_CB: a per-instance
+            // value and a constant that should change in the same frame)
+            static uint64_t want = ~0ull, last_frame = ~0ull;
+            static int ws;
+            if (want == ~0ull) {
+                const char *e = getenv("LARECOMP_LOG_FS_VB");
+                unsigned long long h;
+                want = e && sscanf(e, "%llx:%d", &h, &ws) == 2 ? h : 0;
+            }
+            if (want && last_hash == want && renderer_present_count() != last_frame && ws >= 0 && ws < 16 &&
+                st.vbuf[ws].addr && st.vbuf[ws].size >= 16) {
+                last_frame = renderer_present_count();
+                const float *v = (const float *)(uintptr_t)st.vbuf[ws].addr;
+                LOG("[fsvb] frame %llu stream %d %llx: %g %g %g %g\n", (unsigned long long)last_frame, ws,
+                    (unsigned long long)st.vbuf[ws].addr, v[0], v[1], v[2], v[3]);
+            }
+        }
         if (g_debug_frame && getenv("LARECOMP_LOG_FSHASH")) LOG("[fshash] fs=%llx hash %016llx\n", (unsigned long long)fs, (unsigned long long)last_hash);
         g_cur_fs_hash = last_hash;
         {   // Widescreen: a menu's layout pane that shows a picture of the world (the blurred world behind the pause
@@ -6167,11 +6243,11 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
             for (int k = 0; k < 160 && k * 4 < (int)r.size; k++) LOG(" %.9g", u[k]);
             LOG("\n");
         }
-        for (int s = 0; s < 2; s++) {
+        for (int s = 0; s < 8; s++) {  // (2 to 7: per-instance streams - a particle's own values)
             if (!st.vbuf[s].addr) continue;
             const float *v = (const float *)(uintptr_t)st.vbuf[s].addr;
             LOG("[draw]   vbuf%d %llx size %llu:", s, (unsigned long long)st.vbuf[s].addr, (unsigned long long)st.vbuf[s].size);
-            for (int k = 0; k < 16; k++) LOG(" %.4g", v[k]);
+            for (int k = 0; k < 16 && (s < 2 || (uint64_t)k * 4 < st.vbuf[s].size); k++) LOG(" %.4g", v[k]);
             LOG("\n");
         }
         for (int k = 0; k < 4; k++)  // the vertex stage's storage buffers (LDG / STG through driver cb0 0x110..)

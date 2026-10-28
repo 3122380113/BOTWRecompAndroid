@@ -1347,7 +1347,22 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         case 1: sprintf(t, "sin(%s)", x); break;
         case 2: sprintf(t, "exp2(%s)", x); break;
         case 3: sprintf(t, "log2(%s)", x); break;
-        case 4: sprintf(t, "(1.0f / %s)", x); break;
+        case 4: {
+            // BOTW's particles (the eft2 vertex shaders) stretch along their velocity by velocity / the effect's time
+            // step, c[10][0x2c] - the game's delta frame, 1.0 at 30 fps and 0.5 at 60, times the slowest time
+            // multiplier: a hit-stop's 10% drew Death Mountain's smoke, the horizon's and defeated monsters' as stars
+            // of spikes for a few frames (at 30 fps too: the game's own). The reciprocal of that step, and only that,
+            // reads it at no less than 0.5: slow motion no longer lengthens them (the stretch of 60 fps without it).
+            // LARECOMP_NO_STEP_CLAMP=1: as the game does.
+            static int clamp_step = -1;
+            if (clamp_step < 0) clamp_step = getenv("LARECOMP_NO_STEP_CLAMP") == NULL;
+            uint32_t bank, off;
+            if (clamp_step && c->stage == STAGE_VERTEX && handle_cbuf(c, pc, a, &bank, &off) && bank == 10 && off == 0x2c)
+                sprintf(t, "(1.0f / max(%s, 0.5f))", x);
+            else
+                sprintf(t, "(1.0f / %s)", x);
+            break;
+        }
         case 5: sprintf(t, "rsqrt(%s)", x); break;
         case 8: sprintf(t, "sqrt(%s)", x); break;
         default: fail(c, "mufu %d", fn); return;
