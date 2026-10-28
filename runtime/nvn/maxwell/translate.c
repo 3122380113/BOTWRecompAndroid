@@ -706,6 +706,22 @@ static void glsl_gather(Ctx *c, char *out, int slot, const char *const *co, cons
     if (n == 2) {
         if (off) snprintf(xs, sizeof xs, "(vec2(%s, %s) + vec2(%s)%s / vec2(tsize%d(0).xy))", co[0], co[1], off, off_scale(c, slot, 2), slot);
         else snprintf(xs, sizeof xs, "vec2(%s, %s)", co[0], co[1]);
+        // The coordinates rounded to 1/256 of a texel, as the Switch's texture unit takes them, and nudged a quarter of
+        // that up: a gather's 2x2 is the texels around the coordinate, so at a texel's centre - a pixel's own, gathered
+        // from a target of the same size - which 2x2 it is hangs on the last bit. The Switch rounds it there exactly
+        // and keeps the pixel's texel at the 2x2's top left; the Adreno, a hair under from the interpolation, took the
+        // 2x2 before it - another pixel's depth. BOTW's half-size ambient occlusion (fs 8c42c9bc) gathers its depth
+        // that way: by the blades of grass it shaded dark dots, in rows and columns across the screen where the
+        // interpolation's error changes sign (2026-10-28; the dots on grassy ground at more than 50% resolution, in
+        // both modes, and also in Switch emulators on Adreno). LARECOMP_NO_GATHER_SNAP=1: not rounded.
+        static int snap = -1;
+        if (snap < 0) snap = getenv("LARECOMP_NO_GATHER_SNAP") == NULL;
+        if (snap) {
+            char raw[1600];
+            snprintf(raw, sizeof raw, "%s", xs);
+            snprintf(xs, sizeof xs, "((floor((%s) * vec2(tsize%d(0).xy) * 256.0f + 0.5f) + 0.25f) / (vec2(tsize%d(0).xy) * 256.0f))",
+                     raw, slot, slot);
+        }
     } else {
         snprintf(xs, sizeof xs, "vec3(%s, %s, %s)", co[0], co[1], co[2]);
     }

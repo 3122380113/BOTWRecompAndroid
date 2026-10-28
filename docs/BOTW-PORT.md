@@ -804,9 +804,18 @@ Pedidos ainda não começados, o mais recente no fim.
       `477912...`, o chão gramado some e a rocha fica); os pontos já estão na iluminação em meia resolução (pass 167,
       800x450) e no primeiro passe de cor depois dela. O terreno não grava normal no alvo de normais do G-buffer
       (1600x900 f0x25 @3cda43600: preto no chão).
-    - Próximo passo: substituir o `50fc37...` do mesmo jeito (o outro terreno gramado), e comparar os outros alvos do
-      G-buffer (f0x38, f0x3f, f0xa) dentro e fora da grama. Ferramentas: `LARECOMP_DUMP_FS=<hash>+<hash>` (agora aceita
-      vários), `LARECOMP_SHADER_SUBST=<pasta>` (`<code>_fs.glsl`), `LARECOMP_DUMP_SAMPLED=<w>x<h>:<fmt>[@<addr>]`.
+    - Também descartados: profundidade do terreno empurrada para trás, Turnip sem bins (`TU_DEBUG=sysmem`), cópias em
+      vez de leituras no lugar (`LARECOMP_FEEDBACK_COPY=1`), o composto `f607b5ab4c2f0720` sem o deslocamento por
+      profundidade e o ruído 4x4 do AO fixo. Os pontos são **alinhados à tela** (colunas a cada 50 px de 1600x900), não ao
+      terreno.
+    - **Corrigido** (2026-10-28): a história do pixel (`build/pick.txt`, agora com `rt=<i>`) mostrou o valor escuro
+      nascendo no azul (oclusão de ambiente) do `8c42c9bc921ed716`, a luz em meia resolução (800x450, alvo 5). A
+      profundidade central do AO vem de um `textureGather` na própria coordenada do pixel: no centro de um texel o 2x2
+      depende do último bit; o Switch arredonda a 1/256 de texel e fica com o texel do pixel, o Adreno às vezes pegava o
+      2x2 anterior (a profundidade do vizinho: escuro junto às folhas). Os gathers agora arredondam a coordenada a 1/256
+      de texel e somam 1/1024 (`LARECOMP_NO_GATHER_SNAP=1` desliga). Testado no POCO: sem pontos, grama e sombras normais.
+      Ferramentas: `LARECOMP_DUMP_FS=<hash>+<hash>`, `LARECOMP_SHADER_SUBST=<pasta>` (`<code>_fs.glsl`),
+      `LARECOMP_DEBUG_PICK` / `build/pick.txt` (`x,y;x,y rt=<i>`).
   - **A grama que só aparece de perto** (relato de 2026-10-28): a camada de 50 a 130 m depende da máscara de densidade
     (512x512 RGBA8 e 256x256 RG8) que a CPU lê de volta; o runtime só devolve alvos até 4 KB (ou lineares), então ela
     nunca volta. O MacNativeGames corrigiu o mesmo (f1043e5, e o PR #829 tira a espera). A fazer: devolver esses alvos,

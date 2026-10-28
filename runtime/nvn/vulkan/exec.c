@@ -5275,6 +5275,94 @@ static void skip_note(const char *what) {
     LOG("[vk] frame %llu: a draw into %ux%u%s skipped (%s still building)\n", (unsigned long long)renderer_present_count(),
         t->width, t->height, st.rt.depth ? " with depth" : "", what);
 }
+// (debugging, from SavageWindRecomp's SAVAGEWIND_DEBUG_PICK, MIT) LARECOMP_DEBUG_PICK=<x>,<y>[;<x>,<y>...] (up to 4
+// points, in the game's 1600x900 coordinates): in a debug frame each draw copies those pixels of its target afterwards
+// (ending its pass), and vk_pick_report logs per point the draws that changed it ("[pick]": the last one is what the
+// frame shows there). LARECOMP_DEBUG_PICK_RT=<i>: each pass's target i instead of the first (a G-buffer's other ones).
+typedef struct { uint64_t vs, fs, hash; void *img; uint32_t w, h, fmt, no; } PickRec;
+static struct { VkBuffer buf; VmaAllocation mem; uint8_t *ptr; int n, npt, on, rt; int pt[4][2]; uint32_t draws; PickRec rec[4096]; } pick = {.on = -1};
+
+static void pick_after_draw(void) {
+    char file_pts[256] = "";
+    if (pick.draws == 0) {  // (each debug frame: build/pick.txt, when there, in place of the variable - points picked
+        FILE *f = fopen("build/pick.txt", "rb");  //  from a screenshot without starting again; adb can write build/)
+        if (f) {
+            file_pts[fread(file_pts, 1, sizeof file_pts - 1, f)] = 0;
+            fclose(f);
+            pick.on = -1, pick.npt = 0;
+        }
+    }
+    if (pick.on < 0) {
+        pick.on = 0;
+        for (const char *e = file_pts[0] ? file_pts : getenv("LARECOMP_DEBUG_PICK"); e && *e && pick.npt < 4;) {
+            if (sscanf(e, "%d,%d", &pick.pt[pick.npt][0], &pick.pt[pick.npt][1]) != 2) break;
+            pick.npt++;
+            e = strchr(e, ';');
+            if (e) e++;
+        }
+        pick.on = pick.npt > 0;
+        const char *rt = file_pts[0] ? strstr(file_pts, "rt=") : NULL;  // (pick.txt: "rt=<i>" anywhere after the points)
+        rt = rt ? rt + 3 : getenv("LARECOMP_DEBUG_PICK_RT");
+        pick.rt = rt ? atoi(rt) : 0;
+        if (pick.rt < 0 || pick.rt > 7) pick.rt = 0;
+    }
+    pick.draws++;
+    const int t = pick.rt;
+    if (!pick.on || st.rt.ncolor <= t || !st.rt.color[t] || !st.rt.color[t]->backend || pick.n >= 4096) return;
+    TexBackend *b = st.rt.color[t]->backend;
+    if ((b->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT) || b->samples > 1 || b->width < 64) return;
+    if (!pick.buf) {
+        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 4096 * 4 * 16, .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+                                      .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                                      .requiredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT};
+        VmaAllocationInfo info;
+        VK_CHECK(vmaCreateBuffer(g_vk.vma, &bi, &ai, &pick.buf, &pick.mem, &info));
+        pick.ptr = info.pMappedData;
+    }
+    uint32_t layer = st.rt.has_cview[t] && (st.rt.cview[t].setmask & 2) ? st.rt.cview[t].min_layer : 0;
+    uint32_t level = st.rt.has_cview[t] && (st.rt.cview[t].setmask & 1) ? st.rt.cview[t].base_level : 0;
+    if (level >= b->levels || layer >= b->layers) return;
+    vk_end_pass();
+    VkCommandBuffer cb = vk_cmd();
+    vk_full_barrier(cb);
+    for (int k = 0; k < pick.npt; k++) {
+        uint32_t x = (uint32_t)pick.pt[k][0] * b->width / 1600 >> level, y = (uint32_t)pick.pt[k][1] * b->height / 900 >> level;
+        memset(pick.ptr + ((size_t)pick.n * 4 + k) * 16, 0, 16);
+        if (x >= level_extent(b->width, level) || y >= level_extent(b->height, level)) continue;
+        VkBufferImageCopy c = {.bufferOffset = ((VkDeviceSize)pick.n * 4 + k) * 16,
+                               .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1},
+                               .imageOffset = {(int32_t)x, (int32_t)y, 0}, .imageExtent = {1, 1, 1}};
+        vkCmdCopyImageToBuffer(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, pick.buf, 1, &c);
+    }
+    PickRec *pr = &pick.rec[pick.n++];
+    pr->vs = st.program->stages[0].code_addr;
+    pr->fs = st.program->stages[1].code_addr;
+    pr->hash = g_cur_fs_hash;
+    pr->img = (void *)b->image;
+    pr->w = b->width; pr->h = b->height; pr->fmt = st.rt.color[t]->format; pr->no = pick.draws;
+}
+
+void vk_pick_report(void) {
+    if (!pick.n) return;
+    renderer_flush();
+    for (int k = 0; k < pick.npt; k++) {
+        LOG("[pick] point %d (%d,%d of 1600x900): draws that changed it\n", k, pick.pt[k][0], pick.pt[k][1]);
+        for (int i = 0; i < pick.n; i++) {
+            const uint8_t *v = pick.ptr + ((size_t)i * 4 + k) * 16;
+            int j = i - 1;  // the previous draw into the same image
+            while (j >= 0 && pick.rec[j].img != pick.rec[i].img) j--;
+            if (j >= 0 && !memcmp(v, pick.ptr + ((size_t)j * 4 + k) * 16, 16)) continue;
+            const uint32_t *u = (const uint32_t *)v;
+            LOG("[pick]   draw %u fs %llx hash %016llx vs %llx | target %ux%u f%#x [%p] | %08x %08x %08x %08x\n", pick.rec[i].no,
+                (unsigned long long)pick.rec[i].fs, (unsigned long long)pick.rec[i].hash, (unsigned long long)pick.rec[i].vs,
+                pick.rec[i].w, pick.rec[i].h, pick.rec[i].fmt, pick.rec[i].img, u[0], u[1], u[2], u[3]);
+        }
+    }
+    pick.n = 0;
+    pick.draws = 0;
+}
+
 static void draw(CmdRec *r, bool indexed) {
     PROF_T0();
     draw_(r, indexed);
@@ -6020,6 +6108,7 @@ static void draw_(CmdRec *r, bool indexed) {
     // ---- draw
     if (!use_index) vkCmdDraw(cb, count, inst, first, base_inst);
     else vkCmdDrawIndexed(cb, icount, inst, 0, base_vertex, base_inst);
+    if (g_debug_frame) pick_after_draw();
     pass_written |= draw_w;
     stat_draws++;
     cum_draws++;
