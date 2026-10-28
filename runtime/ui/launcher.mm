@@ -1338,6 +1338,30 @@ static void switch_to_version(int v) {
 #endif
 }
 
+// The setup's Game code (Native or Recompiled) into the version it set up: each version keeps its own settings, so a
+// setup of 1.8.2 from 1.9.0's page with Native chosen restarted into 1.8.2's - or a copy of 1.0.0's - with Recompiled,
+// and the start screen asked to build the game code the setup had just skipped (players' reports, 2026-10-28)
+static void carry_game_code(int version) {
+    char vr[1024], main_root[1024];
+    if (!rt_version_root(version, vr, sizeof vr) || !rt_version_root(100, main_root, sizeof main_root)) return;
+    std::string path = std::string(vr) + "/botwrecompandroid.ini", text, line;
+    FILE *f = fopen(path.c_str(), "rb");
+    if (!f) f = fopen((std::string(main_root) + "/botwrecompandroid.ini").c_str(), "rb");  // (as paths.c version_seed)
+    if (f) {
+        for (int ch; (ch = fgetc(f)) != EOF;) {
+            line += (char)ch;
+            if (ch != '\n') continue;
+            if (line.compare(0, 11, "native_code")) text += line;
+            line.clear();
+        }
+        if (!line.empty() && line.compare(0, 11, "native_code")) text += line + "\n";
+        fclose(f);
+    }
+    text += std::string("native_code = ") + (g_settings.native_code ? "1" : "0") + "\n";
+    f = fopen(path.c_str(), "wb");
+    if (f) fputs(text.c_str(), f), fclose(f);
+}
+
 // The Game Files page's game versions: the one running, the others set up (choosing one starts the app again in it),
 // the ones not set up yet greyed - the files folder below sets them up. focus: the running one takes the cursor.
 static void version_rows(bool busy, bool focus) {
@@ -1817,7 +1841,10 @@ extern "C" void launcher_run(const char *root) {
             g_set_up_version = 0;
             bool failed = g_job_failed;
             pthread_mutex_unlock(&g_lock);
-            if (set_up && set_up != rt_game_version()) switch_to_version(set_up);  // (set up beside this one: played now)
+            if (set_up && set_up != rt_game_version()) {  // (set up beside this one: played now)
+                carry_game_code(set_up);
+                switch_to_version(set_up);
+            }
             status = check_game_files(g_root);
             // (a failure stays on the page with its cause: with this version's files ready, a setup of another folder
             // that failed went back to the start screen without a word)
