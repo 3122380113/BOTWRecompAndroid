@@ -3671,9 +3671,10 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                 LOG("[pane] fs %016llx x %.1f y %.1f m %.3f %.3f proj %.3f %.3f wide %d\n", (unsigned long long)g_cur_fs_hash, f[19],
                     f[23], f[16], f[21], f[0], f[5], g_wide_backdrop);
             if (size >= 0x230 && f[15] == 0 && f[0] > 0 && fabsf(f[5] / f[0] - 16.0f / 9.0f * g) < 0.01f && g_wide_backdrop &&
-                fabsf(f[19]) < 1.0f && g_cur_fs_hash == 0xd4fa32dabc35066cull) {
-                // (the blurred world: nn::ui2d's textured pane shader, centred - not the 3D Link beside the inventory,
-                // a picture of a widened target too)
+                fabsf(f[19]) < 1.0f && (g_cur_fs_hash == 0xd4fa32dabc35066cull || g_cur_fs_hash == 0xc94630386244616eull)) {
+                // (the blurred world: nn::ui2d's textured pane shader, centred; and the pause menu's layer over it that
+                // holds the 3D Link and the menu's darkening, c9463038 - left in the middle 16:9 part, it darkened only
+                // that part: an edge each side, 2026-10-28)
                 VkSpan c = vk_transient_copy(f, size, 256);  // (the pane's x row, about the layout's middle)
                 for (int i = 16; i < 20; i++) ((float *)c.ptr)[i] *= g;
                 return ubo_span(c, size);
