@@ -659,6 +659,58 @@ Medição no planalto (2026-10-21, save do usuário perto da igreja, POCO F7 Ult
 
 - Distribuição do APK Android, sem nada do jogo.
 
+## A fazer (atualizado em 2026-10-28)
+
+A lista corrente; a fila abaixo guarda o histórico de cada item.
+
+**Próxima versão (0.2.3, versionCode >= 23; lançar só com o OK do usuário).** No `main`, não lançados: c2a2320
+(write tracking), ba93baa (setup nativo sem build), 0d3731c (sync lag depois de cada carregamento), 056a9a0 (arena da
+Mali coerente), fa56eb3 + f1d15ba (mods que adicionam arquivos, mods do DLC, arquivos do jogo e mods no lugar),
+2901800 (SavageWind: upsample, IADD3), 1ff912a (gathers a 1/256 de texel: os pontos na grama).
+- Antes: testar no POCO os mods "no lugar" (nunca testados) e ver se o resto da tela continua igual com os gathers
+  arredondados (sombras, água, reflexos). Os shaders compilam de novo uma vez (o GLSL dos gathers mudou): dizer nas notas.
+- Depois: postar as respostas de `docs/RESPOSTAS-ISSUES-2026-10-28.md` (#43, #70/#72/#75, #71/#67/#62/#54, #74, #65)
+  e avisar #21 e #80 dos pontos na grama.
+
+**Gráficos (lista do usuário, 2026-10-28; recompilado e nativo, salvo indicação):**
+- ~~A malha de pontos acima de 50% de resolução~~ (1ff912a). As linhas pretas que correm no chão à frente do Link são
+  provavelmente o mesmo defeito: conferir.
+- Vértices tremendo no impacto de um golpe (ver também as pontas na nuvem e na névoa num golpe, na fila: talvez o mesmo).
+- FPS mais alto e mais estável.
+- Texturas piscando (raro).
+- Aspecto livre: no menu aparece um recorte e o inventário não se estende; na tela de morte e no menu principal as
+  bordas não escurecem; no meio da tela de loading a imagem estica.
+- Tela preta com o driver padrão da Qualcomm.
+- Menus a 60 fps, como as cutscenes.
+- Só no nativo: o Link pisca ao levar o primeiro golpe.
+- A grama que só carrega de perto: devolver as máscaras de densidade (512x512 e 256x256) à CPU.
+
+**Issues novas (2026-10-28):**
+- **#76** (Snapdragon 8+ Gen 1; um segundo usuário com o mesmo aparelho): tela preta com o HUD a 29 fps, e o app
+  fecha. O log anexado é da sessão anterior (só a tela inicial). Ele usa o Turnip v27 "A8xx" num Adreno 730, que o
+  driver identifica como "725". Pedir o `botwrecomp-log-previous.txt` logo depois do crash, e um teste com o driver do
+  sistema.
+- **#77** (Turnip Gen8 V37, 0.2.2): dois problemas.
+  - `svcBreak(reason=0)` em 0x10437eba4 depois de importar um save editado: o jogo aborta sozinho, provavelmente por
+    dados inconsistentes no save.
+  - "Importar saves" falha com `EACCES` em `v160/save/save_0/2/game_data.sav`, um arquivo da pasta do próprio app que
+    ele não consegue abrir: o dono é outro (copiado por outro app, root, ou uma instalação anterior). Corrigir: o
+    importar troca a pasta inteira (renomeia a antiga) em vez de reescrever cada arquivo, e diz o que fazer quando nem
+    isso dá.
+- **#78**: o giroscópio não funciona com um controle USB-C encaixado no celular (GameSir X5 Lite, que não tem
+  giroscópio próprio, ao que parece). Usar o giroscópio do celular quando o controle não tiver um.
+- **#79** (Samsung, Android 16, tela 2340x1080): as Configurações da tela inicial ficam pretas, com só um canto do
+  painel aparecendo embaixo à direita: o layout sai da tela. Pedir o modelo e se é dobrável, DeX ou janela.
+- **#80** (AYN Odin 3, Adreno 830, 1.8.2): as linhas pretas na grama são os pontos corrigidos em 1ff912a. Responder
+  com a 0.2.3.
+- **#81** (Dimensity 8400, Mali-G720): sem descrição. Pedir o log; provavelmente a arena da Mali (056a9a0).
+- **#82**: pedido de escolher um `.nsp`/`.xci` e extrair exefs e romfs no celular (com as `prod.keys` do usuário), como
+  o LASRecomp Android Plus. Decisão do usuário (chaves e o que entra no app).
+- **#70** (Adreno 650): abre com "Memória do jogo na GPU" ligada, mas a 7-10 fps na caverna.
+
+**Esperando log ou resposta:** #22 (vídeo da torre no Adreno 840), #24/#30 (8s Gen 4), #23 (RP Nova T26), #41
+(build de teste com `uclamp.min`), #68 (S23 a 5-10 fps), #64 (build no Mali-G57).
+
 ## Fila de funcionalidades
 
 Pedidos ainda não começados, o mais recente no fim.
