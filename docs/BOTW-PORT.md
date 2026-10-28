@@ -666,7 +666,8 @@ A lista corrente; a fila abaixo guarda o histórico de cada item.
 **Próxima versão (0.2.3, versionCode >= 23; lançar só com o OK do usuário).** No `main`, não lançados: c2a2320
 (write tracking), ba93baa (setup nativo sem build), 0d3731c (sync lag depois de cada carregamento), 056a9a0 (arena da
 Mali coerente), fa56eb3 + f1d15ba (mods que adicionam arquivos, mods do DLC, arquivos do jogo e mods no lugar),
-2901800 (SavageWind: upsample, IADD3), 1ff912a (gathers a 1/256 de texel: os pontos na grama).
+2901800 (SavageWind: upsample, IADD3), 1ff912a (gathers a 1/256 de texel: os pontos na grama), 7e3c35d (saves com
+arquivos de outro dono, #77).
 - Antes: testar no POCO os mods "no lugar" (nunca testados) e ver se o resto da tela continua igual com os gathers
   arredondados (sombras, água, reflexos). Os shaders compilam de novo uma vez (o GLSL dos gathers mudou): dizer nas notas.
 - Depois: postar as respostas de `docs/RESPOSTAS-ISSUES-2026-10-28.md` (#43, #70/#72/#75, #71/#67/#62/#54, #74, #65)
@@ -694,9 +695,11 @@ Mali coerente), fa56eb3 + f1d15ba (mods que adicionam arquivos, mods do DLC, arq
   - `svcBreak(reason=0)` em 0x10437eba4 depois de importar um save editado: o jogo aborta sozinho, provavelmente por
     dados inconsistentes no save.
   - "Importar saves" falha com `EACCES` em `v160/save/save_0/2/game_data.sav`, um arquivo da pasta do próprio app que
-    ele não consegue abrir: o dono é outro (copiado por outro app, root, ou uma instalação anterior). Corrigir: o
-    importar troca a pasta inteira (renomeia a antiga) em vez de reescrever cada arquivo, e diz o que fazer quando nem
-    isso dá.
+    ele não consegue abrir: o dono é outro (copiado por outro app, root, ou uma instalação anterior). O `svcBreak` é
+    o mesmo problema: o jogo não abre o próprio save. **Corrigido** em 7e3c35d (testado no POCO com uma pasta de
+    teste): ao montar o save, arquivos legíveis de outro dono viram uma cópia do app (`save_0.before-own` guarda a
+    anterior); ilegíveis param com uma mensagem que diz o arquivo e manda usar Importar saves (que já troca a pasta
+    inteira); o Exportar explica o mesmo. Resposta no rascunho de 28/10.
 - **#78**: o giroscópio não funciona com um controle USB-C encaixado no celular (GameSir X5 Lite, que não tem
   giroscópio próprio, ao que parece). Usar o giroscópio do celular quando o controle não tiver um.
 - **#79** (Samsung, Android 16, tela 2340x1080): as Configurações da tela inicial ficam pretas, com só um canto do
