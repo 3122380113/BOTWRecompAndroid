@@ -613,6 +613,11 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
         java.util.Arrays.sort(kids);
         for (File k : kids) {
             String n = prefix + k.getName();
+            // (a file another app put in the save - a file manager with root, a save editor: #77 - keeps its owner,
+            // and this app can't open it)
+            if (!k.canRead())
+                throw new IOException(n + " can't be read: another app put it there, and it keeps that app's owner. " +
+                        "Bring a save in with Import saves instead (the folder there now is kept beside it).");
             if (k.isDirectory()) {
                 z.putNextEntry(new java.util.zip.ZipEntry(n + "/"));
                 z.closeEntry();

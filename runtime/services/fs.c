@@ -778,6 +778,51 @@ static void copy_tree(const char *src, const char *dst) {
     closedir(d);
 }
 
+// The save's files this app can't use: another app put them there (a file manager with root, a save editor: issue #77,
+// 2026-10-28) and they keep its owner, so open() fails with EACCES and the game stops with svcBreak. Counts the ones
+// this app can't read (the first's path in unreadable) and those it reads but can't write.
+static void save_access(const char *p, int *bad, int *unread, char *unreadable, size_t n) {
+    DIR *d = opendir(p);
+    if (!d) {
+        if (access(p, R_OK)) { if (!(*unread)++) snprintf(unreadable, n, "%s", p); }
+        else if (access(p, W_OK)) (*bad)++;
+        return;
+    }
+    if (access(p, R_OK | W_OK | X_OK)) (*bad)++;
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        char c[2048];
+        snprintf(c, sizeof c, "%s/%s", p, e->d_name);
+        save_access(c, bad, unread, unreadable, n);
+    }
+    closedir(d);
+}
+
+// A save with files of another owner becomes this app's own: a copy made here in its place, the one before kept beside
+// it as <save>.before-own[-n]. Files it can't even read: a message saying what to do instead of the game's svcBreak.
+static void own_save(const char *root) {
+    int bad = 0, unread = 0;
+    char unreadable[2048] = "";
+    save_access(root, &bad, &unread, unreadable, sizeof unreadable);
+    if (unread)
+        FATAL("The game's save has %d file%s another app put there, which this app can't read (%s). Use Settings > Files > "
+              "Import saves to bring a save in: the folder there now is kept beside it.\n", unread, unread == 1 ? "" : "s",
+              unreadable);
+    if (!bad) return;
+    char tmp[1100], keep[1100];
+    struct stat sb;
+    snprintf(tmp, sizeof tmp, "%s.owning", root);
+    rm_rf(tmp, false);
+    copy_tree(root, tmp);
+    snprintf(keep, sizeof keep, "%s.before-own", root);
+    for (int n = 2; !stat(keep, &sb) && n < 100; n++) snprintf(keep, sizeof keep, "%s.before-own-%d", root, n);
+    if (rename(root, keep) || rename(tmp, root))
+        FATAL("The game's save has files another app put there, which this app can't write, and it couldn't make its own "
+              "copy (errno %d). Use Settings > Files > Import saves to bring the save in.\n", errno);
+    LOG("[fs] save %s: %d files or folders of another owner, now a copy of this app's (the one before: %s)\n", root, bad, keep);
+}
+
 static Service *open_host_fs(const char *sub) {
     HostFs *fs = calloc(1, sizeof *fs);
     if (getenv("LARECOMP_SAVE_DIR")) g_save_dir = getenv("LARECOMP_SAVE_DIR");  // test runs use a scratch copy
@@ -819,6 +864,7 @@ static Service *open_host_fs(const char *sub) {
     for (char *q = cmd + 1; *q; q++)
         if (*q == '/') { *q = 0; mkdir(cmd, 0755); *q = '/'; }
     mkdir(cmd, 0755);
+    own_save(fs->root);
     LOG("[fs] mounted host directory %s\n", fs->root);
     return service_new("IFileSystem", filesystem, fs);
 }
