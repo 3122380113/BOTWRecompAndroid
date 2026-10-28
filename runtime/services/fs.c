@@ -95,7 +95,9 @@ static void rom_dir_path(const uint8_t *dmeta, uint32_t dsize, uint32_t dir, cha
 // ---- files a mod ADDS (names the game's RomFS doesn't have). The game parses the
 // RomFS tables itself, so they're extended: a copy of the file-meta table with the new entries appended (linked
 // into their directory's file list and the name hash buckets) is placed past the end of the image, the header,
-// directory table and hash table are patched to match. New files must go into existing directories.
+// directory table and hash tables are patched to match. Directories the game doesn't have are added the same way
+// (the directory table then goes past the end too): Relics of the Past adds 138 files to 1.6.0, 20 of them in a new
+// Model/Giant_Dark (issue #65 - the menu's mods replaced files only, and the game crashed looking up an added one).
 static uint32_t romfs_hash(uint32_t parent, const char *name, uint32_t len) {
     uint32_t hash = parent ^ 123456789;
     for (uint32_t i = 0; i < len; i++) { hash = (hash >> 5) | (hash << 27); hash ^= (uint8_t)name[i]; }
@@ -131,44 +133,94 @@ static void walk_new(const char *root, const char *rel, char **known, int nknown
     closedir(d);
 }
 
-// directory entry offset for "a/b/c" (NULL-terminated walk from the root, offset 0), -1 if missing
-static int64_t dir_lookup(const uint8_t *dm, uint64_t dsz, const char *path) {
+// A growing copy of the directory table
+typedef struct { uint8_t *p; uint64_t n, cap; } DirTab;
+
+// directory entry offset for "a/b/c" (a walk from the root, offset 0). A missing one is -1, or made when hb is given:
+// appended, first in its parent's children and in its name's bucket of the directory hash table hb (nb buckets)
+static int64_t dir_lookup(DirTab *t, const char *path, uint8_t *hb, uint32_t nb) {
     uint32_t cur = 0;
     char buf[1024];
     strlcpy(buf, path, sizeof buf);
     for (char *tok = strtok(buf, "/"); tok; tok = strtok(NULL, "/")) {
-        uint32_t child;
-        memcpy(&child, dm + cur + 8, 4);
-        while (child != 0xFFFFFFFFu && child + 0x18 <= dsz) {
-            uint32_t nl;
-            memcpy(&nl, dm + child + 0x14, 4);
-            if (nl == strlen(tok) && !memcmp(dm + child + 0x18, tok, nl)) break;
-            memcpy(&child, dm + child + 4, 4);
+        uint32_t child, nl = (uint32_t)strlen(tok);
+        memcpy(&child, t->p + cur + 8, 4);
+        while (child != 0xFFFFFFFFu && child + 0x18 <= t->n) {
+            uint32_t cl;
+            memcpy(&cl, t->p + child + 0x14, 4);
+            if (cl == nl && !memcmp(t->p + child + 0x18, tok, nl)) break;
+            memcpy(&child, t->p + child + 4, 4);
         }
-        if (child == 0xFFFFFFFFu || child + 0x18 > dsz) return -1;
+        if (child == 0xFFFFFFFFu || child + 0x18 > t->n) {
+            if (!hb || !nb) return -1;
+            uint64_t sz = 0x18 + ((nl + 3) & ~3u);
+            if (t->n + sz > t->cap) { t->cap = (t->n + sz) * 2; t->p = realloc(t->p, t->cap); }
+            // parent, sibling (the parent's first child until now), first child dir, first file, next in its hash
+            // bucket, name length, name
+            uint32_t at = (uint32_t)t->n, none = 0xFFFFFFFFu, sib, bucket = romfs_hash(cur, tok, nl) % nb, next;
+            memcpy(&sib, t->p + cur + 8, 4);
+            memcpy(&next, hb + 4 * bucket, 4);
+            uint8_t *e = t->p + at;
+            memset(e, 0, sz);
+            memcpy(e, &cur, 4), memcpy(e + 4, &sib, 4), memcpy(e + 8, &none, 4), memcpy(e + 0xC, &none, 4);
+            memcpy(e + 0x10, &next, 4), memcpy(e + 0x14, &nl, 4), memcpy(e + 0x18, tok, nl);
+            memcpy(t->p + cur + 8, &at, 4);
+            memcpy(hb + 4 * bucket, &at, 4);
+            t->n += sz;
+            child = at;
+        }
         cur = child;
     }
     return cur;
 }
 
 static void add_new_files(int fd, const uint64_t *h, const uint8_t *dmeta, uint64_t dsz, uint64_t fsz) {
-    const char *mods = mods_dir();
-    if (!mods) return;
-    char root[1100];
-    snprintf(root, sizeof root, "%s/romfs", mods);
     char **known = malloc(sizeof *known * rom_nfiles);
     for (int i = 0; i < rom_nfiles; i++) known[i] = rom_files[i].path;
     qsort(known, rom_nfiles, sizeof *known, path_cmp);
     NewFile *nf = NULL;
     int n = 0, cap = 0;
-    walk_new(root, "", known, rom_nfiles, &nf, &n, &cap);
+    const char *mods = mods_dir();
+    if (mods) {
+        char root[1100];
+        snprintf(root, sizeof root, "%s/romfs", mods);
+        walk_new(root, "", known, rom_nfiles, &nf, &n, &cap);
+    }
+    int from_dir = n;
+    for (int i = 0; i < mods_file_count(); i++) {  // the menu's mods (LARECOMP_MODS's file first, as for replacements)
+        const char *rel, *host;
+        struct stat sb;
+        if (!mods_file(i, &rel, &host) || !rel || bsearch(&rel, known, rom_nfiles, sizeof *known, path_cmp)) continue;
+        bool dup = false;
+        for (int k = 0; k < from_dir && !dup; k++) dup = !strcmp(nf[k].rel, rel);
+        if (dup || stat(host, &sb) || !S_ISREG(sb.st_mode)) continue;
+        if (n == cap) { cap = cap ? cap * 2 : 64; nf = realloc(nf, sizeof *nf * cap); }
+        strlcpy(nf[n].rel, rel, sizeof nf[n].rel);
+        strlcpy(nf[n].host, host, sizeof nf[n].host);
+        nf[n].size = (uint64_t)sb.st_size;
+        n++;
+    }
     free(known);
     if (!n) return;
     rom_files = realloc(rom_files, sizeof(RomFile) * (rom_nfiles + n));
-    uint64_t hoff = h[5], hsz = h[6];
-    uint8_t *dcopy = malloc(dsz), *hcopy = malloc(hsz), *head = malloc(0x50);
-    memcpy(dcopy, dmeta, dsz);
-    if (pread(fd, hcopy, hsz, (off_t)hoff) != (ssize_t)hsz || pread(fd, head, 0x50, 0) != 0x50) return;
+    uint64_t hoff = h[5], hsz = h[6], dhoff = h[1], dhsz = h[2];
+    uint8_t *hcopy = malloc(hsz), *dhcopy = malloc(dhsz), *head = malloc(0x50);
+    if (pread(fd, hcopy, hsz, (off_t)hoff) != (ssize_t)hsz || pread(fd, dhcopy, dhsz, (off_t)dhoff) != (ssize_t)dhsz ||
+        pread(fd, head, 0x50, 0) != 0x50)
+        return;
+    DirTab dt = {malloc(dsz), dsz, dsz};
+    memcpy(dt.p, dmeta, dsz);
+    int new_dirs = 0;
+    for (int i = 0; i < n; i++) {  // the directories first: the table's size places what follows it
+        char dirp[1024];
+        strlcpy(dirp, nf[i].rel, sizeof dirp);
+        char *slash = strrchr(dirp, '/');
+        if (slash) *slash = 0; else dirp[0] = 0;
+        uint64_t before = dt.n;
+        dir_lookup(&dt, dirp, dhcopy, (uint32_t)(dhsz / 4));
+        if (dt.n != before) new_dirs++;
+    }
+    uint8_t *dcopy = dt.p;
     // the file-meta table to extend: the override-patched copy if there is one
     const uint8_t *base_meta = ov_meta;
     uint8_t *tmp = NULL;
@@ -188,7 +240,9 @@ static void add_new_files(int fd, const uint64_t *h, const uint8_t *dmeta, uint6
         fstat(fd, &rs);
         ov_end = (rs.st_size + 0xF) & ~0xFull;
     }
-    uint64_t meta_at = ov_end;  // the new table first, then the new files' data
+    // past the end: the directory table when it grew, the file table, then the new files' data
+    bool dirs_moved = dt.n > dsz;
+    uint64_t dir_at = ov_end, meta_at = dirs_moved ? (dir_at + dt.n + 0xF) & ~0xFull : ov_end;
     uint64_t data_at = (meta_at + nsz + 0xF) & ~0xFull;
     uint32_t nb = (uint32_t)(hsz / 4);
     uint64_t o = fsz;
@@ -199,8 +253,8 @@ static void add_new_files(int fd, const uint64_t *h, const uint8_t *dmeta, uint6
         char *slash = strrchr(dirp, '/');
         const char *name = slash ? slash + 1 : nf[i].rel;
         if (slash) *slash = 0; else dirp[0] = 0;
-        int64_t dir = dir_lookup(dcopy, dsz, dirp);
-        if (dir < 0) { LOG("[fs] mod file %s: directory not in the game's RomFS, skipped\n", nf[i].rel); continue; }
+        int64_t dir = dir_lookup(&dt, dirp, NULL, 0);
+        if (dir < 0) { LOG("[fs] mod file %s: its directory couldn't be added, skipped\n", nf[i].rel); continue; }
         uint32_t nl = (uint32_t)strlen(name), d32 = (uint32_t)dir, entry = (uint32_t)o, child;
         memcpy(&child, dcopy + dir + 0xC, 4);  // dir's first file -> becomes our sibling
         uint64_t rel = data_at - rom_data_off, size = nf[i].size;
@@ -222,19 +276,23 @@ static void add_new_files(int fd, const uint64_t *h, const uint8_t *dmeta, uint6
         data_at = (data_at + size + 0xF) & ~0xFull;
         added++;
     }
-    // the new table goes before the new data (keep the overlay list sorted by start)
-    if (ov_n == ov_cap) { ov_cap = ov_cap ? ov_cap * 2 : 256; ov = realloc(ov, sizeof *ov * ov_cap); }
-    memmove(ov + (ov_n - added) + 1, ov + (ov_n - added), sizeof *ov * added);
-    ov[ov_n - added] = (Overlay){meta_at, nsz, NULL, -1, meta};
-    ov_n++;
+    // the new tables go before the new data (keep the overlay list sorted by start)
+    int blobs = dirs_moved ? 2 : 1;
+    while (ov_n + blobs > ov_cap) { ov_cap = ov_cap ? ov_cap * 2 : 256; ov = realloc(ov, sizeof *ov * ov_cap); }
+    memmove(ov + (ov_n - added) + blobs, ov + (ov_n - added), sizeof *ov * added);
+    if (dirs_moved) ov[ov_n - added] = (Overlay){dir_at, dt.n, NULL, -1, dt.p};
+    ov[ov_n - added + blobs - 1] = (Overlay){meta_at, nsz, NULL, -1, meta};
+    ov_n += blobs;
     ov_end = data_at;
-    uint64_t fmeta_off = meta_at, fmeta_size = o;
+    uint64_t fmeta_off = meta_at, fmeta_size = o, dmeta_off = dir_at, dmeta_size = dt.n;
     memcpy(head + 7 * 8, &fmeta_off, 8);
     memcpy(head + 8 * 8, &fmeta_size, 8);
+    if (dirs_moved) memcpy(head + 3 * 8, &dmeta_off, 8), memcpy(head + 4 * 8, &dmeta_size, 8);
     patches[npatches++] = (Patch){0, 0x50, head};
-    patches[npatches++] = (Patch){h[3], dsz, dcopy};
+    if (!dirs_moved) patches[npatches++] = (Patch){h[3], dsz, dcopy};
     patches[npatches++] = (Patch){hoff, hsz, hcopy};
-    LOG("[fs] mods: %d new romfs files\n", added);
+    patches[npatches++] = (Patch){dhoff, dhsz, dhcopy};
+    LOG("[fs] mods: %d new romfs files%s\n", added, new_dirs ? " (and new directories)" : "");
 }
 
 static void rom_index(int fd) {

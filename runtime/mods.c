@@ -101,6 +101,10 @@ void mods_scan(void) {
     int n = mods_list(m, MODS_MAX);
     for (int i = 0; i < n; i++) {
         if (!m[i].on) { LOG("[mods] %s: off\n", m[i].name); continue; }
+        // (a folder named for the DLC's title is a mod of the DLC's own files - Map/MainField's units, its packs -
+        // which would replace the game's files of the same paths: not here, the DLC's image has no mods yet. Relics of
+        // the Past ships one beside the game's, issue #65)
+        if (strcasestr(m[i].name, "01007EF00011F001")) { LOG("[mods] %s: the DLC's files - not supported yet, left out\n", m[i].name); continue; }
         int before = nfiles;
         char root[256];
         snprintf(root, sizeof root, "mods/%s/romfs", m[i].name);
@@ -119,6 +123,16 @@ bool mods_romfs_override(const char *path, char *out, size_t cap) {
     }
     if (at < 0) return false;
     snprintf(out, cap, "%s", files[at].host);
+    return true;
+}
+
+int mods_file_count(void) { return nfiles; }
+
+bool mods_file(int i, const char **path, const char **host) {
+    if (i < 0 || i >= nfiles) return false;
+    bool repeat = i > 0 && !strcmp(files[i].rel, files[i - 1].rel);  // (a later mod's copy: the first one wins)
+    *path = repeat ? NULL : files[i].rel;
+    *host = files[i].host;
     return true;
 }
 
@@ -169,5 +183,7 @@ int mods_list(ModInfo *out, int max) { (void)out, (void)max; return 0; }
 void mods_set(const char *name, bool on) { (void)name, (void)on; }
 void mods_scan(void) {}
 bool mods_romfs_override(const char *path, char *out, size_t cap) { (void)path, (void)out, (void)cap; return false; }
+int mods_file_count(void) { return 0; }
+bool mods_file(int i, const char **path, const char **host) { (void)i, (void)path, (void)host; return false; }
 const char *mods_note(const char *name, char *buf, size_t cap) { (void)name; if (cap) buf[0] = 0; return buf; }
 #endif
