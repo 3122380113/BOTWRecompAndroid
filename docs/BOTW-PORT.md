@@ -667,7 +667,8 @@ A lista corrente; a fila abaixo guarda o histórico de cada item.
 (write tracking), ba93baa (setup nativo sem build), 0d3731c (sync lag depois de cada carregamento), 056a9a0 (arena da
 Mali coerente), fa56eb3 + f1d15ba (mods que adicionam arquivos, mods do DLC, arquivos do jogo e mods no lugar),
 2901800 (SavageWind: upsample, IADD3), 1ff912a (gathers a 1/256 de texel: os pontos na grama), 7e3c35d (saves com
-arquivos de outro dono, #77), 54e90d8 (sem pontas nas partículas no hit-stop).
+arquivos de outro dono, #77), 54e90d8 (sem pontas nas partículas no hit-stop), 833cb5d (memória do jogo
+na GPU só com 7 GB ou mais de RAM, #83).
 - Antes: testar no POCO os mods "no lugar" (nunca testados) e ver se o resto da tela continua igual com os gathers
   arredondados (sombras, água, reflexos). Os shaders compilam de novo uma vez (o GLSL dos gathers mudou): dizer nas notas.
 - Depois: postar as respostas de `docs/RESPOSTAS-ISSUES-2026-10-28.md` (#43, #70/#72/#75, #71/#67/#62/#54, #74, #65)
@@ -717,8 +718,8 @@ arquivos de outro dono, #77), 54e90d8 (sem pontas nas partículas no hit-stop).
   status 9)" com ~3,9 GB de RAM: o Android matou o app por memória, com muitos "shader still building" antes. No
   recompilado cai na hora. O log anexado: Turnip v26 R5, `guest heap 3120 MB is GPU memory` - a "Memória do jogo na
   GPU" ligada à mão (o Automático só liga no Adreno 8xx), 3,1 GB de memória da GPU reservados de uma vez num celular
-  de 6 GB; a sessão anterior terminou com 3.664 MB de PSS. A fazer: responder pedindo para desligar essa opção; e o
-  app não deixar ligá-la (ou avisar) com menos de ~8 GB de RAM.
+  de 6 GB; a sessão anterior terminou com 3.664 MB de PSS. Feito em 833cb5d: abaixo de ~7 GB de RAM a opção é ignorada
+  e o log diz por quê (não testado num celular assim). Falta responder, pedindo para desligá-la até a 0.2.3.
 - **#85** (Helio G100, Mali-G57 MC2, 8 GB, 1.9.0, 0.2.2; o mesmo no comentário novo do #1): com o driver
   PanVK-FristOneRR-V.3.5 (sem ele, fecha ao dar Play) chega à primeira cutscene e aparece uma mensagem de erro.
   A screenshot: `vkWaitSemaphores: -4 (device lost)` - o trabalho da GPU travou ou falhou no PanVK, na primeira
