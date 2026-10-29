@@ -686,6 +686,10 @@ na GPU só com 7 GB ou mais de RAM, #83), 05cb1b6 (giroscópio do celular com co
 - Texturas piscando (raro).
 - ~~Aspecto livre: recorte no menu, bordas da tela de morte, loading que encolhia e esticava~~ (dd01c2a, 325da58;
   testado no POCO). Falta conferir a tela de título e os vídeos com essas mudanças.
+- Aspecto livre, troca de páginas do menu (Inventário ↔ Sistema): 0f49d51 recorta páginas e texto na parte 16:9
+  (deixado assim por enquanto, a pedido do usuário). A última versão (as peças do escurecimento sem recorte) não foi
+  conferida em jogo; numa tela mais larga que 16:9 a página ou aparece cortada na borda 16:9 durante a troca, ou mostra
+  a página vizinha nas laterais. Ferramentas: `LARECOMP_LOG_MENUCLIP`, `LARECOMP_LOG_PANEFIX`.
 - Tela preta com o driver padrão da Qualcomm.
 - Menus a 60 fps, como as cutscenes.
 - Só no nativo: o Link pisca ao levar o primeiro golpe.
