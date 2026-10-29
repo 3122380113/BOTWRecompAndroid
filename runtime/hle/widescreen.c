@@ -136,15 +136,16 @@ float widescreen_effect_stretch(uint64_t fs_hash) { (void)fs_hash; return 1.0f; 
 void widescreen_backdrop_seen(uint64_t hash) { (void)hash; }
 void widescreen_scene_ubo(const float *u, uint64_t size) { (void)u, (void)size; }
 
-// Presented part of the image (crop: uv origin and size) and its place in the window: the whole image. Out of the
-// world, in the middle 16:9 part of the window with bars: on the title screen the image's middle 16:9 part (its layout
-// there, through the widened layout camera, its artwork past it); on loading screens the whole image squeezed back
-// (drawn across all of it through a 16:9 camera of their own: cropped, their sides were cut off).
+// Presented part of the image (crop: uv origin and size) and its place in the window: the whole image. On the title
+// screen, in the middle 16:9 part of the window with bars: the image's middle 16:9 part (its layout there, through the
+// widened layout camera, its artwork past it). Loading screens too are the whole image now: their layout, drawn through
+// a 16:9 camera of their own, is narrowed to the middle part as it's drawn (vulkan/exec.c cbuf_info) - squeezed back
+// here instead, the image shrank to load and stretched back to the world.
 void widescreen_present_crop(uint64_t frame, double shape, float crop[4], double *vx, double *vy, double *vw, double *vh) {
     (void)frame, (void)vy, (void)vh;
     crop[0] = crop[1] = 0, crop[2] = crop[3] = 1;
-    if (shape <= 1.001 || !widescreen_allowed() || in_world()) return;
-    if (framepace_on_title()) crop[2] = (float)(1.0 / shape), crop[0] = (1.0f - crop[2]) * 0.5f;
+    if (shape <= 1.001 || !widescreen_allowed() || in_world() || !framepace_on_title()) return;
+    crop[2] = (float)(1.0 / shape), crop[0] = (1.0f - crop[2]) * 0.5f;
     double w = *vw / shape;
     *vx += (*vw - w) * 0.5, *vw = w;
 }

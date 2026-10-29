@@ -3513,6 +3513,15 @@ static bool up_patch_frag(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *
     return found;
 }
 
+// nn::ui2d: a pane (its vertex constants f, cb3, at least 0x230 bytes) at the layout's middle in x whose rectangle is
+// as wide as the 1280-unit layout, centred - at any height and y (a full screen's black, a band across it). The
+// rectangle: cb3[33] (size, then origin) in the textured panes' vertex shaders; cb3[11] (size) in the window panes'.
+static bool full_width_pane(const float *f) {
+    if (fabsf(f[19]) >= 1.0f) return false;
+    if (f[132] >= 1279.5f && fabsf(f[134] + f[132] * 0.5f) < 0.5f) return true;
+    return f[44] >= 1279.5f && f[44] < 100000.0f && f[45] > 0 && f[46] == 0 && f[47] == 0;
+}
+
 static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32_t gx, uint32_t gy, uint32_t gz) {
     static const uint8_t zeros[0x10000];
     if (k == 0) {
@@ -3678,12 +3687,26 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                 VkSpan c = vk_transient_copy(f, size, 256);  // (the pane's x row, about the layout's middle)
                 for (int i = 16; i < 20; i++) ((float *)c.ptr)[i] *= g;
                 return ubo_span(c, size);
-            } else if (size >= 0x230 && f[15] == 0 && f[0] > 0 && g > 1.001f && fabsf(f[5] / f[0] - 16.0f / 9.0f) < 0.01f &&
-                       framepace_in_menu()) {
-                // A menu layout drawn through a camera of its own left at 16:9 (the inventory's cursor) would land
-                // g times farther from the middle than the rest: its projection's x row as the widened camera's
+            } else if (size >= 0x230 && f[15] == 0 && f[0] > 0 && fabsf(f[5] / f[0] - 16.0f / 9.0f * g) < 0.01f &&
+                       full_width_pane(f)) {
+                // A pane as wide as the layout, about its middle (the Game Over screen's black, a menu's dimming, a
+                // loading screen's band) covers the widened screen, not only its middle 16:9 part (the world showed at
+                // the sides, 2026-10-28), at any scale (the Game Over fade animates it)
                 VkSpan c = vk_transient_copy(f, size, 256);
-                for (int i = 0; i < 4; i++) ((float *)c.ptr)[i] /= g;
+                for (int i = 16; i < 20; i++) ((float *)c.ptr)[i] *= g;
+                return ubo_span(c, size);
+            } else if (size >= 0x230 && f[15] == 0 && f[0] > 0 && g > 1.001f && fabsf(f[5] / f[0] - 16.0f / 9.0f) < 0.01f) {
+                // A layout drawn through a camera of its own left at 16:9 - the inventory's cursor, the loading
+                // screens - would stretch across the wide image (the cursor g times farther from the middle than the
+                // rest): its projection's x row as the widened camera's, so it lands in the middle 16:9 part like the
+                // others. A pane that is the whole layout (the loading screens' black) still covers the screen. The
+                // loading screens were drawn stretched and squeezed back into 16:9 with bars by the present - the
+                // image shrank to load and stretched back to the world (2026-10-28).
+                VkSpan c = vk_transient_copy(f, size, 256);
+                float *m = (float *)c.ptr;
+                for (int i = 0; i < 4; i++) m[i] /= g;
+                if (full_width_pane(f))
+                    for (int i = 16; i < 20; i++) m[i] *= g;
                 return ubo_span(c, size);
             } else if (size >= 0x230 && f[15] == 0 && f[0] > 0 && fabsf(f[5] / f[0] - 16.0f / 9.0f * g) < 0.01f) {
                 float d = widescreen_hud_shift(f[19]);
@@ -3692,6 +3715,12 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                     ((float *)c.ptr)[19] += d;
                     return ubo_span(c, size);
                 }
+            } else if (f[15] > 1.0f && g > 1.001f && f[0] > 0 && fabsf(f[5] / f[0] - 16.0f / 9.0f) < 0.01f) {
+                // Text through a layout camera left at 16:9 (a loading screen's tip): its x row narrowed like the
+                // panes' projection above, or it sat apart from its box (2026-10-28)
+                VkSpan c = vk_transient_copy(f, size, 256);
+                for (int i = 0; i < 4; i++) ((float *)c.ptr)[i] /= g;
+                return ubo_span(c, size);
             } else if (f[15] > 1.0f) {
                 float d = widescreen_hud_shift(f[3] / f[15] * g * 640.0f);  // (layout x of the origin: 640 g units a side)
                 if (d != 0) {
@@ -4002,7 +4031,7 @@ static VkDescriptorBufferInfo gfast_win;  // (gfast_prepare, heap placed: a wind
 
 static VkDescriptorBufferInfo gfast_info(void) {
 #ifdef __ANDROID__
-    if (gcopy_mode && gc_size) return (VkDescriptorBufferInfo){gc_span.buf, gc_span.off, gc_size};
+    if ((gcopy_mode || gwin_mode) && gc_size) return (VkDescriptorBufferInfo){gc_span.buf, gc_span.off, gc_size};
     if (gfast_win.buffer) return gfast_win;
 #endif
     if (!gfast_buf) {
@@ -4022,6 +4051,7 @@ static void gfast_prepare(VkCommandBuffer cb) {
     gfast_n = 0;
 #ifdef __ANDROID__
     gfast_win = (VkDescriptorBufferInfo){0};
+    if (!gcopy_mode) gc_size = 0;  // (a draw's gsnap_prepare copy: not this dispatch's)
 #endif
     gmem_info();  // (the heap import, made on first use)
     gfast_info();
@@ -4487,6 +4517,7 @@ static void gres_reset(void) {
 static void gwin_prepare(unsigned stage_mask) {
     memset(gmap_tab, 0, sizeof gmap_tab);
     gfast_n = 0;
+    gc_size = 0;
     gmem_info();
     uint64_t reach = g_vk.props.limits.maxStorageBufferRange & ~3ull;
     gfast_win = (VkDescriptorBufferInfo){gmem_buf, 0, reach < gmem_size ? reach : gmem_size};
@@ -4525,6 +4556,49 @@ static void gwin_prepare(unsigned stage_mask) {
     }
     gmap_tab[GMAP_MAX * 4] = (uint32_t)k;
     gfast_win = (VkDescriptorBufferInfo){gmem_buf, base, reach};
+}
+
+// The heap placed (gwin_mode), a draw whose only global memory is its vertex shader's loads, a little of it: those
+// ranges copied as the draw is recorded, as its constant buffers are, instead of read through the heap's window when
+// the GPU runs. BOTW's text draws its glyphs from a buffer the game fills each frame: with the sync lag the CPU was
+// already writing the next frame's into it, and the Game Over title showed only "ME" - other glyphs' places - until
+// the game left the screen (2026-10-28). false: too much, or nothing bound (gwin_prepare then).
+static bool gsnap_prepare(void) {
+    memset(gmap_tab, 0, sizeof gmap_tab);
+    gfast_n = 0;
+    gc_size = 0;
+    GcRange r[16];
+    int n = 0;
+    for (int i = 0; i < 16; i++) {
+        uint64_t a = st.sbuf[0][i].addr, sz = st.sbuf[0][i].size;
+        if (!a || !sz || a < HEAP_BASE || a - HEAP_BASE + sz > gmem_size) continue;
+        uint64_t lo = (a - HEAP_BASE) & ~255ull, hi = (a - HEAP_BASE + sz + 255) & ~255ull;
+        if (hi > gmem_size) hi = gmem_size;
+        int k = n++;
+        while (k > 0 && r[k - 1].lo > lo) { r[k] = r[k - 1]; k--; }
+        r[k].lo = lo; r[k].hi = hi;
+    }
+    int m = 0;
+    uint64_t total = 0;
+    for (int i = 0; i < n; i++) {
+        if (m && r[i].lo <= r[m - 1].hi) { if (r[i].hi > r[m - 1].hi) r[m - 1].hi = r[i].hi; }
+        else r[m++] = r[i];
+    }
+    for (int i = 0; i < m; i++) total += r[i].hi - r[i].lo;
+    if (!m || m > GMAP_MAX || total > (64u << 10)) return false;
+    gc_span = vk_transient(total, 256);
+    uint64_t off = 0;
+    for (int i = 0; i < m; i++) {
+        uint64_t len = r[i].hi - r[i].lo;
+        memcpy((uint8_t *)gc_span.ptr + off, (const void *)(uintptr_t)(HEAP_BASE + r[i].lo), len);
+        gmap_tab[i * 4 + 0] = (uint32_t)r[i].lo;
+        gmap_tab[i * 4 + 1] = (uint32_t)len;
+        gmap_tab[i * 4 + 2] = (uint32_t)(off >> 2);
+        off += len;
+    }
+    gc_size = total;
+    gmap_tab[GMAP_MAX * 4] = (uint32_t)m;
+    return true;
 }
 
 static void gcopy_prepare(unsigned stage_mask, bool store) {
@@ -5969,8 +6043,12 @@ static void draw_(CmdRec *r, bool indexed) {
     if (gcopy_mode && (pr->vi->uses_gmem_map || pr->fi->uses_gmem_map))  // (the table both stages' sets use)
         gcopy_prepare((pr->vi->uses_gmem_map ? 1u : 0u) | (pr->fi->uses_gmem_map ? 2u : 0u),
                       pr->vi->uses_gmem_store || pr->fi->uses_gmem_store);
-    else if (gwin_mode && (pr->vi->uses_gmem_map || pr->fi->uses_gmem_map))
-        gwin_prepare((pr->vi->uses_gmem_map ? 1u : 0u) | (pr->fi->uses_gmem_map ? 2u : 0u));
+    else if (gwin_mode && (pr->vi->uses_gmem_map || pr->fi->uses_gmem_map)) {
+        static int snap = -1;  // (LARECOMP_NO_GSNAP=1: through the window as before)
+        if (snap < 0) snap = getenv("LARECOMP_NO_GSNAP") == NULL;
+        if (!(snap && pr->vi->uses_gmem_map && !pr->fi->uses_gmem_map && !pr->vi->uses_gmem_store && gsnap_prepare()))
+            gwin_prepare((pr->vi->uses_gmem_map ? 1u : 0u) | (pr->fi->uses_gmem_map ? 2u : 0u));
+    }
 #endif
     uint32_t dyn[64], ndv = 0, ndf = 0;  // (the sets' dynamic uniform buffer offsets: vertex, then fragment)
     memset(cbw_patch, 0, sizeof cbw_patch);  // (cbwin_bind fills them while the sets are written)
