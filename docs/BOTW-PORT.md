@@ -737,6 +737,11 @@ na GPU só com 7 GB ou mais de RAM, #83), 05cb1b6 (giroscópio do celular com co
 - **Tela de Game Over com só "ME"** (usuário, 2026-10-28): numa segunda morte o texto saiu inteiro; a gravação só
   pegou o começo da animação. Intermitente: falta saber se ficou parado assim, e a quantos fps.
 
+- **#52** (Infinix GT 30 Pro, Mali-G615; dois usuários com o mesmo celular, 1.8.2): o build para no `main_012.c` com
+  `error: checking cache failed: file_open` do zig - o cache dele (`.gamebuild/zig-cache`, na pasta de dados) não abre
+  um arquivo. A mensagem "2 GB livres" era a genérica. Respondido pedindo o log da 0.2.3.
+- Todas as issues abertas respondidas em 28/10 (segunda leva em `docs/RESPOSTAS-ISSUES-2026-10-28.md`).
+
 **Esperando log ou resposta:** #22 (vídeo da torre no Adreno 840), #24/#30 (8s Gen 4), #23 (RP Nova T26), #41
 (build de teste com `uclamp.min`), #68 (S23 a 5-10 fps), #64 (build no Mali-G57).
 
@@ -852,7 +857,9 @@ Pedidos ainda não começados, o mais recente no fim.
 - **Vídeo da torre trava no Adreno 840** (#22; OnePlus 15, Snapdragon 8 Elite Gen 5, 1.0.0 com o dump completo): o
   jogo inteiro para logo depois de `[movie] decoder vp9 configured`, com Turnip e com o driver da Qualcomm; no
   Adreno 830 o mesmo vídeo passa até o fim. O VP9 do FFmpeg 9.0.2 só tem caminhos NEON (os de SVE/SME são do VVC).
-  Falta o log da próxima versão (4a27085) para ver o passo em que para.
+  O log com os marcos de 4a27085 (2026-10-28): `Demo166_0.webm` aberto, `video decoder: first packet: 242 bytes` e
+  nenhum "first frame decoded" depois - o decodificador recebe o primeiro pacote e nunca devolve um quadro. Na 1.8.2
+  o mesmo usuário passa da torre.
 - **#43** (Adreno 740, 1.8.2, Turnip V38): a grama some de vez em quando ao andar, e chamar o cavalo trava com um
   save da 1.6.0. Esperando o log (e se o cavalo usa equipamento de DLC).
   - **A grama:** reproduzida no POCO (1.9.0, Grande Platô, os degraus ao lado da torre, 2026-10-27): a grama baixa
