@@ -61,6 +61,15 @@ android/push_game.sh Dump/01007EF00011E000           # arquivos e código do jog
 android/run_boot.sh 120                               # abre o jogo, log em android/out/boot.log
 ```
 
+## Apoie o projeto
+
+O BOTWRecompAndroid é um projeto gratuito e independente. Se você gosta dele e quer apoiar seu desenvolvimento, pode
+me patrocinar pelo GitHub. Esse apoio me ajuda a dedicar tempo à correção de bugs, à melhoria do desempenho e da
+compatibilidade e às próximas versões. O patrocínio é totalmente opcional: não libera recursos exclusivos nem garante
+correções específicas. Relatos de bugs, testes em outros aparelhos e contribuições também ajudam muito.
+
+[![Patrocine no GitHub](https://img.shields.io/badge/Patrocine-no%20GitHub-EA4AAA?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/mamcjr)
+
 ## Créditos
 
 - [peiikai](https://github.com/peiikai), pelo [LAS Recomp](https://github.com/peiikai/LASRecomp), o recompilador e o

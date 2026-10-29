@@ -65,6 +65,15 @@ android/push_game.sh Dump/01007EF00011E000           # game files and game code 
 android/run_boot.sh 120                               # start the game, log to android/out/boot.log
 ```
 
+## Support the project
+
+BOTWRecompAndroid is a free, independent project. If you enjoy it and would like to support its development, you can
+sponsor me on GitHub. Your support helps me dedicate time to fixing bugs, improving performance and compatibility, and
+working on future releases. Sponsorship is entirely optional: it does not unlock features or guarantee specific fixes.
+Bug reports, device tests, and contributions are also greatly appreciated.
+
+[![Sponsor on GitHub](https://img.shields.io/badge/Sponsor-on%20GitHub-EA4AAA?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/mamcjr)
+
 ## Credits
 
 - [peiikai](https://github.com/peiikai) for [LAS Recomp](https://github.com/peiikai/LASRecomp), the recompiler and
