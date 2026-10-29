@@ -2030,15 +2030,16 @@ static VkRect2D scissor_rect(void) {
     if (y < 0) { sh += y; y = 0; }
     if (w > (int)pass_w) w = (int)pass_w;
     if (h > (int)pass_h) h = (int)pass_h;
-    {   // ... and in the menus (pause, map) the panes placed past the 16:9 screen's sides stay in that part: pieces of
-        // their layouts it never shows (a black box right of the inventory's item description). Panes placed inside it
-        // may reach past it (the bars across the top and bottom)
+    {   // ... and in the menus (pause, map) their layouts' panes and text stay in the 16:9 screen's part: pieces it
+        // never shows (a black box right of the inventory's item description, the pages sliding in and out). The panes
+        // as wide as the layout (the bars across the top and bottom) and the pictures of the world reach past it
+        // (g_off_layout, draw_)
         extern bool widescreen_ui_centred(void);
-        extern bool framepace_in_menu(void);
+        extern bool widescreen_in_menu(void);
         extern float widescreen_factor(void);
         NvnTexture *t0 = st.rt.ncolor ? st.rt.color[0] : NULL;
         float g = widescreen_factor();
-        if (t0 && g_off_layout && g > 1.001f && widescreen_ui_centred() && framepace_in_menu() &&
+        if (t0 && g_off_layout && g > 1.001f && widescreen_ui_centred() && widescreen_in_menu() &&
             vk_texture_scale_group(t0) == RS_OUT) {
             int b0 = (int)floorf(w * (1 - 1 / g) * 0.5f), b1 = w - b0;
             if (x < b0) { sw -= b0 - x; x = b0; }
@@ -3515,11 +3516,33 @@ static bool up_patch_frag(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *
 
 // nn::ui2d: a pane (its vertex constants f, cb3, at least 0x230 bytes) at the layout's middle in x whose rectangle is
 // as wide as the 1280-unit layout, centred - at any height and y (a full screen's black, a band across it). The
-// rectangle: cb3[33] (size, then origin) in the textured panes' vertex shaders; cb3[11] (size) in the window panes'.
+// rectangle drawn: cb3[33] (size, then origin), in the textured panes' vertex shaders and the window panes' alike (a
+// window's frame pieces each; cb3[11] is the whole window's size - by it, every piece of the menu's 4590-wide windows
+// counted, the hearts and the rupee too, and moved out g times farther: they jumped when the menu's page turned).
+// Off the middle too when it still covers the wide screen there (half its width past the offset by 960 units: a
+// menu's dark bands, 4590 wide, slide with its pages - clipped as narrower panes, they left lighter strips each side).
 static bool full_width_pane(const float *f) {
-    if (fabsf(f[19]) >= 1.0f) return false;
-    if (f[132] >= 1279.5f && fabsf(f[134] + f[132] * 0.5f) < 0.5f) return true;
-    return f[44] >= 1279.5f && f[44] < 100000.0f && f[45] > 0 && f[46] == 0 && f[47] == 0;
+    float ax = fabsf(f[19]);
+    return f[132] >= 1279.5f && fabsf(f[134] + f[132] * 0.5f) < 0.5f && (ax < 1.0f || f[132] * 0.5f - ax >= 960.0f);
+}
+
+// ... or a piece of a window that is (cb3[11]: the window's size): not clipped to the 16:9 part in the menus - the
+// menu's dimming is such a window, drawn in pieces (clipped, the cutout at its sides came back). Not moved by it.
+static bool full_width_window(const float *f) {
+    float ax = fabsf(f[19]);
+    return full_width_pane(f) || (f[44] >= 1279.5f && f[44] < 100000.0f && f[45] > 0 && f[46] == 0 && f[47] == 0 &&
+                                  (ax < 1.0f || f[44] * 0.5f - ax >= 960.0f));
+}
+
+// LARECOMP_LOG_PANEFIX=1 (diagnosis): each layout draw cbuf_info changes for the wide screen, and why
+static void panefix_log(const char *why, const float *f) {
+    static int on = -1;
+    if (on < 0) on = getenv("LARECOMP_LOG_PANEFIX") != NULL;
+    if (!on) return;
+    extern bool framepace_in_menu(void);
+    extern bool widescreen_in_menu(void);
+    LOG("[panefix] frame %llu fs %016llx %s x %.1f r33 %.0f %.0f r11 %.0f %.0f menu %d/%d\n", (unsigned long long)renderer_present_count(),
+        (unsigned long long)g_cur_fs_hash, why, f[19], f[132], f[133], f[44], f[45], framepace_in_menu(), widescreen_in_menu());
 }
 
 static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32_t gx, uint32_t gy, uint32_t gz) {
@@ -3689,6 +3712,7 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                 return ubo_span(c, size);
             } else if (size >= 0x230 && f[15] == 0 && f[0] > 0 && fabsf(f[5] / f[0] - 16.0f / 9.0f * g) < 0.01f &&
                        full_width_pane(f)) {
+                panefix_log("full-width", f);
                 // A pane as wide as the layout, about its middle (the Game Over screen's black, a menu's dimming, a
                 // loading screen's band) covers the widened screen, not only its middle 16:9 part (the world showed at
                 // the sides, 2026-10-28), at any scale (the Game Over fade animates it)
@@ -3702,6 +3726,7 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                 // others. A pane that is the whole layout (the loading screens' black) still covers the screen. The
                 // loading screens were drawn stretched and squeezed back into 16:9 with bars by the present - the
                 // image shrank to load and stretched back to the world (2026-10-28).
+                panefix_log(full_width_pane(f) ? "16:9-cam full-width" : "16:9-cam", f);
                 VkSpan c = vk_transient_copy(f, size, 256);
                 float *m = (float *)c.ptr;
                 for (int i = 0; i < 4; i++) m[i] /= g;
@@ -3711,6 +3736,7 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
             } else if (size >= 0x230 && f[15] == 0 && f[0] > 0 && fabsf(f[5] / f[0] - 16.0f / 9.0f * g) < 0.01f) {
                 float d = widescreen_hud_shift(f[19]);
                 if (d != 0) {
+                    panefix_log("hud-shift", f);
                     VkSpan c = vk_transient_copy(f, size, 256);
                     ((float *)c.ptr)[19] += d;
                     return ubo_span(c, size);
@@ -5620,11 +5646,34 @@ static void draw_(CmdRec *r, bool indexed) {
                 renderer_texture_scale(t, &sx, &sy);
                 g_wide_backdrop = sx > sy * 1.01f;
             }
-            g_off_layout = false;  // (nn::ui2d's pane: its x at cb3[19], in layout units from the middle)
+            // A menu layout's pane or text, clipped to the 16:9 screen's part (scissor_rect): the pages slide in and out
+            // past its sides when the menu turns to another (Inventory, System), and on the wide screen those sides
+            // showed them (2026-10-28) - not the panes as wide as the layout (the bars across the top and bottom, the
+            // dimming) nor the pictures of the widened world (the blurred world, the 3D Link) where they sit centred -
+            // the page layer slides off the middle with the page (its next page showed past the screen's side)
+            g_off_layout = false;
             const Range *u = &st.ubuf[0][0];
-            if (widescreen_ui_centred() && rt && vk_texture_scale_group(rt) == RS_OUT && u->addr && u->size >= 0x230) {
+            if (widescreen_ui_centred() && rt && vk_texture_scale_group(rt) == RS_OUT && u->addr && u->size >= 64) {
+                // (text: one matrix, its constants shorter than a pane's - the labels, not clipped, slid past the sides)
                 const float *f = (const float *)(uintptr_t)u->addr;
-                g_off_layout = f[12] == 0 && f[13] == 0 && f[14] == -1.0f && f[15] == 0 && fabsf(f[19]) > 640.0f;
+                bool layout = f[12] == 0 && f[13] == 0 && f[14] == -1.0f;
+                bool picture = g_wide_backdrop && u->size >= 0x230 && fabsf(f[19]) < 1.0f;
+                g_off_layout = layout && (f[15] > 1.0f || (f[15] == 0 && u->size >= 0x230 && !picture && !full_width_window(f)));
+            }
+            {   // LARECOMP_LOG_MENUCLIP=1 (diagnosis): the layout draws of the frames where a pane sits past the 16:9 sides
+                static int on = -1;
+                if (on < 0) on = getenv("LARECOMP_LOG_MENUCLIP") != NULL;
+                const float *f = u->addr && u->size >= 0x230 ? (const float *)(uintptr_t)u->addr : NULL;
+                extern bool framepace_in_menu(void);
+                if (on && rt && f && f[12] == 0 && f[13] == 0 && f[14] == -1.0f && (fabsf(f[19]) > 500.0f || f[15] > 1.0f)) {
+                    static uint64_t fr;
+                    static int n;
+                    if (fr != renderer_present_count()) fr = renderer_present_count(), n = 0;
+                    if (n++ < 40)
+                        LOG("[mclip] frame %llu fs %016llx rt %ux%u group %d x %.1f w15 %.2f off %d menu %d wide %d\n",
+                            (unsigned long long)fr, (unsigned long long)last_hash, rt->width, rt->height,
+                            (int)vk_texture_scale_group(rt), f[19], f[15], g_off_layout, framepace_in_menu(), g_wide_backdrop);
+                }
             }
         }
         {   // LARECOMP_LOG_FSHASH_FROM=<frame>: each fragment shader drawn from that frame on, once (with its target)

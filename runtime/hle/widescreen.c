@@ -118,8 +118,19 @@ bool widescreen_ui_centred(void) { return widescreen_allowed() && g_wide != 1.0f
 // screen edge, the middle ones (dialogs, prompts) stay, a blend in between. Only in the world, not in its menus
 // (pause, map), whose panes make up grids across the middle. Panes placed over things in the world (an enemy's health
 // bar) move the same way.
+// A menu open, or until 30 frames after: turning from one of its pages to another the game says it isn't for some
+// frames - the hearts and rupees moved out to the screen's edges and the pages past its sides showed (2026-10-28;
+// 8 frames weren't enough)
+bool widescreen_in_menu(void) {
+    extern uint64_t renderer_present_count(void);
+    static uint64_t last;
+    uint64_t now = renderer_present_count();
+    if (framepace_in_menu()) last = now + 1;
+    return last && now < last + 30;
+}
+
 float widescreen_hud_shift(float x) {
-    if (!widescreen_ui_centred() || framepace_in_menu() || !in_world()) return 0;
+    if (!widescreen_ui_centred() || widescreen_in_menu() || !in_world()) return 0;
     float ax = x < 0 ? -x : x, t = (ax - 180.0f) / (260.0f - 180.0f);
     if (t <= 0) return 0;
     if (t > 1) t = 1;
