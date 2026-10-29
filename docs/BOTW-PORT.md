@@ -667,7 +667,8 @@ A lista corrente; a fila abaixo guarda o histórico de cada item.
 (write tracking), ba93baa (setup nativo sem build), 0d3731c (sync lag depois de cada carregamento), 056a9a0 (arena da
 Mali coerente), fa56eb3 + f1d15ba (mods que adicionam arquivos, mods do DLC, arquivos do jogo e mods no lugar),
 2901800 (SavageWind: upsample, IADD3), 1ff912a (gathers a 1/256 de texel: os pontos na grama), 7e3c35d (saves com
-arquivos de outro dono, #77), 54e90d8 (sem pontas nas partículas no hit-stop), 833cb5d (memória do jogo
+arquivos de outro dono, #77), 54e90d8 (sem pontas nas partículas no hit-stop), dd01c2a + 325da58 (aspecto livre: menus,
+Game Over, loading; o "ME"), 833cb5d (memória do jogo
 na GPU só com 7 GB ou mais de RAM, #83), 05cb1b6 (giroscópio do celular com controle sem giroscópio, #78).
 - Antes: testar no POCO os mods "no lugar" (nunca testados) e ver se o resto da tela continua igual com os gathers
   arredondados (sombras, água, reflexos). Os shaders compilam de novo uma vez (o GLSL dos gathers mudou): dizer nas notas.
@@ -679,11 +680,12 @@ na GPU só com 7 GB ou mais de RAM, #83), 05cb1b6 (giroscópio do celular com co
   provavelmente o mesmo defeito: conferir.
 - ~~Vértices tremendo no impacto de um golpe~~: as pontas na fumaça da Montanha da Morte, na névoa e na fumaça dos
   monstros no hit-stop (corrigido, ver a fila).
-- Tela de Game Over mostrando só "ME" (visto em 2026-10-28; intermitente, ver as issues novas abaixo).
+- ~~Tela de Game Over mostrando só "ME"~~ (325da58): os glifos do texto são lidos pelo vertex shader de um buffer
+  que o jogo reescreve a cada quadro; com o sync lag a GPU lia o do quadro seguinte. Agora copiados ao gravar o draw.
 - FPS mais alto e mais estável.
 - Texturas piscando (raro).
-- Aspecto livre: no menu aparece um recorte e o inventário não se estende; na tela de morte e no menu principal as
-  bordas não escurecem; no meio da tela de loading a imagem estica.
+- ~~Aspecto livre: recorte no menu, bordas da tela de morte, loading que encolhia e esticava~~ (dd01c2a, 325da58;
+  testado no POCO). Falta conferir a tela de título e os vídeos com essas mudanças.
 - Tela preta com o driver padrão da Qualcomm.
 - Menus a 60 fps, como as cutscenes.
 - Só no nativo: o Link pisca ao levar o primeiro golpe.
